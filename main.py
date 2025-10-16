@@ -14,14 +14,15 @@ from z3 import (
     BoolVal,
     BitVec,
     BitVecVal,
+    If,
     Implies,
-    Int,
     Not,
     Or,
     PbEq,
-    Solver,
+    SolverFor,
+    ULE,
+    ULT,
     Xor,
-    If,
 )
 
 def make_gol_test_case(left_column: int, center_column: int, right_column: int, alive: bool) -> Tuple[list[bool], list[bool]]:
@@ -65,6 +66,9 @@ NUM_INPUTS = 7
 NUM_OUTPUTS = 1
 
 LAYERS = [NUM_INPUTS] + HIDDEN_LAYERS + [NUM_OUTPUTS]  # recomputed in main()
+
+OP_BITS = 3  # enough to encode the 5 supported operations
+OP_LABELS = {0: 'OR', 1: 'AND', 2: 'XOR', 3: 'NOT', 4: 'NOP'}
 
 
 def _pb_exactly(vars_list: List, count: int):
@@ -246,8 +250,9 @@ def _build_dataset_adder() -> Tuple[int, List[int], List[int]]:
 
 def _select_bv(prev_list: List, idx_var, width: int):
     expr = BitVecVal(0, width)
-    for k in range(len(prev_list)):
-        expr = If(idx_var == k, prev_list[k], expr)
+    bits = idx_var.size()
+    for k, prev_val in enumerate(prev_list):
+        expr = If(idx_var == BitVecVal(k, bits), prev_val, expr)
     return expr
 
 
@@ -261,35 +266,45 @@ def build_network_bitvec(width: int, input_vals: List[int]) -> Tuple[List[List],
     input_bvs = [BitVecVal(input_vals[j], width) for j in range(LAYERS[0])]
     layer_values.append(input_bvs)
 
-    # For layers > 0, create BitVec vars and index/op Int vars
+    # For layers > 0, create BitVec vars and index/op BitVec vars
     for i in range(1, len(LAYERS)):
         prev = layer_values[i - 1]
         curr_vals: List = []
+        idx_bits = max(1, (len(prev) - 1).bit_length())
+        max_idx = len(prev) - 1
+        max_idx_bv = BitVecVal(max_idx if max_idx >= 0 else 0, idx_bits)
+        op_or = BitVecVal(0, OP_BITS)
+        op_and = BitVecVal(1, OP_BITS)
+        op_xor = BitVecVal(2, OP_BITS)
+        op_not = BitVecVal(3, OP_BITS)
+        op_nop = BitVecVal(4, OP_BITS)
         for j in range(LAYERS[i]):
             out = BitVec(f"BV_{i}_{j}", width)
-            left_idx = Int(f"L_{i}_{j}_left_idx")
-            right_idx = Int(f"L_{i}_{j}_right_idx")
-            op = Int(f"L_{i}_{j}_op")  # 0=OR,1=AND,2=XOR,3=NOT,4=NOP
+            left_idx = BitVec(f"L_{i}_{j}_left_idx", idx_bits)
+            right_idx = BitVec(f"L_{i}_{j}_right_idx", idx_bits)
+            op = BitVec(f"L_{i}_{j}_op", OP_BITS)
 
             # Index domains
-            constraints.append(And(left_idx >= 0, left_idx < len(prev)))
-            constraints.append(And(right_idx >= 0, right_idx < len(prev)))
-            constraints.append(And(op >= 0, op <= 4))
+            constraints.append(ULE(left_idx, max_idx_bv))
+            constraints.append(ULE(right_idx, max_idx_bv))
+
+            # Operator domain (implicitly 0..4 via bit-width and encoding)
+            constraints.append(Or(op == op_or, op == op_and, op == op_xor, op == op_not, op == op_nop))
 
             left_expr = _select_bv(prev, left_idx, width)
             right_expr = _select_bv(prev, right_idx, width)
 
             # Symmetry breaking and well-formed binary wiring
-            is_binary = Or(op == 0, op == 1, op == 2)
+            is_binary = Or(op == op_or, op == op_and, op == op_xor)
             constraints.append(Implies(is_binary, left_idx != right_idx))
-            constraints.append(Implies(is_binary, left_idx < right_idx))
+            constraints.append(Implies(is_binary, ULT(left_idx, right_idx)))
 
             # Gate semantics
             gate_expr = If(
-                op == 0, left_expr | right_expr,
-                If(op == 1, left_expr & right_expr,
-                   If(op == 2, left_expr ^ right_expr,
-                      If(op == 3, ~left_expr,  # NOT
+                op == op_or, left_expr | right_expr,
+                If(op == op_and, left_expr & right_expr,
+                   If(op == op_xor, left_expr ^ right_expr,
+                      If(op == op_not, ~left_expr,
                          left_expr))))  # NOP
             constraints.append(out == gate_expr)
             curr_vals.append(out)
@@ -416,7 +431,7 @@ def main():
     for j in range(NUM_OUTPUTS):
         constraints.append(last_layer[j] == BitVecVal(output_vals[j], width))
 
-    s = Solver()
+    s = SolverFor("QF_BV")
     s.add(*constraints)
 
     # Solve the formula
@@ -431,16 +446,20 @@ def main():
         m = s.model()
         for i in range(1, len(LAYERS)):
             summaries: List[str] = []
+            prev_len = len(layer_values[i - 1])
+            idx_bits = max(1, (prev_len - 1).bit_length()) if prev_len > 0 else 1
             for j in range(LAYERS[i]):
-                op = m[Int(f"L_{i}_{j}_op")]
-                li = m[Int(f"L_{i}_{j}_left_idx")]
-                ri = m[Int(f"L_{i}_{j}_right_idx")]
-                op_map = {0: 'OR', 1: 'AND', 2: 'XOR', 3: 'NOT', 4: 'NOP'}
-                op_val = op.as_long() if op is not None else -1
-                li_val = li.as_long() if li is not None else -1
-                ri_val = ri.as_long() if ri is not None else -1
+                op_ref = BitVec(f"L_{i}_{j}_op", OP_BITS)
+                li_ref = BitVec(f"L_{i}_{j}_left_idx", idx_bits)
+                ri_ref = BitVec(f"L_{i}_{j}_right_idx", idx_bits)
+                op_val_ref = m[op_ref]
+                li_val_ref = m[li_ref]
+                ri_val_ref = m[ri_ref]
+                op_val = op_val_ref.as_long() if op_val_ref is not None else -1
+                li_val = li_val_ref.as_long() if li_val_ref is not None else -1
+                ri_val = ri_val_ref.as_long() if ri_val_ref is not None else -1
                 if op_val in (0, 1, 2):
-                    summaries.append(f"n{j}={op_map.get(op_val,'?')}(L{li_val},R{ri_val})")
+                    summaries.append(f"n{j}={OP_LABELS.get(op_val,'?')}(L{li_val},R{ri_val})")
                 elif op_val == 3:
                     summaries.append(f"n{j}=NOT(L{li_val})")
                 else:
