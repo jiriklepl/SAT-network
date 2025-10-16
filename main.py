@@ -13,13 +13,17 @@ from z3 import (
     Bool,
     BoolVal,
     BitVec,
+    BitVecSort,
     BitVecVal,
     If,
     Implies,
+    K,
     Not,
     Or,
     PbEq,
+    Select,
     SolverFor,
+    Store,
     ULE,
     ULT,
     Xor,
@@ -61,7 +65,7 @@ def make_3_bits_adder_test_case(left_bit: bool, center_bit: bool, right_bit: boo
     return inputs, outputs
 
 # Defaults (can be overridden by config/CLI)
-HIDDEN_LAYERS = [8, 6, 3, 2]
+HIDDEN_LAYERS = [8, 8, 4, 2]
 NUM_INPUTS = 7
 NUM_OUTPUTS = 1
 
@@ -248,14 +252,6 @@ def _build_dataset_adder() -> Tuple[int, List[int], List[int]]:
     return width, input_vals, output_vals
 
 
-def _select_bv(prev_list: List, idx_var, width: int):
-    expr = BitVecVal(0, width)
-    bits = idx_var.size()
-    for k, prev_val in enumerate(prev_list):
-        expr = If(idx_var == BitVecVal(k, bits), prev_val, expr)
-    return expr
-
-
 def build_network_bitvec(width: int, input_vals: List[int]) -> Tuple[List[List], List[List]]:
     """Build bitvector-valued network variables and constraints.
     Returns (constraints, node_bv_values) where node_bv_values[i][j] is the BV value for layer i node j.
@@ -269,15 +265,24 @@ def build_network_bitvec(width: int, input_vals: List[int]) -> Tuple[List[List],
     # For layers > 0, create BitVec vars and index/op BitVec vars
     for i in range(1, len(LAYERS)):
         prev = layer_values[i - 1]
+        prev_len = len(prev)
+        if prev_len == 0:
+            raise ValueError(f"Layer {i-1} has no nodes to connect")
         curr_vals: List = []
-        idx_bits = max(1, (len(prev) - 1).bit_length())
-        max_idx = len(prev) - 1
-        max_idx_bv = BitVecVal(max_idx if max_idx >= 0 else 0, idx_bits)
+        idx_bits = max(1, (prev_len - 1).bit_length())
+        idx_sort = BitVecSort(idx_bits)
+        max_idx = prev_len - 1
+        max_idx_bv = BitVecVal(max_idx, idx_bits)
         op_or = BitVecVal(0, OP_BITS)
         op_and = BitVecVal(1, OP_BITS)
         op_xor = BitVecVal(2, OP_BITS)
         op_not = BitVecVal(3, OP_BITS)
         op_nop = BitVecVal(4, OP_BITS)
+
+        # Build array mapping index -> predecessor value
+        prev_array = K(idx_sort, BitVecVal(0, width))
+        for k, prev_val in enumerate(prev):
+            prev_array = Store(prev_array, BitVecVal(k, idx_bits), prev_val)
         for j in range(LAYERS[i]):
             out = BitVec(f"BV_{i}_{j}", width)
             left_idx = BitVec(f"L_{i}_{j}_left_idx", idx_bits)
@@ -291,8 +296,8 @@ def build_network_bitvec(width: int, input_vals: List[int]) -> Tuple[List[List],
             # Operator domain (implicitly 0..4 via bit-width and encoding)
             constraints.append(Or(op == op_or, op == op_and, op == op_xor, op == op_not, op == op_nop))
 
-            left_expr = _select_bv(prev, left_idx, width)
-            right_expr = _select_bv(prev, right_idx, width)
+            left_expr = Select(prev_array, left_idx)
+            right_expr = Select(prev_array, right_idx)
 
             # Symmetry breaking and well-formed binary wiring
             is_binary = Or(op == op_or, op == op_and, op == op_xor)
@@ -431,7 +436,7 @@ def main():
     for j in range(NUM_OUTPUTS):
         constraints.append(last_layer[j] == BitVecVal(output_vals[j], width))
 
-    s = SolverFor("QF_BV")
+    s = SolverFor("QF_AUFBV")
     s.add(*constraints)
 
     # Solve the formula
