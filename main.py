@@ -13,17 +13,13 @@ from z3 import (
     Bool,
     BoolVal,
     BitVec,
-    BitVecSort,
     BitVecVal,
     If,
     Implies,
-    K,
     Not,
     Or,
     PbEq,
-    Select,
     SolverFor,
-    Store,
     ULE,
     ULT,
     Xor,
@@ -252,6 +248,13 @@ def _build_dataset_adder() -> Tuple[int, List[int], List[int]]:
     return width, input_vals, output_vals
 
 
+def _select_bv(prev_list: List, idx_var, width: int, bits: int):
+    expr = BitVecVal(0, width)
+    for k, prev_val in enumerate(prev_list):
+        expr = If(idx_var == BitVecVal(k, bits), prev_val, expr)
+    return expr
+
+
 def build_network_bitvec(width: int, input_vals: List[int]) -> Tuple[List[List], List[List]]:
     """Build bitvector-valued network variables and constraints.
     Returns (constraints, node_bv_values) where node_bv_values[i][j] is the BV value for layer i node j.
@@ -270,7 +273,6 @@ def build_network_bitvec(width: int, input_vals: List[int]) -> Tuple[List[List],
             raise ValueError(f"Layer {i-1} has no nodes to connect")
         curr_vals: List = []
         idx_bits = max(1, (prev_len - 1).bit_length())
-        idx_sort = BitVecSort(idx_bits)
         max_idx = prev_len - 1
         max_idx_bv = BitVecVal(max_idx, idx_bits)
         op_or = BitVecVal(0, OP_BITS)
@@ -278,11 +280,9 @@ def build_network_bitvec(width: int, input_vals: List[int]) -> Tuple[List[List],
         op_xor = BitVecVal(2, OP_BITS)
         op_not = BitVecVal(3, OP_BITS)
         op_nop = BitVecVal(4, OP_BITS)
-
-        # Build array mapping index -> predecessor value
-        prev_array = K(idx_sort, BitVecVal(0, width))
-        for k, prev_val in enumerate(prev):
-            prev_array = Store(prev_array, BitVecVal(k, idx_bits), prev_val)
+        layer_ops: List = []
+        layer_lefts: List = []
+        layer_rights: List = []
         for j in range(LAYERS[i]):
             out = BitVec(f"BV_{i}_{j}", width)
             left_idx = BitVec(f"L_{i}_{j}_left_idx", idx_bits)
@@ -296,8 +296,8 @@ def build_network_bitvec(width: int, input_vals: List[int]) -> Tuple[List[List],
             # Operator domain (implicitly 0..4 via bit-width and encoding)
             constraints.append(Or(op == op_or, op == op_and, op == op_xor, op == op_not, op == op_nop))
 
-            left_expr = Select(prev_array, left_idx)
-            right_expr = Select(prev_array, right_idx)
+            left_expr = _select_bv(prev, left_idx, width, idx_bits)
+            right_expr = _select_bv(prev, right_idx, width, idx_bits)
 
             # Symmetry breaking and well-formed binary wiring
             is_binary = Or(op == op_or, op == op_and, op == op_xor)
@@ -315,7 +315,29 @@ def build_network_bitvec(width: int, input_vals: List[int]) -> Tuple[List[List],
                          left_expr))))  # NOP
             constraints.append(out == gate_expr)
             curr_vals.append(out)
+            layer_ops.append(op)
+            layer_lefts.append(left_idx)
+            layer_rights.append(right_idx)
         layer_values.append(curr_vals)
+
+        # Lexicographic ordering within non-output layers: compare (op, left_idx, right_idx)
+        if i != len(LAYERS) - 1:
+            for j in range(len(layer_ops) - 1):
+                op_a, op_b = layer_ops[j], layer_ops[j + 1]
+                left_a, left_b = layer_lefts[j], layer_lefts[j + 1]
+                right_a, right_b = layer_rights[j], layer_rights[j + 1]
+                constraints.append(
+                    Or(
+                        ULT(op_a, op_b),
+                        And(
+                            op_a == op_b,
+                            Or(
+                                ULT(left_a, left_b),
+                                And(left_a == left_b, ULE(right_a, right_b))
+                            )
+                        )
+                    )
+                )
 
     return constraints, layer_values
 
@@ -438,7 +460,7 @@ def main():
     for j in range(NUM_OUTPUTS):
         constraints.append(last_layer[j] == BitVecVal(output_vals[j], width))
 
-    s = SolverFor("QF_AUFBV")
+    s = SolverFor("QF_BV")
     s.add(*constraints)
 
     # Solve the formula
