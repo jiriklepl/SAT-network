@@ -81,8 +81,8 @@ def build_program(width: int, input_vals: List[int], tag: str) -> Tuple[List, Li
     if PROGRAM_LENGTH < 0:
         raise ValueError("PROGRAM_LENGTH must be non-negative")
 
-    total_sources = NUM_INPUTS + PROGRAM_LENGTH
-    idx_bits = max(1, total_sources.bit_length())
+    total_sources = NUM_INPUTS + 2 + PROGRAM_LENGTH  # inputs + const0 + const1 + temps
+    idx_bits = max(1, (total_sources - 1).bit_length())
 
     op_or = BitVecVal(0, OP_BITS)
     op_and = BitVecVal(1, OP_BITS)
@@ -93,19 +93,19 @@ def build_program(width: int, input_vals: List[int], tag: str) -> Tuple[List, Li
     # Seed values with the batch input truth tables
     values: List = [BitVecVal(input_vals[j], width) for j in range(NUM_INPUTS)]
 
+    values.append(BitVecVal(0, width))  # constant 0
     values.append(BitVecVal(1, width))  # constant 1
 
     for instr in range(PROGRAM_LENGTH):
-        max_idx = NUM_INPUTS + instr
-        clamp = NUM_INPUTS if max_idx < NUM_INPUTS else max_idx
-        max_idx_bv = BitVecVal(clamp, idx_bits)
+        max_idx = NUM_INPUTS + 1 + instr  # inputs + const0 + const1 + previous temps
+        max_idx_bv = BitVecVal(max_idx, idx_bits)
 
         op = BitVec(f"OP_{instr}", OP_BITS)
         src1 = BitVec(f"S1_{instr}", idx_bits)
         src2 = BitVec(f"S2_{instr}", idx_bits)
         val = BitVec(f"VAL_{tag}_{instr}", width)
 
-        constraints.append(Or(op == op_or, op == op_and, op == op_xor))
+        constraints.append(ULE(op, op_xor))  # valid op
         constraints.append(ULE(src1, max_idx_bv))
         constraints.append(ULE(src2, max_idx_bv))
 
@@ -113,7 +113,7 @@ def build_program(width: int, input_vals: List[int], tag: str) -> Tuple[List, Li
         right_expr = _select_bv(values, src2, idx_bits, width)
 
 
-        constraints.append(ULE(src1, src2))
+        constraints.append(ULT(src1, src2))
 
         gate_expr = If(
             op == op_or,
@@ -128,7 +128,7 @@ def build_program(width: int, input_vals: List[int], tag: str) -> Tuple[List, Li
         values.append(val)
 
     outputs: List = []
-    max_total_idx = BitVecVal(total_sources, idx_bits)
+    max_total_idx = BitVecVal(total_sources - 1, idx_bits)
     for out_idx in range(NUM_OUTPUTS):
         selector = BitVec(f"OUT_{out_idx}_idx", idx_bits)
         constraints.append(ULE(selector, max_total_idx))
@@ -312,10 +312,11 @@ def main():
         def fmt_src(idx: int) -> str:
             if idx < NUM_INPUTS:
                 return f"I{idx}"
-            elif idx == NUM_INPUTS:
+            if idx == NUM_INPUTS:
+                return "0"
+            if idx == NUM_INPUTS + 1:
                 return "1"
-            else:
-                return f"T{idx - NUM_INPUTS - 1}"
+            return f"T{idx - NUM_INPUTS - 2}"
 
         for instr in range(PROGRAM_LENGTH):
             op_ref = BitVec(f"OP_{instr}", OP_BITS)
@@ -333,7 +334,7 @@ def main():
             if op_val in (0, 1, 2):  # binary
                 print(f"T{instr}: {label}({fmt_src(s1_val)}, {fmt_src(s2_val)})")
             else:
-                print(f"T{instr}: BUF({fmt_src(s1_val)})")
+                print(f"T{instr}: ?({fmt_src(s1_val)}, {fmt_src(s2_val)})")
 
         for out_idx in range(NUM_OUTPUTS):
             selector = BitVec(f"OUT_{out_idx}_idx", idx_bits)
