@@ -301,8 +301,10 @@ def build_network_bitvec(width: int, input_vals: List[int]) -> Tuple[List[List],
 
             # Symmetry breaking and well-formed binary wiring
             is_binary = Or(op == op_or, op == op_and, op == op_xor)
+            is_unary = Or(op == op_not, op == op_nop)
             constraints.append(Implies(is_binary, left_idx != right_idx))
             constraints.append(Implies(is_binary, ULT(left_idx, right_idx)))
+            constraints.append(Implies(is_unary, left_idx == right_idx))
 
             # Gate semantics
             gate_expr = If(
