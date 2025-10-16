@@ -8,9 +8,11 @@ from typing import Tuple, List
 from z3 import (
     And,
     Bool,
+    BoolVal,
     Implies,
     Not,
     Or,
+    PbEq,
     Solver,
     Xor,
 )
@@ -63,6 +65,12 @@ NUM_OUTPUTS = 1
 LAYERS = [NUM_INPUTS] + HIDDEN_LAYERS + [NUM_OUTPUTS]  # add output layer to hidden layers
 
 
+def _pb_exactly(vars_list: List, count: int):
+    if not vars_list:
+        return BoolVal(count == 0)
+    return PbEq([(var, 1) for var in vars_list], count)
+
+
 def make_structure() -> List:
     constraints: List = []
 
@@ -109,35 +117,22 @@ def make_structure() -> List:
             constraints.append(binary == Or(hor, hand, hxor))
             constraints.append(unary == Or(hnot, hnop))
 
-            constraints.append(Implies(hor, And(Not(hand), Not(hxor))))
-            constraints.append(Implies(hand, And(Not(hor), Not(hxor))))
-            constraints.append(Implies(hxor, And(Not(hor), Not(hand))))
+            constraints.append(Implies(binary, _pb_exactly([hor, hand, hxor], 1)))
+            constraints.append(Implies(Not(binary), _pb_exactly([hor, hand, hxor], 0)))
+            constraints.append(Implies(unary, _pb_exactly([hnot, hnop], 1)))
+            constraints.append(Implies(Not(unary), _pb_exactly([hnot, hnop], 0)))
 
-            constraints.append(Implies(hnot, Not(hnop)))
-            constraints.append(Implies(hnop, Not(hnot)))
-
-            # At least one left operand when active
             lefts = [Bool(f"L_{i}_{j}_left_{k}") for k in range(LAYERS[i - 1])]
             rights = [Bool(f"L_{i}_{j}_right_{k}") for k in range(LAYERS[i - 1])]
-            constraints.append(Implies(active, Or(*lefts)))
-            # At least one right operand iff binary
-            constraints.append(Implies(binary, Or(*rights)))
-            # No right operand when unary
-            constraints.append(Implies(unary, And(*[Not(x) for x in rights])))
+            constraints.append(Implies(active, _pb_exactly(lefts, 1)))
+            constraints.append(Implies(Not(active), _pb_exactly(lefts, 0)))
+            constraints.append(Implies(binary, _pb_exactly(rights, 1)))
+            constraints.append(Implies(Not(binary), _pb_exactly(rights, 0)))
 
-            # Mutual exclusion within lefts/rights and between matching left/right
             for k in range(LAYERS[i - 1]):
                 lk = Bool(f"L_{i}_{j}_left_{k}")
                 rk = Bool(f"L_{i}_{j}_right_{k}")
-                constraints.append(Implies(lk, Not(rk)))
-                constraints.append(Implies(rk, Not(lk)))
-
-                for l in range(LAYERS[i - 1]):
-                    if k != l:
-                        lk2 = Bool(f"L_{i}_{j}_left_{l}")
-                        rk2 = Bool(f"L_{i}_{j}_right_{l}")
-                        constraints.append(Implies(lk, Not(lk2)))
-                        constraints.append(Implies(rk, Not(rk2)))
+                constraints.append(Not(And(lk, rk)))
 
     return constraints
 
@@ -171,12 +166,7 @@ def make_test(counter: int, inputs: list, outputs: list):
     # V_counter_i_j
     for i in range(1, len(LAYERS)):
         for j in range(LAYERS[i]):
-            # Copy the values of the left operand and the right operand to new variables
-            left_operand = Bool(f"V_left_{counter}_{i}_{j}")
-            right_operand = Bool(f"V_right_{counter}_{i}_{j}")
             active = Bool(f"L_{i}_{j}_active")
-
-            local_exprs: List = []
 
             hor = Bool(f"L_{i}_{j}_or")
             hand = Bool(f"L_{i}_{j}_and")
@@ -185,23 +175,24 @@ def make_test(counter: int, inputs: list, outputs: list):
             hnot = Bool(f"L_{i}_{j}_not")
             hnop = Bool(f"L_{i}_{j}_nop")
 
-            for k in range(LAYERS[i - 1]):
-                left_sel = Bool(f"L_{i}_{j}_left_{k}")
-                right_sel = Bool(f"L_{i}_{j}_right_{k}")
-                prev_val = Bool(f"V_{counter}_{i - 1}_{k}")
-                local_exprs.append(Implies(left_sel, left_operand == prev_val))
-                local_exprs.append(Implies(right_sel, right_operand == prev_val))
+            prev_vals = [Bool(f"V_{counter}_{i - 1}_{k}") for k in range(LAYERS[i - 1])]
+            left_choices = [Bool(f"L_{i}_{j}_left_{k}") for k in range(LAYERS[i - 1])]
+            right_choices = [Bool(f"L_{i}_{j}_right_{k}") for k in range(LAYERS[i - 1])]
 
-            # Calculate the value of the node according to the chosen operation
+            left_terms = [And(sel, val) for sel, val in zip(left_choices, prev_vals)]
+            right_terms = [And(sel, val) for sel, val in zip(right_choices, prev_vals)]
+
+            left_expr = Or(*left_terms) if left_terms else BoolVal(False)
+            right_expr = Or(*right_terms) if right_terms else BoolVal(False)
+
             out_val = Bool(f"V_{counter}_{i}_{j}")
-            local_exprs.append(Implies(hor, out_val == Or(left_operand, right_operand)))
-            local_exprs.append(Implies(hand, out_val == And(left_operand, right_operand)))
-            local_exprs.append(Implies(hxor, out_val == Xor(left_operand, right_operand)))
-
-            local_exprs.append(Implies(hnot, out_val == Not(left_operand)))
-            local_exprs.append(Implies(hnop, out_val == left_operand))
-
-            constraints.append(Implies(active, And(*local_exprs)))
+            constraints.append(Implies(active, And(
+                Implies(hor, out_val == Or(left_expr, right_expr)),
+                Implies(hand, out_val == And(left_expr, right_expr)),
+                Implies(hxor, out_val == Xor(left_expr, right_expr)),
+                Implies(hnot, out_val == Not(left_expr)),
+                Implies(hnop, out_val == left_expr),
+            )))
 
     return constraints
 
@@ -230,7 +221,7 @@ def main():
                     inputs, outputs = make_gol_test_case(i, j, k, alive)
                     test_case = make_test(counter, inputs, outputs)
                     constraints += test_case
-                    logger.info("Test case formula: {}".format(test_case))
+                    logger.info(f"Test case constraints: {test_case}")
 
                     counter += 1
 
@@ -242,7 +233,7 @@ def main():
     #             inputs, outputs = make_3_bits_adder_test_case(left, center, right)
     #             test_case = make_test(counter, inputs, outputs)
     #             constraints += test_case
-    #             logger.info("Test case constraints: {}".format(len(test_case)))
+    #             logger.info(f"Test case constraints: {len(test_case)}")
 
     #             counter += 1
 
