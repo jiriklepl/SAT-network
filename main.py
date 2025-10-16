@@ -9,20 +9,15 @@ from pathlib import Path
 from typing import Tuple, List, Dict, Any
 
 from z3 import (
-    And,
-    Bool,
-    BoolVal,
     BitVec,
     BitVecVal,
     If,
-    Implies,
-    Not,
     Or,
-    PbEq,
-    SolverFor,
+    Tactic,
+    Then,
     ULE,
     ULT,
-    Xor,
+    Implies,
 )
 
 def make_gol_test_case(left_column: int, center_column: int, right_column: int, alive: bool) -> Tuple[list[bool], list[bool]]:
@@ -60,286 +55,91 @@ def make_3_bits_adder_test_case(left_bit: bool, center_bit: bool, right_bit: boo
     outputs.append(sum // 2 % 2 != 0)  # top bit
     return inputs, outputs
 
-# Defaults (can be overridden by config/CLI)
-HIDDEN_LAYERS = [8, 8, 4, 2]
+# Defaults (overridden by config/CLI)
 NUM_INPUTS = 7
 NUM_OUTPUTS = 1
+PROGRAM_LENGTH = 16
 
-LAYERS = [NUM_INPUTS] + HIDDEN_LAYERS + [NUM_OUTPUTS]  # recomputed in main()
-
-OP_BITS = 3  # enough to encode the 5 supported operations
-OP_LABELS = {0: 'OR', 1: 'AND', 2: 'XOR', 3: 'NOT', 4: 'NOP'}
-
-
-def _pb_exactly(vars_list: List, count: int):
-    if not vars_list:
-        return BoolVal(count == 0)
-    return PbEq([(var, 1) for var in vars_list], count)
+OP_BITS = 3  # enough to encode the supported operations
+OP_LABELS = {0: 'OR', 1: 'AND', 2: 'XOR', 3: 'NOT', 4: 'BUF'}
 
 
-# -------- Original boolean-based builder (kept for reference) --------
+def _select_bv(values: List, idx_var, bits: int, width: int):
+    result = BitVecVal(0, width)
+    for idx, value in enumerate(values):
+        result = If(idx_var == BitVecVal(idx, bits), value, result)
+    return result
 
 
-def make_structure() -> List:
-    constraints: List = []
+def build_program(width: int, input_vals: List[int], tag: str) -> Tuple[List, List]:
+    """Build SSA-style straight-line program constraints for a batch.
 
-    # Input layer nodes are active
-    for i in range(LAYERS[0]):
-        active = Bool(f"L_0_{i}_active")
-        constraints.append(active)
-
-    # Output layer nodes are active
-    for i in range(LAYERS[-1]):
-        active = Bool(f"L_{len(LAYERS) - 1}_{i}_active")
-        constraints.append(active)
-
-    # Node activity depends on connections from the next layer
-    for i in range(0, len(LAYERS) - 1):
-        for j in range(LAYERS[i]):
-            active = Bool(f"L_{i}_{j}_active")
-            ors = []
-            for k in range(LAYERS[i + 1]):
-                next_active = Bool(f"L_{i + 1}_{k}_active")
-                left_ij = Bool(f"L_{i + 1}_{k}_left_{j}")
-                right_ij = Bool(f"L_{i + 1}_{k}_right_{j}")
-                ors.append(Or(And(left_ij, next_active), And(right_ij, next_active)))
-            constraints.append(active == Or(*ors))
-
-    # Operator selection and wiring constraints
-    for i in range(1, len(LAYERS)):
-        for j in range(LAYERS[i]):
-            binary = Bool(f"L_{i}_{j}_binary")
-            unary = Bool(f"L_{i}_{j}_unary")
-            active = Bool(f"L_{i}_{j}_active")
-
-            hor = Bool(f"L_{i}_{j}_or")
-            hand = Bool(f"L_{i}_{j}_and")
-            hxor = Bool(f"L_{i}_{j}_xor")
-
-            hnot = Bool(f"L_{i}_{j}_not")
-            hnop = Bool(f"L_{i}_{j}_nop")
-
-            constraints.append(active == Or(binary, unary))
-            constraints.append(Implies(binary, Not(unary)))
-            constraints.append(Implies(unary, Not(binary)))
-
-            constraints.append(binary == Or(hor, hand, hxor))
-            constraints.append(unary == Or(hnot, hnop))
-
-            constraints.append(Implies(binary, _pb_exactly([hor, hand, hxor], 1)))
-            constraints.append(Implies(Not(binary), _pb_exactly([hor, hand, hxor], 0)))
-            constraints.append(Implies(unary, _pb_exactly([hnot, hnop], 1)))
-            constraints.append(Implies(Not(unary), _pb_exactly([hnot, hnop], 0)))
-
-            lefts = [Bool(f"L_{i}_{j}_left_{k}") for k in range(LAYERS[i - 1])]
-            rights = [Bool(f"L_{i}_{j}_right_{k}") for k in range(LAYERS[i - 1])]
-            constraints.append(Implies(active, _pb_exactly(lefts, 1)))
-            constraints.append(Implies(Not(active), _pb_exactly(lefts, 0)))
-            constraints.append(Implies(binary, _pb_exactly(rights, 1)))
-            constraints.append(Implies(Not(binary), _pb_exactly(rights, 0)))
-
-            for k in range(LAYERS[i - 1]):
-                lk = Bool(f"L_{i}_{j}_left_{k}")
-                rk = Bool(f"L_{i}_{j}_right_{k}")
-                constraints.append(Not(And(lk, rk)))
-
-    return constraints
-
-def make_test(counter: int, inputs: list, outputs: list):
-    '''
-    Make a test case for the neural network.
-    counter is used to generate unique names for the variables in the test case.
-    inputs is a list of inputs to the neural network (logic values)
-    output is a list of outputs from the neural network (logic values)
-    '''
-    constraints: List = []
-    
-    assert len(inputs) == NUM_INPUTS
-    assert len(outputs) == NUM_OUTPUTS
-
-    # Encode the test case (truth table for the inputs and the expected outputs)
-    # V_counter_i_j
-    # Assert the expected truth values for each input
-    for j, value in enumerate(inputs):
-        atom = Bool(f"V_{counter}_0_{j}")
-        constraints.append(atom if value else Not(atom))
-
-    # Assert the expected truth values for each output
-    for j, value in enumerate(outputs):
-        atom = Bool(f"V_{counter}_{len(LAYERS) - 1}_{j}")
-        constraints.append(atom if value else Not(atom))
-
-    # Encode the evaluation of the neural network
-    #  for each node, the value of the left operand and the right operand is copied to new variables
-    #  then, for every possible configuration of the node, the value of the node is calculated according to the values of the operands and the chosen operation (e.g., L_i_j_or)
-    # V_counter_i_j
-    for i in range(1, len(LAYERS)):
-        for j in range(LAYERS[i]):
-            active = Bool(f"L_{i}_{j}_active")
-
-            hor = Bool(f"L_{i}_{j}_or")
-            hand = Bool(f"L_{i}_{j}_and")
-            hxor = Bool(f"L_{i}_{j}_xor")
-
-            hnot = Bool(f"L_{i}_{j}_not")
-            hnop = Bool(f"L_{i}_{j}_nop")
-
-            prev_vals = [Bool(f"V_{counter}_{i - 1}_{k}") for k in range(LAYERS[i - 1])]
-            left_choices = [Bool(f"L_{i}_{j}_left_{k}") for k in range(LAYERS[i - 1])]
-            right_choices = [Bool(f"L_{i}_{j}_right_{k}") for k in range(LAYERS[i - 1])]
-
-            left_terms = [And(sel, val) for sel, val in zip(left_choices, prev_vals)]
-            right_terms = [And(sel, val) for sel, val in zip(right_choices, prev_vals)]
-
-            left_expr = Or(*left_terms) if left_terms else BoolVal(False)
-            right_expr = Or(*right_terms) if right_terms else BoolVal(False)
-
-            out_val = Bool(f"V_{counter}_{i}_{j}")
-            constraints.append(Implies(active, And(
-                Implies(hor, out_val == Or(left_expr, right_expr)),
-                Implies(hand, out_val == And(left_expr, right_expr)),
-                Implies(hxor, out_val == Xor(left_expr, right_expr)),
-                Implies(hnot, out_val == Not(left_expr)),
-                Implies(hnop, out_val == left_expr),
-            )))
-
-    return constraints
-
-
-# -------- BitVector-based, index-encoded builder (optimized) --------
-
-def _build_dataset_gol() -> Tuple[int, List[int], List[int]]:
-    tests: List[Tuple[List[bool], List[bool]]] = []
-    for i in range(4):
-        for j in range(3):
-            for k in range(4):
-                for alive in [True, False]:
-                    inputs, outputs = make_gol_test_case(i, j, k, alive)
-                    tests.append((inputs, outputs))
-    width = len(tests)
-    input_vals = [0] * NUM_INPUTS
-    output_vals = [0] * NUM_OUTPUTS
-    for t_idx, (ins, outs) in enumerate(tests):
-        for j in range(NUM_INPUTS):
-            if ins[j]:
-                input_vals[j] |= (1 << t_idx)
-        for j in range(NUM_OUTPUTS):
-            if outs[j]:
-                output_vals[j] |= (1 << t_idx)
-    return width, input_vals, output_vals
-
-
-def _build_dataset_adder() -> Tuple[int, List[int], List[int]]:
-    tests: List[Tuple[List[bool], List[bool]]] = []
-    for left in [True, False]:
-        for center in [True, False]:
-            for right in [True, False]:
-                tests.append(make_3_bits_adder_test_case(left, center, right))
-    width = len(tests)
-    input_vals = [0] * NUM_INPUTS
-    output_vals = [0] * NUM_OUTPUTS
-    for t_idx, (ins, outs) in enumerate(tests):
-        for j in range(NUM_INPUTS):
-            if ins[j]:
-                input_vals[j] |= (1 << t_idx)
-        for j in range(NUM_OUTPUTS):
-            if outs[j]:
-                output_vals[j] |= (1 << t_idx)
-    return width, input_vals, output_vals
-
-
-def _select_bv(prev_list: List, idx_var, width: int, bits: int):
-    expr = BitVecVal(0, width)
-    for k, prev_val in enumerate(prev_list):
-        expr = If(idx_var == BitVecVal(k, bits), prev_val, expr)
-    return expr
-
-
-def build_network_bitvec(width: int, input_vals: List[int], tag: str) -> Tuple[List, List]:
-    """Build bitvector-valued network variables and constraints for a batch tag.
-    Returns (constraints, last_layer_values).
+    Returns a tuple (constraints, outputs) where outputs is a list of
+    bit-vector expressions representing the program outputs for this batch.
     """
+    if PROGRAM_LENGTH < 0:
+        raise ValueError("PROGRAM_LENGTH must be non-negative")
+
+    total_sources = NUM_INPUTS + PROGRAM_LENGTH
+    idx_bits = max(1, (total_sources - 1).bit_length())
+
+    op_or = BitVecVal(0, OP_BITS)
+    op_and = BitVecVal(1, OP_BITS)
+    op_xor = BitVecVal(2, OP_BITS)
+    op_not = BitVecVal(3, OP_BITS)
+    op_buf = BitVecVal(4, OP_BITS)
+
     constraints: List = []
-    # Initialize input layer BV constants
-    layer_values: List[List] = []
-    input_bvs = [BitVecVal(input_vals[j], width) for j in range(LAYERS[0])]
-    layer_values.append(input_bvs)
 
-    # For layers > 0, create BitVec vars and index/op BitVec vars
-    for i in range(1, len(LAYERS)):
-        prev = layer_values[i - 1]
-        prev_len = len(prev)
-        if prev_len == 0:
-            raise ValueError(f"Layer {i-1} has no nodes to connect")
-        curr_vals: List = []
-        idx_bits = max(1, (prev_len - 1).bit_length())
-        max_idx = prev_len - 1
-        max_idx_bv = BitVecVal(max_idx, idx_bits)
-        op_or = BitVecVal(0, OP_BITS)
-        op_and = BitVecVal(1, OP_BITS)
-        op_xor = BitVecVal(2, OP_BITS)
-        op_not = BitVecVal(3, OP_BITS)
-        op_nop = BitVecVal(4, OP_BITS)
-        layer_ops: List = []
-        layer_lefts: List = []
-        layer_rights: List = []
-        for j in range(LAYERS[i]):
-            out = BitVec(f"BV_{tag}_{i}_{j}", width)
-            left_idx = BitVec(f"L_{i}_{j}_left_idx", idx_bits)
-            right_idx = BitVec(f"L_{i}_{j}_right_idx", idx_bits)
-            op = BitVec(f"L_{i}_{j}_op", OP_BITS)
+    # Seed values with the batch input truth tables
+    values: List = [BitVecVal(input_vals[j], width) for j in range(NUM_INPUTS)]
 
-            # Index domains
-            constraints.append(ULE(left_idx, max_idx_bv))
-            constraints.append(ULE(right_idx, max_idx_bv))
+    for instr in range(PROGRAM_LENGTH):
+        max_idx = NUM_INPUTS + instr - 1
+        max_idx_bv = BitVecVal(max_idx if max_idx >= 0 else NUM_INPUTS - 1, idx_bits)
 
-            # Operator domain (implicitly 0..4 via bit-width and encoding)
-            constraints.append(Or(op == op_or, op == op_and, op == op_xor, op == op_not, op == op_nop))
+        op = BitVec(f"OP_{instr}", OP_BITS)
+        src1 = BitVec(f"S1_{instr}", idx_bits)
+        src2 = BitVec(f"S2_{instr}", idx_bits)
+        val = BitVec(f"VAL_{tag}_{instr}", width)
 
-            left_expr = _select_bv(prev, left_idx, width, idx_bits)
-            right_expr = _select_bv(prev, right_idx, width, idx_bits)
+        constraints.append(Or(op == op_or, op == op_and, op == op_xor, op == op_not, op == op_buf))
+        constraints.append(ULE(src1, max_idx_bv))
+        constraints.append(ULE(src2, max_idx_bv))
 
-            # Symmetry breaking and well-formed binary wiring
-            is_binary = Or(op == op_or, op == op_and, op == op_xor)
-            is_unary = Or(op == op_not, op == op_nop)
-            constraints.append(Implies(is_binary, left_idx != right_idx))
-            constraints.append(Implies(is_binary, ULT(left_idx, right_idx)))
-            constraints.append(Implies(is_unary, left_idx == right_idx))
+        left_expr = _select_bv(values, src1, idx_bits, width)
+        right_expr = _select_bv(values, src2, idx_bits, width)
 
-            # Gate semantics
-            gate_expr = If(
-                op == op_or, left_expr | right_expr,
-                If(op == op_and, left_expr & right_expr,
-                   If(op == op_xor, left_expr ^ right_expr,
-                      If(op == op_not, ~left_expr,
-                         left_expr))))  # NOP
-            constraints.append(out == gate_expr)
-            curr_vals.append(out)
-            layer_ops.append(op)
-            layer_lefts.append(left_idx)
-            layer_rights.append(right_idx)
-        layer_values.append(curr_vals)
+        is_binary = Or(op == op_or, op == op_and, op == op_xor)
+        is_unary = Or(op == op_not, op == op_buf)
 
-        # Lexicographic ordering within non-output layers: compare (op, left_idx, right_idx)
-        if i != len(LAYERS) - 1:
-            for j in range(len(layer_ops) - 1):
-                op_a, op_b = layer_ops[j], layer_ops[j + 1]
-                left_a, left_b = layer_lefts[j], layer_lefts[j + 1]
-                right_a, right_b = layer_rights[j], layer_rights[j + 1]
-                constraints.append(
-                    Or(
-                        ULT(op_a, op_b),
-                        And(
-                            op_a == op_b,
-                            Or(
-                                ULT(left_a, left_b),
-                                And(left_a == left_b, ULE(right_a, right_b))
-                            )
-                        )
-                    )
-                )
+        constraints.append(Implies(is_binary, ULT(src1, src2)))
+        constraints.append(Implies(is_unary, src2 == src1))
 
-    return constraints, layer_values[-1]
+        gate_expr = If(
+            op == op_or,
+            left_expr | right_expr,
+            If(
+                op == op_and,
+                left_expr & right_expr,
+                If(
+                    op == op_xor,
+                    left_expr ^ right_expr,
+                    If(op == op_not, ~left_expr, left_expr),
+                ),
+            ),
+        )
+        constraints.append(val == gate_expr)
+        values.append(val)
+
+    outputs: List = []
+    max_total_idx = BitVecVal(total_sources - 1, idx_bits)
+    for out_idx in range(NUM_OUTPUTS):
+        selector = BitVec(f"OUT_{out_idx}_idx", idx_bits)
+        constraints.append(ULE(selector, max_total_idx))
+        outputs.append(_select_bv(values, selector, idx_bits, width))
+
+    return constraints, outputs
 
 
 def _pack_examples_to_bitvectors(examples: List[Dict[str, Any]], num_inputs: int, num_outputs: int) -> Tuple[int, List[int], List[int]]:
@@ -365,23 +165,25 @@ def _load_config(config_path: Path) -> Dict[str, Any]:
         return json.load(f)
 
 
-def _build_dataset_from_config(cfg: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], int, int, List[int]]:
-    """Returns (examples, num_inputs, num_outputs, hidden_layers)."""
+def _build_dataset_from_config(cfg: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], int, int, int]:
+    """Returns (examples, num_inputs, num_outputs, instructions)."""
     ctype = cfg.get("type")
-    hidden_layers = cfg.get("hidden_layers", HIDDEN_LAYERS)
+
+    def _collect_examples(data: List[Dict[str, Any]], num_inputs: int, num_outputs: int) -> List[Dict[str, Any]]:
+        result: List[Dict[str, Any]] = []
+        for ex in data:
+            ins = [bool(v) for v in ex["inputs"]]
+            outs = [bool(v) for v in ex["outputs"]]
+            if len(ins) != num_inputs or len(outs) != num_outputs:
+                raise ValueError("Example length does not match declared input/output sizes")
+            result.append({"inputs": ins, "outputs": outs})
+        return result
 
     if "examples" in cfg:
         num_inputs = int(cfg["num_inputs"])  # required
         num_outputs = int(cfg["num_outputs"])  # required
-        examples = []
-        for ex in cfg["examples"]:
-            examples.append({
-                "inputs": [bool(v) for v in ex["inputs"]],
-                "outputs": [bool(v) for v in ex["outputs"]],
-            })
-        return examples, num_inputs, num_outputs, hidden_layers
-
-    if ctype == "gol":
+        examples = _collect_examples(cfg["examples"], num_inputs, num_outputs)
+    elif ctype == "gol":
         num_inputs = int(cfg.get("num_inputs", 7))
         num_outputs = int(cfg.get("num_outputs", 1))
         gol = cfg.get("gol", {})
@@ -390,27 +192,55 @@ def _build_dataset_from_config(cfg: Dict[str, Any]) -> Tuple[List[Dict[str, Any]
         right_range = int(gol.get("right_range", 4))
         include_alive = bool(gol.get("include_alive", True))
 
-        examples: List[Dict[str, Any]] = []
+        examples = []
         for i in range(left_range):
             for j in range(center_range):
                 for k in range(right_range):
                     for alive in ([True, False] if include_alive else [False]):
                         ins, outs = make_gol_test_case(i, j, k, alive)
                         examples.append({"inputs": ins, "outputs": outs})
-        return examples, num_inputs, num_outputs, hidden_layers
-
-    if ctype in ("adder3", "adder"):
+    elif ctype in ("adder3", "adder"):
         num_inputs = int(cfg.get("num_inputs", 3))
         num_outputs = int(cfg.get("num_outputs", 2))
-        examples: List[Dict[str, Any]] = []
+        examples = []
         for left in [True, False]:
             for center in [True, False]:
                 for right in [True, False]:
                     ins, outs = make_3_bits_adder_test_case(left, center, right)
                     examples.append({"inputs": ins, "outputs": outs})
-        return examples, num_inputs, num_outputs, hidden_layers
+    else:
+        raise ValueError(f"Unsupported config type or format: {ctype}")
 
-    raise ValueError(f"Unsupported config type or format: {ctype}")
+    instructions = cfg.get("instructions")
+    if instructions is None:
+        hidden_layers = cfg.get("hidden_layers")
+        if isinstance(hidden_layers, list):
+            instructions = sum(int(x) for x in hidden_layers)
+        elif hidden_layers is not None:
+            instructions = int(hidden_layers)
+    if instructions is None:
+        instructions = PROGRAM_LENGTH
+    instructions = int(instructions)
+    if instructions < 0:
+        raise ValueError("instructions must be non-negative")
+
+    return examples, num_inputs, num_outputs, instructions
+
+
+def make_solver():
+    try:
+        tactic = Then(
+            Tactic('simplify'),
+            Tactic('propagate-values'),
+            Tactic('bit-blast'),
+            Tactic('sat'),
+        )
+        return tactic.solver()
+    except Exception:  # pragma: no cover
+        from z3 import SolverFor
+
+        return SolverFor('QF_BV')
+
 
 def main():
     logging.basicConfig(
@@ -422,10 +252,10 @@ def main():
 
     logger.info("Starting the program")
 
-    parser = argparse.ArgumentParser(description="Synthesize a logic network with z3")
+    parser = argparse.ArgumentParser(description="Synthesize a logic program with z3")
     parser.add_argument("--dataset", choices=["gol", "adder3"], default=None, help="Choose a built-in dataset config")
     parser.add_argument("--config", type=str, default=None, help="Path to a dataset JSON config")
-    parser.add_argument("--hidden-layers", type=str, default=None, help="Comma-separated hidden layer sizes, overrides config")
+    parser.add_argument("--instructions", type=int, default=None, help="Override number of SSA instructions")
     parser.add_argument("--batch-size", type=int, default=None, help="Number of examples to add per incremental batch")
     args = parser.parse_args()
 
@@ -440,40 +270,37 @@ def main():
         config_path = default_configs["gol"]
 
     cfg = _load_config(config_path)
-    examples, num_inputs, num_outputs, cfg_hidden = _build_dataset_from_config(cfg)
+    examples, num_inputs, num_outputs, cfg_instructions = _build_dataset_from_config(cfg)
     if not examples:
         raise SystemExit("Dataset contains no examples")
 
-    # Override hidden layers if requested
-    hidden_layers = cfg_hidden
-    if args.hidden_layers:
-        try:
-            hidden_layers = [int(x) for x in args.hidden_layers.split(",") if x.strip()]
-        except Exception as e:
-            raise SystemExit(f"Invalid --hidden-layers: {e}")
+    instructions = cfg_instructions
+    if args.instructions is not None:
+        instructions = args.instructions
+        if instructions < 0:
+            raise SystemExit("--instructions must be non-negative")
 
     # Update globals
-    global NUM_INPUTS, NUM_OUTPUTS, HIDDEN_LAYERS, LAYERS
+    global NUM_INPUTS, NUM_OUTPUTS, PROGRAM_LENGTH
     NUM_INPUTS = num_inputs
     NUM_OUTPUTS = num_outputs
-    HIDDEN_LAYERS = hidden_layers
-    LAYERS = [NUM_INPUTS] + HIDDEN_LAYERS + [NUM_OUTPUTS]
+    PROGRAM_LENGTH = instructions
 
     batch_size = args.batch_size if args.batch_size else len(examples)
     if batch_size <= 0:
         raise SystemExit("Batch size must be positive")
 
-    s = SolverFor("QF_BV")
+    s = make_solver()
 
     start = time.time()
     result = None
     for batch_idx, offset in enumerate(range(0, len(examples), batch_size)):
         batch = examples[offset: offset + batch_size]
         width, input_vals, output_vals = _pack_examples_to_bitvectors(batch, NUM_INPUTS, NUM_OUTPUTS)
-        constraints, last_layer = build_network_bitvec(width, input_vals, tag=f"b{batch_idx}")
+        constraints, outputs = build_program(width, input_vals, tag=f"b{batch_idx}")
         s.add(*constraints)
         for j in range(NUM_OUTPUTS):
-            s.add(last_layer[j] == BitVecVal(output_vals[j], width))
+            s.add(outputs[j] == BitVecVal(output_vals[j], width))
         result = s.check()
         if str(result) != 'sat':
             break
@@ -483,29 +310,39 @@ def main():
     if str(result) == 'sat':
         print("SAT in {:.3f} seconds".format(elapsed))
 
-        # Pretty-print a compact architecture summary: per-node (op, left_idx, right_idx)
+        # Pretty-print a compact architecture summary: per-instruction (op, src indices)
         m = s.model()
-        for i in range(1, len(LAYERS)):
-            summaries: List[str] = []
-            prev_len = LAYERS[i - 1]
-            idx_bits = max(1, (prev_len - 1).bit_length()) if prev_len > 0 else 1
-            for j in range(LAYERS[i]):
-                op_ref = BitVec(f"L_{i}_{j}_op", OP_BITS)
-                li_ref = BitVec(f"L_{i}_{j}_left_idx", idx_bits)
-                ri_ref = BitVec(f"L_{i}_{j}_right_idx", idx_bits)
-                op_val_ref = m[op_ref]
-                li_val_ref = m[li_ref]
-                ri_val_ref = m[ri_ref]
-                op_val = op_val_ref.as_long() if op_val_ref is not None else -1
-                li_val = li_val_ref.as_long() if li_val_ref is not None else -1
-                ri_val = ri_val_ref.as_long() if ri_val_ref is not None else -1
-                if op_val in (0, 1, 2):
-                    summaries.append(f"n{j}={OP_LABELS.get(op_val,'?')}(L{li_val},R{ri_val})")
-                elif op_val == 3:
-                    summaries.append(f"n{j}=NOT(L{li_val})")
-                else:
-                    summaries.append(f"n{j}=NOP(L{li_val})")
-            print(f"Layer {i}: " + ", ".join(summaries))
+        idx_bits = max(1, (NUM_INPUTS + PROGRAM_LENGTH - 1).bit_length())
+
+        def fmt_src(idx: int) -> str:
+            return f"I{idx}" if idx < NUM_INPUTS else f"T{idx - NUM_INPUTS}"
+
+        for instr in range(PROGRAM_LENGTH):
+            op_ref = BitVec(f"OP_{instr}", OP_BITS)
+            s1_ref = BitVec(f"S1_{instr}", idx_bits)
+            s2_ref = BitVec(f"S2_{instr}", idx_bits)
+            op_val_ref = m[op_ref]
+            s1_val_ref = m[s1_ref]
+            s2_val_ref = m[s2_ref]
+            if op_val_ref is None or s1_val_ref is None or s2_val_ref is None:
+                continue
+            op_val = op_val_ref.as_long()
+            s1_val = s1_val_ref.as_long()
+            s2_val = s2_val_ref.as_long()
+            label = OP_LABELS.get(op_val, '?')
+            if op_val in (0, 1, 2):  # binary
+                print(f"T{instr}: {label}({fmt_src(s1_val)}, {fmt_src(s2_val)})")
+            elif op_val == 3:
+                print(f"T{instr}: NOT({fmt_src(s1_val)})")
+            else:
+                print(f"T{instr}: BUF({fmt_src(s1_val)})")
+
+        for out_idx in range(NUM_OUTPUTS):
+            selector = BitVec(f"OUT_{out_idx}_idx", idx_bits)
+            sel_val = m[selector]
+            if sel_val is None:
+                continue
+            print(f"OUT{out_idx}: {fmt_src(sel_val.as_long())}")
     else:
         print("UNSAT in {:.3f} seconds".format(elapsed))
 
