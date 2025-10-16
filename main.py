@@ -1,20 +1,27 @@
 #!/usr/bin/env python3
 
+import argparse
+import json
 import logging
 import sys
 import time
-from typing import Tuple, List
+from pathlib import Path
+from typing import Tuple, List, Dict, Any
 
 from z3 import (
     And,
     Bool,
     BoolVal,
+    BitVec,
+    BitVecVal,
     Implies,
+    Int,
     Not,
     Or,
     PbEq,
     Solver,
     Xor,
+    If,
 )
 
 def make_gol_test_case(left_column: int, center_column: int, right_column: int, alive: bool) -> Tuple[list[bool], list[bool]]:
@@ -52,23 +59,21 @@ def make_3_bits_adder_test_case(left_bit: bool, center_bit: bool, right_bit: boo
     outputs.append(sum // 2 % 2 != 0)  # top bit
     return inputs, outputs
 
-# # Game of Life neural network
-HIDDEN_LAYERS = [8, 8, 4, 2]
+# Defaults (can be overridden by config/CLI)
+HIDDEN_LAYERS = [8, 6, 3, 2]
 NUM_INPUTS = 7
 NUM_OUTPUTS = 1
 
-# 3 bits adder neural network
-# HIDDEN_LAYERS = [3, 2]
-# NUM_INPUTS = 3
-# NUM_OUTPUTS = 2
-
-LAYERS = [NUM_INPUTS] + HIDDEN_LAYERS + [NUM_OUTPUTS]  # add output layer to hidden layers
+LAYERS = [NUM_INPUTS] + HIDDEN_LAYERS + [NUM_OUTPUTS]  # recomputed in main()
 
 
 def _pb_exactly(vars_list: List, count: int):
     if not vars_list:
         return BoolVal(count == 0)
     return PbEq([(var, 1) for var in vars_list], count)
+
+
+# -------- Original boolean-based builder (kept for reference) --------
 
 
 def make_structure() -> List:
@@ -196,6 +201,170 @@ def make_test(counter: int, inputs: list, outputs: list):
 
     return constraints
 
+
+# -------- BitVector-based, index-encoded builder (optimized) --------
+
+def _build_dataset_gol() -> Tuple[int, List[int], List[int]]:
+    tests: List[Tuple[List[bool], List[bool]]] = []
+    for i in range(4):
+        for j in range(3):
+            for k in range(4):
+                for alive in [True, False]:
+                    inputs, outputs = make_gol_test_case(i, j, k, alive)
+                    tests.append((inputs, outputs))
+    width = len(tests)
+    input_vals = [0] * NUM_INPUTS
+    output_vals = [0] * NUM_OUTPUTS
+    for t_idx, (ins, outs) in enumerate(tests):
+        for j in range(NUM_INPUTS):
+            if ins[j]:
+                input_vals[j] |= (1 << t_idx)
+        for j in range(NUM_OUTPUTS):
+            if outs[j]:
+                output_vals[j] |= (1 << t_idx)
+    return width, input_vals, output_vals
+
+
+def _build_dataset_adder() -> Tuple[int, List[int], List[int]]:
+    tests: List[Tuple[List[bool], List[bool]]] = []
+    for left in [True, False]:
+        for center in [True, False]:
+            for right in [True, False]:
+                tests.append(make_3_bits_adder_test_case(left, center, right))
+    width = len(tests)
+    input_vals = [0] * NUM_INPUTS
+    output_vals = [0] * NUM_OUTPUTS
+    for t_idx, (ins, outs) in enumerate(tests):
+        for j in range(NUM_INPUTS):
+            if ins[j]:
+                input_vals[j] |= (1 << t_idx)
+        for j in range(NUM_OUTPUTS):
+            if outs[j]:
+                output_vals[j] |= (1 << t_idx)
+    return width, input_vals, output_vals
+
+
+def _select_bv(prev_list: List, idx_var, width: int):
+    expr = BitVecVal(0, width)
+    for k in range(len(prev_list)):
+        expr = If(idx_var == k, prev_list[k], expr)
+    return expr
+
+
+def build_network_bitvec(width: int, input_vals: List[int]) -> Tuple[List[List], List[List]]:
+    """Build bitvector-valued network variables and constraints.
+    Returns (constraints, node_bv_values) where node_bv_values[i][j] is the BV value for layer i node j.
+    """
+    constraints: List = []
+    # Initialize input layer BV constants
+    layer_values: List[List] = []
+    input_bvs = [BitVecVal(input_vals[j], width) for j in range(LAYERS[0])]
+    layer_values.append(input_bvs)
+
+    # For layers > 0, create BitVec vars and index/op Int vars
+    for i in range(1, len(LAYERS)):
+        prev = layer_values[i - 1]
+        curr_vals: List = []
+        for j in range(LAYERS[i]):
+            out = BitVec(f"BV_{i}_{j}", width)
+            left_idx = Int(f"L_{i}_{j}_left_idx")
+            right_idx = Int(f"L_{i}_{j}_right_idx")
+            op = Int(f"L_{i}_{j}_op")  # 0=OR,1=AND,2=XOR,3=NOT,4=NOP
+
+            # Index domains
+            constraints.append(And(left_idx >= 0, left_idx < len(prev)))
+            constraints.append(And(right_idx >= 0, right_idx < len(prev)))
+            constraints.append(And(op >= 0, op <= 4))
+
+            left_expr = _select_bv(prev, left_idx, width)
+            right_expr = _select_bv(prev, right_idx, width)
+
+            # Symmetry breaking and well-formed binary wiring
+            is_binary = Or(op == 0, op == 1, op == 2)
+            constraints.append(Implies(is_binary, left_idx != right_idx))
+            constraints.append(Implies(is_binary, left_idx < right_idx))
+
+            # Gate semantics
+            gate_expr = If(
+                op == 0, left_expr | right_expr,
+                If(op == 1, left_expr & right_expr,
+                   If(op == 2, left_expr ^ right_expr,
+                      If(op == 3, ~left_expr,  # NOT
+                         left_expr))))  # NOP
+            constraints.append(out == gate_expr)
+            curr_vals.append(out)
+        layer_values.append(curr_vals)
+
+    return constraints, layer_values
+
+
+def _pack_examples_to_bitvectors(examples: List[Dict[str, Any]], num_inputs: int, num_outputs: int) -> Tuple[int, List[int], List[int]]:
+    width = len(examples)
+    input_vals = [0] * num_inputs
+    output_vals = [0] * num_outputs
+    for t_idx, ex in enumerate(examples):
+        ins = ex["inputs"]
+        outs = ex["outputs"]
+        if len(ins) != num_inputs or len(outs) != num_outputs:
+            raise ValueError("Example length does not match num_inputs/num_outputs")
+        for j in range(num_inputs):
+            if bool(ins[j]):
+                input_vals[j] |= (1 << t_idx)
+        for j in range(num_outputs):
+            if bool(outs[j]):
+                output_vals[j] |= (1 << t_idx)
+    return width, input_vals, output_vals
+
+
+def _load_config(config_path: Path) -> Dict[str, Any]:
+    with config_path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _build_dataset_from_config(cfg: Dict[str, Any]) -> Tuple[int, List[int], List[int], int, int, List[int]]:
+    """Returns (width, input_vals, output_vals, num_inputs, num_outputs, hidden_layers)."""
+    ctype = cfg.get("type")
+    hidden_layers = cfg.get("hidden_layers", HIDDEN_LAYERS)
+
+    if "examples" in cfg:
+        num_inputs = int(cfg["num_inputs"])  # required
+        num_outputs = int(cfg["num_outputs"])  # required
+        width, input_vals, output_vals = _pack_examples_to_bitvectors(cfg["examples"], num_inputs, num_outputs)
+        return width, input_vals, output_vals, num_inputs, num_outputs, hidden_layers
+
+    if ctype == "gol":
+        num_inputs = int(cfg.get("num_inputs", 7))
+        num_outputs = int(cfg.get("num_outputs", 1))
+        gol = cfg.get("gol", {})
+        left_range = int(gol.get("left_range", 4))
+        center_range = int(gol.get("center_range", 3))
+        right_range = int(gol.get("right_range", 4))
+        include_alive = bool(gol.get("include_alive", True))
+
+        examples: List[Dict[str, Any]] = []
+        for i in range(left_range):
+            for j in range(center_range):
+                for k in range(right_range):
+                    for alive in ([True, False] if include_alive else [False]):
+                        ins, outs = make_gol_test_case(i, j, k, alive)
+                        examples.append({"inputs": ins, "outputs": outs})
+        width, input_vals, output_vals = _pack_examples_to_bitvectors(examples, num_inputs, num_outputs)
+        return width, input_vals, output_vals, num_inputs, num_outputs, hidden_layers
+
+    if ctype in ("adder3", "adder"):
+        num_inputs = int(cfg.get("num_inputs", 3))
+        num_outputs = int(cfg.get("num_outputs", 2))
+        examples: List[Dict[str, Any]] = []
+        for left in [True, False]:
+            for center in [True, False]:
+                for right in [True, False]:
+                    ins, outs = make_3_bits_adder_test_case(left, center, right)
+                    examples.append({"inputs": ins, "outputs": outs})
+        width, input_vals, output_vals = _pack_examples_to_bitvectors(examples, num_inputs, num_outputs)
+        return width, input_vals, output_vals, num_inputs, num_outputs, hidden_layers
+
+    raise ValueError(f"Unsupported config type or format: {ctype}")
+
 def main():
     logging.basicConfig(
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -205,37 +374,47 @@ def main():
     logger = logging.getLogger(__name__)
 
     logger.info("Starting the program")
-    
-    constraints: List = []
 
-    structure = make_structure()
-    constraints += structure
-    logger.info("Structure constraints: {}".format(len(structure)))
+    parser = argparse.ArgumentParser(description="Synthesize a logic network with z3")
+    parser.add_argument("--dataset", choices=["gol", "adder3"], default=None, help="Choose a built-in dataset config")
+    parser.add_argument("--config", type=str, default=None, help="Path to a dataset JSON config")
+    parser.add_argument("--hidden-layers", type=str, default=None, help="Comma-separated hidden layer sizes, overrides config")
+    args = parser.parse_args()
 
-    # # Generate test cases for the Game of Life
-    counter = 0
-    for i in range(4):
-        for j in range(3):
-            for k in range(4):
-                for alive in [True, False]:
-                    inputs, outputs = make_gol_test_case(i, j, k, alive)
-                    test_case = make_test(counter, inputs, outputs)
-                    constraints += test_case
-                    logger.info(f"Test case constraints: {test_case}")
+    # Resolve config path
+    default_configs = {"gol": Path("configs/gol.json"), "adder3": Path("configs/adder3.json")}
+    config_path: Path
+    if args.config:
+        config_path = Path(args.config)
+    elif args.dataset:
+        config_path = default_configs[args.dataset]
+    else:
+        config_path = default_configs["gol"]
 
-                    counter += 1
+    cfg = _load_config(config_path)
+    width, input_vals, output_vals, num_inputs, num_outputs, cfg_hidden = _build_dataset_from_config(cfg)
 
-    # Generate test cases for the 3 bits adder
-    # counter = 0
-    # for left in [True, False]:
-    #     for center in [True, False]:
-    #         for right in [True, False]:
-    #             inputs, outputs = make_3_bits_adder_test_case(left, center, right)
-    #             test_case = make_test(counter, inputs, outputs)
-    #             constraints += test_case
-    #             logger.info(f"Test case constraints: {len(test_case)}")
+    # Override hidden layers if requested
+    hidden_layers = cfg_hidden
+    if args.hidden_layers:
+        try:
+            hidden_layers = [int(x) for x in args.hidden_layers.split(",") if x.strip()]
+        except Exception as e:
+            raise SystemExit(f"Invalid --hidden-layers: {e}")
 
-    #             counter += 1
+    # Update globals
+    global NUM_INPUTS, NUM_OUTPUTS, HIDDEN_LAYERS, LAYERS
+    NUM_INPUTS = num_inputs
+    NUM_OUTPUTS = num_outputs
+    HIDDEN_LAYERS = hidden_layers
+    LAYERS = [NUM_INPUTS] + HIDDEN_LAYERS + [NUM_OUTPUTS]
+
+    constraints, layer_values = build_network_bitvec(width, input_vals)
+
+    # Constrain outputs to match dataset
+    last_layer = layer_values[-1]
+    for j in range(NUM_OUTPUTS):
+        constraints.append(last_layer[j] == BitVecVal(output_vals[j], width))
 
     s = Solver()
     s.add(*constraints)
@@ -246,26 +425,27 @@ def main():
     elapsed = time.time() - start
 
     if str(result) == 'sat':
-        layers = [None for _ in range(len(LAYERS))]
         print("SAT in {:.3f} seconds".format(elapsed))
 
+        # Pretty-print a compact architecture summary: per-node (op, left_idx, right_idx)
         m = s.model()
-        for d in m.decls():
-            name = d.name()
-            val = m[d]
-            # Only list positive truths for layer wiring/ops (exclude helper flags)
-            if name.startswith("L_") and str(val) == 'True' and ("active" not in name and "binary" not in name and "unary" not in name):
-                parts = name.split("_")
-                if len(parts) > 1 and parts[1].isdigit():
-                    layer_idx = int(parts[1])
-                    if layers[layer_idx] is None:
-                        layers[layer_idx] = []
-                    layers[layer_idx].append(name)
-
-        for i in range(len(layers)):
-            if layers[i] is not None:
-                layers[i].sort()
-                print("Layer {}: {}".format(i, layers[i]))
+        for i in range(1, len(LAYERS)):
+            summaries: List[str] = []
+            for j in range(LAYERS[i]):
+                op = m[Int(f"L_{i}_{j}_op")]
+                li = m[Int(f"L_{i}_{j}_left_idx")]
+                ri = m[Int(f"L_{i}_{j}_right_idx")]
+                op_map = {0: 'OR', 1: 'AND', 2: 'XOR', 3: 'NOT', 4: 'NOP'}
+                op_val = op.as_long() if op is not None else -1
+                li_val = li.as_long() if li is not None else -1
+                ri_val = ri.as_long() if ri is not None else -1
+                if op_val in (0, 1, 2):
+                    summaries.append(f"n{j}={op_map.get(op_val,'?')}(L{li_val},R{ri_val})")
+                elif op_val == 3:
+                    summaries.append(f"n{j}=NOT(L{li_val})")
+                else:
+                    summaries.append(f"n{j}=NOP(L{li_val})")
+            print(f"Layer {i}: " + ", ".join(summaries))
     else:
         print("UNSAT in {:.3f} seconds".format(elapsed))
 
