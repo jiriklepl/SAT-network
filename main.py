@@ -13,6 +13,7 @@ from z3 import (
     BitVecVal,
     If,
     Or,
+    Not,
     Tactic,
     Then,
     ULE,
@@ -60,8 +61,8 @@ NUM_INPUTS = 7
 NUM_OUTPUTS = 1
 PROGRAM_LENGTH = 16
 
-OP_BITS = 3  # enough to encode the supported operations
-OP_LABELS = {0: 'OR', 1: 'AND', 2: 'XOR', 3: 'NOT', 4: 'BUF'}
+OP_BITS = 2  # encode OR, AND, XOR
+OP_LABELS = {0: 'OR', 1: 'AND', 2: 'XOR'}
 
 
 def _select_bv(values: List, idx_var, bits: int, width: int):
@@ -81,59 +82,53 @@ def build_program(width: int, input_vals: List[int], tag: str) -> Tuple[List, Li
         raise ValueError("PROGRAM_LENGTH must be non-negative")
 
     total_sources = NUM_INPUTS + PROGRAM_LENGTH
-    idx_bits = max(1, (total_sources - 1).bit_length())
+    idx_bits = max(1, total_sources.bit_length())
 
     op_or = BitVecVal(0, OP_BITS)
     op_and = BitVecVal(1, OP_BITS)
     op_xor = BitVecVal(2, OP_BITS)
-    op_not = BitVecVal(3, OP_BITS)
-    op_buf = BitVecVal(4, OP_BITS)
 
     constraints: List = []
 
     # Seed values with the batch input truth tables
     values: List = [BitVecVal(input_vals[j], width) for j in range(NUM_INPUTS)]
 
+    values.append(BitVecVal(1, width))  # constant 1
+
     for instr in range(PROGRAM_LENGTH):
-        max_idx = NUM_INPUTS + instr - 1
-        max_idx_bv = BitVecVal(max_idx if max_idx >= 0 else NUM_INPUTS - 1, idx_bits)
+        max_idx = NUM_INPUTS + instr
+        clamp = NUM_INPUTS if max_idx < NUM_INPUTS else max_idx
+        max_idx_bv = BitVecVal(clamp, idx_bits)
 
         op = BitVec(f"OP_{instr}", OP_BITS)
         src1 = BitVec(f"S1_{instr}", idx_bits)
         src2 = BitVec(f"S2_{instr}", idx_bits)
         val = BitVec(f"VAL_{tag}_{instr}", width)
 
-        constraints.append(Or(op == op_or, op == op_and, op == op_xor, op == op_not, op == op_buf))
+        constraints.append(Or(op == op_or, op == op_and, op == op_xor))
         constraints.append(ULE(src1, max_idx_bv))
         constraints.append(ULE(src2, max_idx_bv))
 
         left_expr = _select_bv(values, src1, idx_bits, width)
         right_expr = _select_bv(values, src2, idx_bits, width)
 
-        is_binary = Or(op == op_or, op == op_and, op == op_xor)
-        is_unary = Or(op == op_not, op == op_buf)
 
-        constraints.append(Implies(is_binary, ULT(src1, src2)))
-        constraints.append(Implies(is_unary, src2 == src1))
+        constraints.append(ULE(src1, src2))
 
         gate_expr = If(
             op == op_or,
-            left_expr | right_expr,
+            left_expr | right_expr, # OR
             If(
                 op == op_and,
-                left_expr & right_expr,
-                If(
-                    op == op_xor,
-                    left_expr ^ right_expr,
-                    If(op == op_not, ~left_expr, left_expr),
-                ),
+                left_expr & right_expr, # AND
+                left_expr ^ right_expr # XOR
             ),
         )
         constraints.append(val == gate_expr)
         values.append(val)
 
     outputs: List = []
-    max_total_idx = BitVecVal(total_sources - 1, idx_bits)
+    max_total_idx = BitVecVal(total_sources, idx_bits)
     for out_idx in range(NUM_OUTPUTS):
         selector = BitVec(f"OUT_{out_idx}_idx", idx_bits)
         constraints.append(ULE(selector, max_total_idx))
@@ -312,10 +307,15 @@ def main():
 
         # Pretty-print a compact architecture summary: per-instruction (op, src indices)
         m = s.model()
-        idx_bits = max(1, (NUM_INPUTS + PROGRAM_LENGTH - 1).bit_length())
+        idx_bits = max(1, (NUM_INPUTS + PROGRAM_LENGTH).bit_length())
 
         def fmt_src(idx: int) -> str:
-            return f"I{idx}" if idx < NUM_INPUTS else f"T{idx - NUM_INPUTS}"
+            if idx < NUM_INPUTS:
+                return f"I{idx}"
+            elif idx == NUM_INPUTS:
+                return "1"
+            else:
+                return f"T{idx - NUM_INPUTS - 1}"
 
         for instr in range(PROGRAM_LENGTH):
             op_ref = BitVec(f"OP_{instr}", OP_BITS)
@@ -332,8 +332,6 @@ def main():
             label = OP_LABELS.get(op_val, '?')
             if op_val in (0, 1, 2):  # binary
                 print(f"T{instr}: {label}({fmt_src(s1_val)}, {fmt_src(s2_val)})")
-            elif op_val == 3:
-                print(f"T{instr}: NOT({fmt_src(s1_val)})")
             else:
                 print(f"T{instr}: BUF({fmt_src(s1_val)})")
 
