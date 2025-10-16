@@ -255,9 +255,9 @@ def _select_bv(prev_list: List, idx_var, width: int, bits: int):
     return expr
 
 
-def build_network_bitvec(width: int, input_vals: List[int]) -> Tuple[List[List], List[List]]:
-    """Build bitvector-valued network variables and constraints.
-    Returns (constraints, node_bv_values) where node_bv_values[i][j] is the BV value for layer i node j.
+def build_network_bitvec(width: int, input_vals: List[int], tag: str) -> Tuple[List, List]:
+    """Build bitvector-valued network variables and constraints for a batch tag.
+    Returns (constraints, last_layer_values).
     """
     constraints: List = []
     # Initialize input layer BV constants
@@ -284,7 +284,7 @@ def build_network_bitvec(width: int, input_vals: List[int]) -> Tuple[List[List],
         layer_lefts: List = []
         layer_rights: List = []
         for j in range(LAYERS[i]):
-            out = BitVec(f"BV_{i}_{j}", width)
+            out = BitVec(f"BV_{tag}_{i}_{j}", width)
             left_idx = BitVec(f"L_{i}_{j}_left_idx", idx_bits)
             right_idx = BitVec(f"L_{i}_{j}_right_idx", idx_bits)
             op = BitVec(f"L_{i}_{j}_op", OP_BITS)
@@ -339,7 +339,7 @@ def build_network_bitvec(width: int, input_vals: List[int]) -> Tuple[List[List],
                     )
                 )
 
-    return constraints, layer_values
+    return constraints, layer_values[-1]
 
 
 def _pack_examples_to_bitvectors(examples: List[Dict[str, Any]], num_inputs: int, num_outputs: int) -> Tuple[int, List[int], List[int]]:
@@ -365,16 +365,21 @@ def _load_config(config_path: Path) -> Dict[str, Any]:
         return json.load(f)
 
 
-def _build_dataset_from_config(cfg: Dict[str, Any]) -> Tuple[int, List[int], List[int], int, int, List[int]]:
-    """Returns (width, input_vals, output_vals, num_inputs, num_outputs, hidden_layers)."""
+def _build_dataset_from_config(cfg: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], int, int, List[int]]:
+    """Returns (examples, num_inputs, num_outputs, hidden_layers)."""
     ctype = cfg.get("type")
     hidden_layers = cfg.get("hidden_layers", HIDDEN_LAYERS)
 
     if "examples" in cfg:
         num_inputs = int(cfg["num_inputs"])  # required
         num_outputs = int(cfg["num_outputs"])  # required
-        width, input_vals, output_vals = _pack_examples_to_bitvectors(cfg["examples"], num_inputs, num_outputs)
-        return width, input_vals, output_vals, num_inputs, num_outputs, hidden_layers
+        examples = []
+        for ex in cfg["examples"]:
+            examples.append({
+                "inputs": [bool(v) for v in ex["inputs"]],
+                "outputs": [bool(v) for v in ex["outputs"]],
+            })
+        return examples, num_inputs, num_outputs, hidden_layers
 
     if ctype == "gol":
         num_inputs = int(cfg.get("num_inputs", 7))
@@ -392,8 +397,7 @@ def _build_dataset_from_config(cfg: Dict[str, Any]) -> Tuple[int, List[int], Lis
                     for alive in ([True, False] if include_alive else [False]):
                         ins, outs = make_gol_test_case(i, j, k, alive)
                         examples.append({"inputs": ins, "outputs": outs})
-        width, input_vals, output_vals = _pack_examples_to_bitvectors(examples, num_inputs, num_outputs)
-        return width, input_vals, output_vals, num_inputs, num_outputs, hidden_layers
+        return examples, num_inputs, num_outputs, hidden_layers
 
     if ctype in ("adder3", "adder"):
         num_inputs = int(cfg.get("num_inputs", 3))
@@ -404,8 +408,7 @@ def _build_dataset_from_config(cfg: Dict[str, Any]) -> Tuple[int, List[int], Lis
                 for right in [True, False]:
                     ins, outs = make_3_bits_adder_test_case(left, center, right)
                     examples.append({"inputs": ins, "outputs": outs})
-        width, input_vals, output_vals = _pack_examples_to_bitvectors(examples, num_inputs, num_outputs)
-        return width, input_vals, output_vals, num_inputs, num_outputs, hidden_layers
+        return examples, num_inputs, num_outputs, hidden_layers
 
     raise ValueError(f"Unsupported config type or format: {ctype}")
 
@@ -423,6 +426,7 @@ def main():
     parser.add_argument("--dataset", choices=["gol", "adder3"], default=None, help="Choose a built-in dataset config")
     parser.add_argument("--config", type=str, default=None, help="Path to a dataset JSON config")
     parser.add_argument("--hidden-layers", type=str, default=None, help="Comma-separated hidden layer sizes, overrides config")
+    parser.add_argument("--batch-size", type=int, default=None, help="Number of examples to add per incremental batch")
     args = parser.parse_args()
 
     # Resolve config path
@@ -436,7 +440,9 @@ def main():
         config_path = default_configs["gol"]
 
     cfg = _load_config(config_path)
-    width, input_vals, output_vals, num_inputs, num_outputs, cfg_hidden = _build_dataset_from_config(cfg)
+    examples, num_inputs, num_outputs, cfg_hidden = _build_dataset_from_config(cfg)
+    if not examples:
+        raise SystemExit("Dataset contains no examples")
 
     # Override hidden layers if requested
     hidden_layers = cfg_hidden
@@ -453,19 +459,25 @@ def main():
     HIDDEN_LAYERS = hidden_layers
     LAYERS = [NUM_INPUTS] + HIDDEN_LAYERS + [NUM_OUTPUTS]
 
-    constraints, layer_values = build_network_bitvec(width, input_vals)
-
-    # Constrain outputs to match dataset
-    last_layer = layer_values[-1]
-    for j in range(NUM_OUTPUTS):
-        constraints.append(last_layer[j] == BitVecVal(output_vals[j], width))
+    batch_size = args.batch_size if args.batch_size else len(examples)
+    if batch_size <= 0:
+        raise SystemExit("Batch size must be positive")
 
     s = SolverFor("QF_BV")
-    s.add(*constraints)
 
-    # Solve the formula
     start = time.time()
-    result = s.check()
+    result = None
+    for batch_idx, offset in enumerate(range(0, len(examples), batch_size)):
+        batch = examples[offset: offset + batch_size]
+        width, input_vals, output_vals = _pack_examples_to_bitvectors(batch, NUM_INPUTS, NUM_OUTPUTS)
+        constraints, last_layer = build_network_bitvec(width, input_vals, tag=f"b{batch_idx}")
+        s.add(*constraints)
+        for j in range(NUM_OUTPUTS):
+            s.add(last_layer[j] == BitVecVal(output_vals[j], width))
+        result = s.check()
+        if str(result) != 'sat':
+            break
+
     elapsed = time.time() - start
 
     if str(result) == 'sat':
@@ -475,7 +487,7 @@ def main():
         m = s.model()
         for i in range(1, len(LAYERS)):
             summaries: List[str] = []
-            prev_len = len(layer_values[i - 1])
+            prev_len = LAYERS[i - 1]
             idx_bits = max(1, (prev_len - 1).bit_length()) if prev_len > 0 else 1
             for j in range(LAYERS[i]):
                 op_ref = BitVec(f"L_{i}_{j}_op", OP_BITS)
