@@ -5,6 +5,7 @@ import json
 import logging
 import sys
 import time
+import random
 from pathlib import Path
 from typing import Tuple, List, Dict, Any
 
@@ -72,7 +73,48 @@ def _select_bv(values: List, idx_var, bits: int, width: int):
     return result
 
 
-def build_program(width: int, input_vals: List[int], tag: str) -> Tuple[List, List]:
+def build_program(num_inputs: int, num_outputs: int, program_length: int) -> List:
+    """Build SSA-style straight-line program constraints (no examples).
+
+    Returns a list of constraints that define the program structure.
+    """
+    if num_inputs <= 0:
+        raise ValueError("num_inputs must be positive")
+    if num_outputs <= 0:
+        raise ValueError("num_outputs must be positive")
+    if program_length < 0:
+        raise ValueError("program_length must be non-negative")
+
+    total_sources = num_inputs + 2 + program_length  # inputs + const0 + const1 + temps
+    idx_bits = max(1, (total_sources - 1).bit_length())
+
+    op_or = BitVecVal(0, OP_BITS)
+    op_and = BitVecVal(1, OP_BITS)
+    op_xor = BitVecVal(2, OP_BITS)
+
+    constraints: List = []
+
+    for instr in range(program_length):
+        max_idx = num_inputs + 1 + instr  # inputs + const0 + const1 + previous temps
+        max_idx_bv = BitVecVal(max_idx, idx_bits)
+
+        op = BitVec(f"OP_{instr}", OP_BITS)
+        src1 = BitVec(f"S1_{instr}", idx_bits)
+        src2 = BitVec(f"S2_{instr}", idx_bits)
+
+        constraints.append(Or(op == op_or, op == op_and, op == op_xor))
+        constraints.append(ULE(src1, max_idx_bv))
+        constraints.append(ULE(src2, max_idx_bv))
+        constraints.append(ULT(src1, src2))
+
+    max_total_idx = BitVecVal(total_sources - 1, idx_bits)
+    for out_idx in range(num_outputs):
+        selector = BitVec(f"OUT_{out_idx}_idx", idx_bits)
+        constraints.append(ULE(selector, max_total_idx))
+
+    return constraints
+
+def build_test(width: int, input_vals: List[int], tag: str) -> Tuple[List, List]:
     """Build SSA-style straight-line program constraints for a batch.
 
     Returns a tuple (constraints, outputs) where outputs is a list of
@@ -86,7 +128,6 @@ def build_program(width: int, input_vals: List[int], tag: str) -> Tuple[List, Li
 
     op_or = BitVecVal(0, OP_BITS)
     op_and = BitVecVal(1, OP_BITS)
-    op_xor = BitVecVal(2, OP_BITS)
 
     constraints: List = []
 
@@ -97,23 +138,15 @@ def build_program(width: int, input_vals: List[int], tag: str) -> Tuple[List, Li
     values.append(BitVecVal(1, width))  # constant 1
 
     for instr in range(PROGRAM_LENGTH):
-        max_idx = NUM_INPUTS + 1 + instr  # inputs + const0 + const1 + previous temps
-        max_idx_bv = BitVecVal(max_idx, idx_bits)
-
         op = BitVec(f"OP_{instr}", OP_BITS)
         src1 = BitVec(f"S1_{instr}", idx_bits)
         src2 = BitVec(f"S2_{instr}", idx_bits)
         val = BitVec(f"VAL_{tag}_{instr}", width)
 
-        constraints.append(ULE(op, op_xor))  # valid op
-        constraints.append(ULE(src1, max_idx_bv))
-        constraints.append(ULE(src2, max_idx_bv))
-
         left_expr = _select_bv(values, src1, idx_bits, width)
         right_expr = _select_bv(values, src2, idx_bits, width)
 
 
-        constraints.append(ULT(src1, src2))
 
         gate_expr = If(
             op == op_or,
@@ -128,10 +161,8 @@ def build_program(width: int, input_vals: List[int], tag: str) -> Tuple[List, Li
         values.append(val)
 
     outputs: List = []
-    max_total_idx = BitVecVal(total_sources - 1, idx_bits)
     for out_idx in range(NUM_OUTPUTS):
         selector = BitVec(f"OUT_{out_idx}_idx", idx_bits)
-        constraints.append(ULE(selector, max_total_idx))
         outputs.append(_select_bv(values, selector, idx_bits, width))
 
     return constraints, outputs
@@ -287,12 +318,16 @@ def main():
 
     s = make_solver()
 
+    s.add(*build_program(NUM_INPUTS, NUM_OUTPUTS, PROGRAM_LENGTH))
+    s.check()
+
+
     start = time.time()
     result = None
     for batch_idx, offset in enumerate(range(0, len(examples), batch_size)):
         batch = examples[offset: offset + batch_size]
         width, input_vals, output_vals = _pack_examples_to_bitvectors(batch, NUM_INPUTS, NUM_OUTPUTS)
-        constraints, outputs = build_program(width, input_vals, tag=f"b{batch_idx}")
+        constraints, outputs = build_test(width, input_vals, tag=f"b{batch_idx}")
         s.add(*constraints)
         for j in range(NUM_OUTPUTS):
             s.add(outputs[j] == BitVecVal(output_vals[j], width))
