@@ -7,7 +7,7 @@ import sys
 import time
 import random
 from pathlib import Path
-from typing import Tuple, List, Dict, Any
+from typing import Tuple, List, Dict, Any, Literal
 
 from z3 import (
     BitVec,
@@ -19,7 +19,13 @@ from z3 import (
     Then,
     ULE,
     ULT,
+    SolverFor,
     Implies,
+    Solver,
+    BoolRef,
+    BitVecRef,
+    BitVecNumRef,
+    Tactic,
 )
 
 def make_gol_test_case(left_column: int, center_column: int, right_column: int, alive: bool) -> Tuple[list[bool], list[bool]]:
@@ -66,14 +72,14 @@ OP_BITS = 2  # encode OR, AND, XOR
 OP_LABELS = {0: 'OR', 1: 'AND', 2: 'XOR'}
 
 
-def _select_bv(values: List, idx_var, bits: int, width: int):
-    result = BitVecVal(0, width)
+def _select_bv(values: List[BitVecNumRef | BitVecRef], idx_var: BitVecRef, bits: int, width: int) -> BitVecNumRef | BitVecRef:
+    result: BitVecRef | BitVecNumRef = BitVecVal(0, width)
     for idx, value in enumerate(values):
         result = If(idx_var == BitVecVal(idx, bits), value, result)
     return result
 
 
-def build_program(num_inputs: int, num_outputs: int, program_length: int) -> List:
+def build_program(num_inputs: int, num_outputs: int, program_length: int) -> List[BoolRef]:
     """Build SSA-style straight-line program constraints (no examples).
 
     Returns a list of constraints that define the program structure.
@@ -92,7 +98,7 @@ def build_program(num_inputs: int, num_outputs: int, program_length: int) -> Lis
     op_and = BitVecVal(1, OP_BITS)
     op_xor = BitVecVal(2, OP_BITS)
 
-    constraints: List = []
+    constraints: List[BoolRef] = []
 
     for instr in range(program_length):
         max_idx = num_inputs + 1 + instr  # inputs + const0 + const1 + previous temps
@@ -114,7 +120,7 @@ def build_program(num_inputs: int, num_outputs: int, program_length: int) -> Lis
 
     return constraints
 
-def build_test(width: int, input_vals: List[int], tag: str) -> Tuple[List, List]:
+def build_test(width: int, input_vals: List[int], tag: str) -> Tuple[List[BoolRef | Literal[False]], List[BitVecRef | BitVecNumRef]]:
     """Build SSA-style straight-line program constraints for a batch.
 
     Returns a tuple (constraints, outputs) where outputs is a list of
@@ -129,10 +135,10 @@ def build_test(width: int, input_vals: List[int], tag: str) -> Tuple[List, List]
     op_or = BitVecVal(0, OP_BITS)
     op_and = BitVecVal(1, OP_BITS)
 
-    constraints: List = []
+    constraints: List[BoolRef | Literal[False]] = []
 
     # Seed values with the batch input truth tables
-    values: List = [BitVecVal(input_vals[j], width) for j in range(NUM_INPUTS)]
+    values: List[BitVecNumRef | BitVecRef] = [BitVecVal(input_vals[j], width) for j in range(NUM_INPUTS)]
 
     values.append(BitVecVal(0, width))  # constant 0
     values.append(BitVecVal(1, width))  # constant 1
@@ -160,7 +166,7 @@ def build_test(width: int, input_vals: List[int], tag: str) -> Tuple[List, List]
         constraints.append(val == gate_expr)
         values.append(val)
 
-    outputs: List = []
+    outputs: List[BitVecRef | BitVecNumRef] = []
     for out_idx in range(NUM_OUTPUTS):
         selector = BitVec(f"OUT_{out_idx}_idx", idx_bits)
         outputs.append(_select_bv(values, selector, idx_bits, width))
@@ -208,7 +214,7 @@ def _build_dataset_from_config(cfg: Dict[str, Any]) -> Tuple[List[Dict[str, Any]
     if "examples" in cfg:
         num_inputs = int(cfg["num_inputs"])  # required
         num_outputs = int(cfg["num_outputs"])  # required
-        examples = _collect_examples(cfg["examples"], num_inputs, num_outputs)
+        examples: List[Dict[str, List[bool]]] = _collect_examples(cfg["examples"], num_inputs, num_outputs)
     elif ctype == "gol":
         num_inputs = int(cfg.get("num_inputs", 7))
         num_outputs = int(cfg.get("num_outputs", 1))
@@ -239,12 +245,6 @@ def _build_dataset_from_config(cfg: Dict[str, Any]) -> Tuple[List[Dict[str, Any]
 
     instructions = cfg.get("instructions")
     if instructions is None:
-        hidden_layers = cfg.get("hidden_layers")
-        if isinstance(hidden_layers, list):
-            instructions = sum(int(x) for x in hidden_layers)
-        elif hidden_layers is not None:
-            instructions = int(hidden_layers)
-    if instructions is None:
         instructions = PROGRAM_LENGTH
     instructions = int(instructions)
     if instructions < 0:
@@ -253,19 +253,15 @@ def _build_dataset_from_config(cfg: Dict[str, Any]) -> Tuple[List[Dict[str, Any]
     return examples, num_inputs, num_outputs, instructions
 
 
-def make_solver():
-    try:
-        tactic = Then(
-            Tactic('simplify'),
-            Tactic('propagate-values'),
-            Tactic('bit-blast'),
-            Tactic('sat'),
-        )
-        return tactic.solver()
-    except Exception:  # pragma: no cover
-        from z3 import SolverFor
-
-        return SolverFor('QF_BV')
+def make_solver() -> Solver:
+    # return SolverFor('QF_BV')
+    tactic: Tactic = Then(
+        Tactic('simplify'),
+        Tactic('propagate-values'),
+        Tactic('bit-blast'),
+        Tactic('sat'),
+    )
+    return tactic.solver()
 
 
 def main():
@@ -321,6 +317,11 @@ def main():
     s.add(*build_program(NUM_INPUTS, NUM_OUTPUTS, PROGRAM_LENGTH))
     s.check()
 
+    logger.info("Built program structure with %d instructions", PROGRAM_LENGTH)
+    logger.info("Solver has %d assertions", len(s.assertions()))
+
+    random.seed(0)
+    random.shuffle(examples)
 
     start = time.time()
     result = None
@@ -332,8 +333,14 @@ def main():
         for j in range(NUM_OUTPUTS):
             s.add(outputs[j] == BitVecVal(output_vals[j], width))
         result = s.check()
+
+
         if str(result) != 'sat':
             break
+
+        logger.info("Solver has %d assertions after batch %d", len(s.assertions()), batch_idx + 1)
+        progress = min(offset + batch_size, len(examples))
+        logger.info("Processed %d/%d examples", progress, len(examples))
 
     elapsed = time.time() - start
 
