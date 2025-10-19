@@ -141,7 +141,7 @@ def build_test(width: int, input_vals: List[int], tag: str) -> Tuple[List[BoolRe
     values: List[BitVecNumRef | BitVecRef] = [BitVecVal(input_vals[j], width) for j in range(NUM_INPUTS)]
 
     values.append(BitVecVal(0, width))  # constant 0
-    values.append(BitVecVal(1, width))  # constant 1
+    values.append(~BitVecVal(0, width))  # constant 1
 
     for instr in range(PROGRAM_LENGTH):
         op = BitVec(f"OP_{instr}", OP_BITS)
