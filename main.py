@@ -84,6 +84,14 @@ def build_program(num_inputs: int, num_outputs: int, program_length: int) -> Lis
         src1 = BitVec(f"S1_{instr}", idx_bits)
         src2 = BitVec(f"S2_{instr}", idx_bits)
 
+
+        # Force uniqueness of (op, src1, src2) tuples
+        for pre_instr in range(instr):
+            pre_op = BitVec(f"OP_{pre_instr}", OP_BITS)
+            pre_src1 = BitVec(f"S1_{pre_instr}", idx_bits)
+            pre_src2 = BitVec(f"S2_{pre_instr}", idx_bits)
+            constraints.append(Or(pre_op != op, pre_src1 != src1, pre_src2 != src2))
+
         constraints.append(Or(op == op_or, op == op_and, op == op_xor))
         constraints.append(ULE(src1, max_idx_bv))
         constraints.append(ULE(src2, max_idx_bv))
