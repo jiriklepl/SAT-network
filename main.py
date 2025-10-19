@@ -19,7 +19,7 @@ from z3 import (
     Then,
     ULE,
     ULT,
-    SolverFor,
+    Bool,
     Implies,
     Solver,
     BoolRef,
@@ -92,6 +92,12 @@ def build_program(num_inputs: int, num_outputs: int, program_length: int) -> Lis
             pre_src2 = BitVec(f"S2_{pre_instr}", idx_bits)
             constraints.append(Or(pre_op != op, pre_src1 != src1, pre_src2 != src2))
 
+        for idx in range(max_idx + 1):
+            src1_idx = Bool(f"S1_{instr}_eq_{idx}")
+            src2_idx = Bool(f"S2_{instr}_eq_{idx}")
+            constraints.append(src1_idx == (src1 == BitVecVal(idx, idx_bits)))
+            constraints.append(src2_idx == (src2 == BitVecVal(idx, idx_bits)))
+
         constraints.append(Or(op == op_or, op == op_and, op == op_xor))
         constraints.append(ULE(src1, max_idx_bv))
         constraints.append(ULE(src2, max_idx_bv))
@@ -133,8 +139,22 @@ def build_test(width: int, input_vals: List[int], tag: str) -> Tuple[List[BoolRe
         src2 = BitVec(f"S2_{instr}", idx_bits)
         val = BitVec(f"VAL_{tag}_{instr}", width)
 
-        left_expr = _select_bv(values, src1, idx_bits)
-        right_expr = _select_bv(values, src2, idx_bits)
+        left_expr = BitVec(f"LEFT_{tag}_{instr}", width)
+        right_expr = BitVec(f"RIGHT_{tag}_{instr}", width)
+
+        for idx, value in enumerate(values):
+            src1_idx = Bool(f"S1_{instr}_eq_{idx}")
+            src2_idx = Bool(f"S2_{instr}_eq_{idx}")
+
+            constraints.append(Implies(src1_idx, left_expr == value))
+            constraints.append(Implies(src2_idx, right_expr == value))
+
+
+        left_expr_ = _select_bv(values, src1, idx_bits)
+        right_expr_ = _select_bv(values, src2, idx_bits)
+
+        constraints.append(left_expr == left_expr_)
+        constraints.append(right_expr == right_expr_)
 
         gate_expr = If(
             op == op_or,
@@ -145,6 +165,7 @@ def build_test(width: int, input_vals: List[int], tag: str) -> Tuple[List[BoolRe
                 left_expr ^ right_expr # XOR
             ),
         )
+
         constraints.append(val == gate_expr)
         values.append(val)
 
