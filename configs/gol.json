@@ -1,0 +1,12 @@
+{
+  "type": "gol",
+  "num_inputs": 7,
+  "num_outputs": 1,
+  "instructions": 16,
+  "gol": {
+    "left_range": 4,
+    "center_range": 3,
+    "right_range": 4,
+    "include_alive": true
+  }
+}

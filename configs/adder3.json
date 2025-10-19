@@ -1,0 +1,6 @@
+{
+  "type": "adder3",
+  "num_inputs": 3,
+  "num_outputs": 2,
+  "instructions": 5
+}

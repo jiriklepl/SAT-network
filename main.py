@@ -28,40 +28,9 @@ from z3 import (
     Tactic,
 )
 
-def make_gol_test_case(left_column: int, center_column: int, right_column: int, alive: bool) -> Tuple[list[bool], list[bool]]:
-    inputs: list[bool] = []
-    inputs.append(left_column % 2 != 0)
-    inputs.append(left_column // 2 % 2 != 0)
-    inputs.append(center_column % 2 != 0)
-    inputs.append(center_column // 2 % 2 != 0)
-    inputs.append(right_column % 2 != 0)
-    inputs.append(right_column // 2 % 2 != 0)
-    inputs.append(alive)
-
-    # Game of Life rules
-    outputs: list[bool] = []
-    outputs.append(
-        left_column + center_column + right_column == 3
-        or (left_column + center_column + right_column == 2 and alive)
-    )
-    return inputs, outputs
-
-def make_3_bits_adder_test_case(left_bit: bool, center_bit: bool, right_bit: bool) -> Tuple[list[bool], list[bool]]:
-    inputs: list[bool] = []
-    inputs.append(left_bit)
-    inputs.append(center_bit)
-    inputs.append(right_bit)
-    
-    left = 1 if left_bit else 0
-    center = 1 if center_bit else 0
-    right = 1 if right_bit else 0
-    
-    sum = left + center + right
-
-    outputs: list[bool] = []
-    outputs.append(sum % 2 != 0)  # bottom bit
-    outputs.append(sum // 2 % 2 != 0)  # top bit
-    return inputs, outputs
+from dataset_plugins import get_plugin
+import dataset_plugins.gol  # ensures GoL plugin registration
+import dataset_plugins.adder3  # ensures 3-bit adder plugin registration
 
 # Defaults (overridden by config/CLI)
 NUM_INPUTS = 7
@@ -220,31 +189,12 @@ def _build_dataset_from_config(cfg: Dict[str, Any]) -> Tuple[List[Dict[str, Any]
         num_inputs = int(cfg["num_inputs"])  # required
         num_outputs = int(cfg["num_outputs"])  # required
         examples: List[Dict[str, List[bool]]] = _collect_examples(cfg["examples"], num_inputs, num_outputs)
-    elif ctype == "gol":
-        num_inputs = int(cfg.get("num_inputs", 7))
-        num_outputs = int(cfg.get("num_outputs", 1))
-        gol = cfg.get("gol", {})
-        left_range = int(gol.get("left_range", 4))
-        center_range = int(gol.get("center_range", 3))
-        right_range = int(gol.get("right_range", 4))
-        include_alive = bool(gol.get("include_alive", True))
-
-        examples = []
-        for i in range(left_range):
-            for j in range(center_range):
-                for k in range(right_range):
-                    for alive in ([True, False] if include_alive else [False]):
-                        ins, outs = make_gol_test_case(i, j, k, alive)
-                        examples.append({"inputs": ins, "outputs": outs})
-    elif ctype in ("adder3", "adder"):
-        num_inputs = int(cfg.get("num_inputs", 3))
-        num_outputs = int(cfg.get("num_outputs", 2))
-        examples = []
-        for left in [True, False]:
-            for center in [True, False]:
-                for right in [True, False]:
-                    ins, outs = make_3_bits_adder_test_case(left, center, right)
-                    examples.append({"inputs": ins, "outputs": outs})
+    elif ctype:
+        try:
+            plugin = get_plugin(ctype)
+        except KeyError as exc:
+            raise ValueError(f"Unsupported config type or format: {ctype}") from exc
+        examples, num_inputs, num_outputs = plugin(cfg)
     else:
         raise ValueError(f"Unsupported config type or format: {ctype}")
 
