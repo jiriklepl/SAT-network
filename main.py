@@ -279,6 +279,7 @@ def main():
     parser.add_argument("--config", type=str, default=None, help="Path to a dataset JSON config")
     parser.add_argument("--instructions", type=int, default=None, help="Override number of SSA instructions")
     parser.add_argument("--batch-size", type=int, default=None, help="Number of examples to add per incremental batch")
+    parser.add_argument("--make-smt2", action="store_true", help="Output SMT-LIB2 format and exit")
     args = parser.parse_args()
 
     # Resolve config path
@@ -315,7 +316,8 @@ def main():
     s = make_solver()
 
     s.add(*build_program(NUM_INPUTS, NUM_OUTPUTS, PROGRAM_LENGTH))
-    s.check()
+    if not args.make_smt2:
+        s.check()
 
     logger.info("Built program structure with %d instructions", PROGRAM_LENGTH)
     logger.info("Solver has %d assertions", len(s.assertions()))
@@ -332,15 +334,21 @@ def main():
         s.add(*constraints)
         for j in range(NUM_OUTPUTS):
             s.add(outputs[j] == BitVecVal(output_vals[j], width))
-        result = s.check()
-
-
-        if str(result) != 'sat':
-            break
 
         logger.info("Solver has %d assertions after batch %d", len(s.assertions()), batch_idx + 1)
-        progress = min(offset + batch_size, len(examples))
-        logger.info("Processed %d/%d examples", progress, len(examples))
+
+        if not args.make_smt2:
+            result = s.check()
+
+            if str(result) != 'sat':
+                break
+
+            progress = min(offset + batch_size, len(examples))
+            logger.info("Processed %d/%d examples", progress, len(examples))
+    
+    if args.make_smt2:
+        print(s.to_smt2())
+        return
 
     elapsed = time.time() - start
 
