@@ -340,7 +340,9 @@ def main() -> None:
 
         # Pretty-print a compact architecture summary: per-instruction (op, src indices)
         m = s.model()
-        idx_bits = max(1, (NUM_INPUTS + PROGRAM_LENGTH).bit_length())
+
+        total_sources = NUM_INPUTS + 2 + PROGRAM_LENGTH  # inputs + const0 + const1 + temps
+        idx_bits = max(1, (total_sources - 1).bit_length())
 
         instrs: List[Tuple[int | None, int, int]] = []
 
