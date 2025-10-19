@@ -359,6 +359,8 @@ def main():
         m = s.model()
         idx_bits = max(1, (NUM_INPUTS + PROGRAM_LENGTH).bit_length())
 
+        instrs: List[Tuple[int | None, int, int]] = []
+
         def fmt_src(idx: int) -> str:
             if idx < NUM_INPUTS:
                 return f"I{idx}"
@@ -383,15 +385,56 @@ def main():
             label = OP_LABELS.get(op_val, '?')
             if op_val in (0, 1, 2):  # binary
                 print(f"T{instr}: {label}({fmt_src(s1_val)}, {fmt_src(s2_val)})")
+                instrs.append((op_val, s1_val, s2_val))
             else:
                 print(f"T{instr}: ?({fmt_src(s1_val)}, {fmt_src(s2_val)})")
+                instrs.append((None, s1_val, s2_val))
 
+        outputs: List[int | None] = []
         for out_idx in range(NUM_OUTPUTS):
             selector = BitVec(f"OUT_{out_idx}_idx", idx_bits)
             sel_val = m[selector]
             if sel_val is None:
                 continue
             print(f"OUT{out_idx}: {fmt_src(sel_val.as_long())}")
+            outputs.append(sel_val.as_long())
+
+        for idx, ex in enumerate(examples):
+            ins = ex["inputs"]
+            expected_outs = [int(bool(v)) for v in ex["outputs"]]
+
+            # Evaluate the synthesized program on this example
+            values: List[int] = [int(bool(v)) for v in ins]
+            values.append(0)  # constant 0
+            values.append(1)  # constant 1
+
+            for instr in range(PROGRAM_LENGTH):
+                op, s1_idx, s2_idx = instrs[instr]
+                if op is None:
+                    val = 0
+                else:
+                    left = values[s1_idx]
+                    right = values[s2_idx]
+                    if op == 0:  # OR
+                        val = left | right
+                    elif op == 1:  # AND
+                        val = left & right
+                    elif op == 2:  # XOR
+                        val = left ^ right
+                    else:
+                        val = 0
+                values.append(val)
+
+            actual_outs: List[int] = []
+            for out_idx in range(NUM_OUTPUTS):
+                sel_idx = outputs[out_idx]
+                if sel_idx is None:
+                    actual_outs.append(0)
+                else:
+                    actual_outs.append(values[sel_idx])
+
+            if actual_outs != expected_outs:
+                print(f"Mismatch on example {idx} with inputs {ins}: expected {expected_outs}, got {actual_outs}")
     else:
         print("UNSAT in {:.3f} seconds".format(elapsed))
 
