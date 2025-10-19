@@ -7,7 +7,7 @@ import sys
 import time
 import random
 from pathlib import Path
-from typing import Tuple, List, Dict, Any, Literal
+from typing import Tuple, List, Dict, Any, Literal, TypeVar
 
 from z3 import (
     BitVec,
@@ -72,10 +72,17 @@ OP_BITS = 2  # encode OR, AND, XOR
 OP_LABELS = {0: 'OR', 1: 'AND', 2: 'XOR'}
 
 
-def _select_bv(values: List[BitVecNumRef | BitVecRef], idx_var: BitVecRef, bits: int, width: int) -> BitVecNumRef | BitVecRef:
-    result: BitVecRef | BitVecNumRef = BitVecVal(0, width)
+T = TypeVar('T')
+def _select_bv(values: List[T], idx_var: BitVecNumRef | BitVecRef, bits: int) -> T:
+    if not values or len(values) == 0:
+        raise ValueError("values must be a non-empty list")
+
+    result : T = values[0]
     for idx, value in enumerate(values):
+        if idx == 0:
+            continue
         result = If(idx_var == BitVecVal(idx, bits), value, result)
+
     return result
 
 
@@ -149,10 +156,8 @@ def build_test(width: int, input_vals: List[int], tag: str) -> Tuple[List[BoolRe
         src2 = BitVec(f"S2_{instr}", idx_bits)
         val = BitVec(f"VAL_{tag}_{instr}", width)
 
-        left_expr = _select_bv(values, src1, idx_bits, width)
-        right_expr = _select_bv(values, src2, idx_bits, width)
-
-
+        left_expr = _select_bv(values, src1, idx_bits)
+        right_expr = _select_bv(values, src2, idx_bits)
 
         gate_expr = If(
             op == op_or,
@@ -169,7 +174,7 @@ def build_test(width: int, input_vals: List[int], tag: str) -> Tuple[List[BoolRe
     outputs: List[BitVecRef | BitVecNumRef] = []
     for out_idx in range(NUM_OUTPUTS):
         selector = BitVec(f"OUT_{out_idx}_idx", idx_bits)
-        outputs.append(_select_bv(values, selector, idx_bits, width))
+        outputs.append(_select_bv(values, selector, idx_bits))
 
     return constraints, outputs
 
