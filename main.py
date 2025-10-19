@@ -14,7 +14,6 @@ from z3 import (
     BitVecVal,
     If,
     Or,
-    Not,
     Tactic,
     Then,
     ULE,
@@ -248,7 +247,7 @@ def make_solver() -> Solver:
     return tactic.solver()
 
 
-def main():
+def main() -> None:
     logging.basicConfig(
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         level=logging.INFO,
