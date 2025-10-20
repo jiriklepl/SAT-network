@@ -38,8 +38,8 @@ NUM_INPUTS = 7
 NUM_OUTPUTS = 1
 PROGRAM_LENGTH = 16
 
-force_unique = True
-encode_boolean = True
+force_unique = False
+encode_boolean = False
 
 OP_BITS = 2  # encode OR, AND, XOR
 OP_LABELS = {0: 'OR', 1: 'AND', 2: 'XOR'}
@@ -280,21 +280,21 @@ def main() -> None:
     parser.add_argument("--make-smt2", action="store_true", help="Output SMT-LIB2 format and exit")
     parser.add_argument("--make-dimacs", action="store_true", help="Output DIMACS CNF format and exit (uses bit-blasting followed by Tseitin transformation)")
 
-    parser.add_argument("--no-encode-boolean", action="store_true", help="Disable boolean encoding optimizations")
-    parser.add_argument("--no-force-unique", action="store_true", help="Disable uniqueness constraints")
+    parser.add_argument("--encode-boolean", action="store_true", help="Enable boolean encoding")
+    parser.add_argument("--force-unique", action="store_true", help="Enable uniqueness constraints")
 
     parser.add_argument("--no-shuffle", action="store_true", help="Disable shuffling of examples")
     parser.add_argument("--seed", type=int, default=0, help="Seed for shuffling examples (None means random)")
 
     args = parser.parse_args()
 
-    if args.no_encode_boolean:
+    if args.encode_boolean:
         global encode_boolean
-        encode_boolean = False
+        encode_boolean = True
 
-    if args.no_force_unique:
+    if args.force_unique:
         global force_unique
-        force_unique = False
+        force_unique = True
 
     config_path = Path("configs")
     if args.config:
