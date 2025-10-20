@@ -37,4 +37,3 @@ def _build_from_config(cfg: Dict[str, Any]) -> DatasetResult:
 
 
 register_plugin("adder3", _build_from_config)
-register_plugin("adder", _build_from_config)
