@@ -37,6 +37,9 @@ NUM_INPUTS = 7
 NUM_OUTPUTS = 1
 PROGRAM_LENGTH = 16
 
+force_unique = True
+encode_boolean = True
+
 OP_BITS = 2  # encode OR, AND, XOR
 OP_LABELS = {0: 'OR', 1: 'AND', 2: 'XOR'}
 
@@ -86,17 +89,20 @@ def build_program(num_inputs: int, num_outputs: int, program_length: int) -> Lis
 
 
         # Force uniqueness of (op, src1, src2) tuples
-        for pre_instr in range(instr):
-            pre_op = BitVec(f"OP_{pre_instr}", OP_BITS)
-            pre_src1 = BitVec(f"S1_{pre_instr}", idx_bits)
-            pre_src2 = BitVec(f"S2_{pre_instr}", idx_bits)
-            constraints.append(Or(pre_op != op, pre_src1 != src1, pre_src2 != src2))
+        if force_unique:
+            for pre_instr in range(instr):
+                pre_op = BitVec(f"OP_{pre_instr}", OP_BITS)
+                pre_src1 = BitVec(f"S1_{pre_instr}", idx_bits)
+                pre_src2 = BitVec(f"S2_{pre_instr}", idx_bits)
+                constraints.append(Or(pre_op != op, pre_src1 != src1, pre_src2 != src2))
 
-        for idx in range(max_idx + 1):
-            src1_idx = Bool(f"S1_{instr}_eq_{idx}")
-            src2_idx = Bool(f"S2_{instr}_eq_{idx}")
-            constraints.append(src1_idx == (src1 == BitVecVal(idx, idx_bits)))
-            constraints.append(src2_idx == (src2 == BitVecVal(idx, idx_bits)))
+        # Encode boolean selection of src1 and src2
+        if encode_boolean:
+            for idx in range(max_idx + 1):
+                src1_idx = Bool(f"S1_{instr}_eq_{idx}")
+                src2_idx = Bool(f"S2_{instr}_eq_{idx}")
+                constraints.append(src1_idx == (src1 == BitVecVal(idx, idx_bits)))
+                constraints.append(src2_idx == (src2 == BitVecVal(idx, idx_bits)))
 
         constraints.append(Or(op == op_or, op == op_and, op == op_xor))
         constraints.append(ULE(src1, max_idx_bv))
@@ -139,22 +145,26 @@ def build_test(width: int, input_vals: List[int], tag: str) -> Tuple[List[BoolRe
         src2 = BitVec(f"S2_{instr}", idx_bits)
         val = BitVec(f"VAL_{tag}_{instr}", width)
 
-        left_expr = BitVec(f"LEFT_{tag}_{instr}", width)
-        right_expr = BitVec(f"RIGHT_{tag}_{instr}", width)
+        if encode_boolean:
+            left_expr = BitVec(f"LEFT_{tag}_{instr}", width)
+            right_expr = BitVec(f"RIGHT_{tag}_{instr}", width)
 
-        for idx, value in enumerate(values):
-            src1_idx = Bool(f"S1_{instr}_eq_{idx}")
-            src2_idx = Bool(f"S2_{instr}_eq_{idx}")
+            for idx, value in enumerate(values):
+                src1_idx = Bool(f"S1_{instr}_eq_{idx}")
+                src2_idx = Bool(f"S2_{instr}_eq_{idx}")
 
-            constraints.append(Implies(src1_idx, left_expr == value))
-            constraints.append(Implies(src2_idx, right_expr == value))
+                constraints.append(Implies(src1_idx, left_expr == value))
+                constraints.append(Implies(src2_idx, right_expr == value))
 
 
-        left_expr_ = _select_bv(values, src1, idx_bits)
-        right_expr_ = _select_bv(values, src2, idx_bits)
+            left_expr_ = _select_bv(values, src1, idx_bits)
+            right_expr_ = _select_bv(values, src2, idx_bits)
 
-        constraints.append(left_expr == left_expr_)
-        constraints.append(right_expr == right_expr_)
+            constraints.append(left_expr == left_expr_)
+            constraints.append(right_expr == right_expr_)
+        else:
+            left_expr = _select_bv(values, src1, idx_bits)
+            right_expr = _select_bv(values, src2, idx_bits)
 
         gate_expr = If(
             op == op_or,
@@ -266,14 +276,22 @@ def main() -> None:
     parser.add_argument("--make-smt2", action="store_true", help="Output SMT-LIB2 format and exit")
     parser.add_argument("--make-dimacs", action="store_true", help="Output DIMACS CNF format and exit (uses bit-blasting followed by Tseitin transformation)")
 
+    parser.add_argument("--no-encode-boolean", action="store_true", help="Disable boolean encoding optimizations")
+    parser.add_argument("--no-force-unique", action="store_true", help="Disable uniqueness constraints")
+
     parser.add_argument("--no-shuffle", action="store_true", help="Disable shuffling of examples")
     parser.add_argument("--seed", type=int, default=0, help="Seed for shuffling examples (None means random)")
 
     args = parser.parse_args()
 
-    # Resolve config path
-    default_configs = {"gol": Path("configs/gol.json"), "adder3": Path("configs/adder3.json")}
-    config_path: Path
+    if args.no_encode_boolean:
+        global encode_boolean
+        encode_boolean = False
+
+    if args.no_force_unique:
+        global force_unique
+        force_unique = False
+
     if args.config:
         config_path = Path(args.config)
     elif args.dataset:
