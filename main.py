@@ -336,7 +336,7 @@ def main() -> None:
     elapsed = time.time() - start
 
     if str(result) == 'sat':
-        print("SAT in {:.3f} seconds".format(elapsed))
+        print(f"SAT in {elapsed:.3f} seconds")
 
         # Pretty-print a compact architecture summary: per-instruction (op, src indices)
         m = s.model()
@@ -421,7 +421,7 @@ def main() -> None:
             if actual_outs != expected_outs:
                 print(f"Mismatch on example {idx} with inputs {ins}: expected {expected_outs}, got {actual_outs}")
     else:
-        print("UNSAT in {:.3f} seconds".format(elapsed))
+        print(f"UNSAT in {elapsed:.3f} seconds")
 
 if __name__ == "__main__":
     main()
