@@ -265,6 +265,10 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=None, help="Number of examples to add per incremental batch")
     parser.add_argument("--make-smt2", action="store_true", help="Output SMT-LIB2 format and exit")
     parser.add_argument("--make-dimacs", action="store_true", help="Output DIMACS CNF format and exit (uses bit-blasting followed by Tseitin transformation)")
+
+    parser.add_argument("--no-shuffle", action="store_true", help="Disable shuffling of examples")
+    parser.add_argument("--seed", type=int, default=0, help="Seed for shuffling examples (None means random)")
+
     args = parser.parse_args()
 
     # Resolve config path
@@ -308,8 +312,9 @@ def main() -> None:
     logger.info("Built program structure with %d instructions", PROGRAM_LENGTH)
     logger.info("Solver has %d assertions", len(s.assertions()))
 
-    random.seed(0)
-    random.shuffle(examples)
+    if not args.no_shuffle:
+        random.seed(args.seed)
+        random.shuffle(examples)
 
     start = time.time()
     result = None
