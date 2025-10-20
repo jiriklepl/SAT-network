@@ -3,6 +3,7 @@
 import argparse
 import json
 import logging
+import re
 import sys
 import time
 import random
@@ -28,7 +29,7 @@ from z3 import (
     Tactic,
 )
 
-from dataset_plugins import get_plugin
+from dataset_plugins import get_plugin, available_plugins
 import dataset_plugins.gol  # ensures GoL plugin registration
 import dataset_plugins.adder3  # ensures 3-bit adder plugin registration
 
@@ -269,8 +270,10 @@ def main() -> None:
     logger.info("Starting the program")
 
     parser = argparse.ArgumentParser(description="Synthesize a logic program with z3")
-    parser.add_argument("--dataset", choices=["gol", "adder3"], default=None, help="Choose a built-in dataset config")
-    parser.add_argument("--config", type=str, default=None, help="Path to a dataset JSON config")
+
+    parser.add_argument("--dataset", choices=list(available_plugins().keys()), default="gol", help="Choose a built-in dataset config")
+    parser.add_argument("--config", type=str, default=None, help="Path to a custom JSON config")
+
     parser.add_argument("--instructions", type=int, default=None, help="Override number of SSA instructions")
     parser.add_argument("--batch-size", type=int, default=None, help="Number of examples to add per incremental batch")
     parser.add_argument("--make-smt2", action="store_true", help="Output SMT-LIB2 format and exit")
@@ -292,12 +295,14 @@ def main() -> None:
         global force_unique
         force_unique = False
 
+    config_path = Path("configs")
     if args.config:
         config_path = Path(args.config)
     elif args.dataset:
-        config_path = default_configs[args.dataset]
+        sanitized = re.sub(r'[^a-zA-Z0-9_-]', '', args.dataset)
+        config_path = config_path / f"{sanitized}.json"
     else:
-        config_path = default_configs["gol"]
+        raise SystemExit("Either --dataset or --config must be specified")
 
     cfg = _load_config(config_path)
     examples, num_inputs, num_outputs, cfg_instructions = _build_dataset_from_config(cfg)
