@@ -23,6 +23,7 @@ from z3 import (
     Solver,
     BoolRef,
     BitVecRef,
+    Goal,
     BitVecNumRef,
     Tactic,
 )
@@ -263,6 +264,7 @@ def main() -> None:
     parser.add_argument("--instructions", type=int, default=None, help="Override number of SSA instructions")
     parser.add_argument("--batch-size", type=int, default=None, help="Number of examples to add per incremental batch")
     parser.add_argument("--make-smt2", action="store_true", help="Output SMT-LIB2 format and exit")
+    parser.add_argument("--make-dimacs", action="store_true", help="Output DIMACS CNF format and exit (uses bit-blasting followed by Tseitin transformation)")
     args = parser.parse_args()
 
     # Resolve config path
@@ -299,7 +301,8 @@ def main() -> None:
     s = make_solver()
 
     s.add(*build_program(NUM_INPUTS, NUM_OUTPUTS, PROGRAM_LENGTH))
-    if not args.make_smt2:
+
+    if not args.make_smt2 and not args.make_dimacs:
         s.check()
 
     logger.info("Built program structure with %d instructions", PROGRAM_LENGTH)
@@ -320,7 +323,7 @@ def main() -> None:
 
         logger.info("Solver has %d assertions after batch %d", len(s.assertions()), batch_idx + 1)
 
-        if not args.make_smt2:
+        if not args.make_smt2 and not args.make_dimacs:
             result = s.check()
 
             if str(result) != 'sat':
@@ -331,6 +334,25 @@ def main() -> None:
     
     if args.make_smt2:
         print(s.to_smt2())
+        return
+
+    if args.make_dimacs:
+        goal = Goal()
+
+        for c in s.assertions():
+            goal.add(c)
+
+        cnf_result = Then(
+            Tactic('simplify'),
+            Tactic('propagate-values'),
+            Tactic('bit-blast'),
+            Tactic('tseitin-cnf'),
+        )(goal)
+
+        assert len(cnf_result) == 1
+
+        cnf_goal = cnf_result[0]
+        print(cnf_goal.dimacs())
         return
 
     elapsed = time.time() - start
