@@ -275,7 +275,8 @@ def main() -> None:
     parser.add_argument("--config", type=str, default=None, help="Path to a custom JSON config")
 
     parser.add_argument("--instructions", type=int, default=None, help="Override number of SSA instructions")
-    parser.add_argument("--batch-size", type=int, default=None, help="Number of examples to add per incremental batch")
+    parser.add_argument("--batch-size", type=int, default=None, help="Number of examples to add to each bit-vector-encoded batch (default: all examples)")
+
     parser.add_argument("--make-smt2", action="store_true", help="Output SMT-LIB2 format and exit")
     parser.add_argument("--make-dimacs", action="store_true", help="Output DIMACS CNF format and exit (uses bit-blasting followed by Tseitin transformation)")
 
