@@ -311,6 +311,8 @@ def main() -> None:
     parser.add_argument("--no-shuffle", action="store_true", help="Disable shuffling of examples")
     parser.add_argument("--seed", type=int, default=0, help="Seed for shuffling examples (None means random)")
 
+    parser.add_argument("--output-blif", action="store_true", help="Output the found program in BLIF format")
+
     args = parser.parse_args()
 
     if args.encode_boolean:
@@ -435,6 +437,11 @@ def main() -> None:
                 return "1"
             return f"T{idx - NUM_INPUTS - 2}"
 
+        if args.output_blif:
+            print(f".model spec")
+            print(f'.inputs {" ".join(f"I{i}" for i in range(num_inputs))}')
+            print(f'.outputs {" ".join(f"OUT{o}" for o in range(num_outputs))}')
+
         for instr in range(PROGRAM_LENGTH):
             op_ref = BitVec(f"OP_{instr}", OP_BITS)
             s1_ref = BitVec(f"S1_{instr}", idx_bits)
@@ -448,12 +455,29 @@ def main() -> None:
             s1_val = s1_val_ref.as_long()
             s2_val = s2_val_ref.as_long()
             label = OP_LABELS.get(op_val, '?')
+
             if op_val in (0, 1, 2):  # binary
-                print(f"T{instr}: {label}({fmt_src(s1_val)}, {fmt_src(s2_val)})")
                 instrs.append((op_val, s1_val, s2_val))
+                if args.output_blif:
+                    print(f".names {fmt_src(s1_val)} {fmt_src(s2_val)} T{instr}")
+                    if op_val == 0:  # OR
+                        print(f"10 1")
+                        print(f"01 1")
+                        print(f"11 1")
+                    elif op_val == 1:  # AND
+                        print(f"11 1")
+                    elif op_val == 2:  # XOR
+                        print(f"10 1")
+                        print(f"01 1")
+                else:
+                    print(f"T{instr}: {label}({fmt_src(s1_val)}, {fmt_src(s2_val)})")
             else:
-                print(f"T{instr}: ?({fmt_src(s1_val)}, {fmt_src(s2_val)})")
                 instrs.append((None, s1_val, s2_val))
+
+                if args.output_blif:
+                    raise ValueError("Unsupported operation in BLIF output")
+                else:
+                    print(f"T{instr}: ?({fmt_src(s1_val)}, {fmt_src(s2_val)})")
 
         outputs: List[int | None] = []
         for out_idx in range(NUM_OUTPUTS):
@@ -461,8 +485,16 @@ def main() -> None:
             sel_val = m[selector]
             if sel_val is None:
                 continue
-            print(f"OUT{out_idx}: {fmt_src(sel_val.as_long())}")
             outputs.append(sel_val.as_long())
+
+            if args.output_blif:
+                print(f".names {fmt_src(sel_val.as_long())} OUT{out_idx}")
+                print(f"1 1")
+            else:
+                print(f"OUT{out_idx}: {fmt_src(sel_val.as_long())}")
+
+        if args.output_blif:
+            print(".end")
 
         mismatches = 0
         for idx, ex in enumerate(examples):
