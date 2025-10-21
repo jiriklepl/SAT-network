@@ -258,6 +258,30 @@ def make_solver() -> Solver:
     )
     return tactic.solver()
 
+def _export_blif(examples: List[Dict[str, Any]], num_inputs: int, num_outputs: int) -> None:
+    """Export the problem as a BLIF file to stdout."""
+
+    print(f".model synth_program")
+    # for i in range(num_inputs):
+    #     print(f".inputs I{i}")
+    # for o in range(num_outputs):
+    #     print(f".outputs OUT{o}")
+
+    print(f'.inputs {" ".join(f"I{i}" for i in range(num_inputs))}')
+    print(f'.outputs {" ".join(f"OUT{o}" for o in range(num_outputs))}')
+
+
+    for out_idx in range(num_outputs):
+        print(".names " + " ".join(f"I{i}" for i in range(num_inputs)) + f" OUT{out_idx}")
+        for ex in examples:
+            ins = ex["inputs"]
+            outs = ex["outputs"]
+            input_line = "".join('1' if bool(v) else '0' for v in ins)
+            if bool(outs[out_idx]):
+                print(f"{input_line} 1")
+
+    print(".end")
+
 
 def main() -> None:
     logging.basicConfig(
@@ -277,8 +301,9 @@ def main() -> None:
     parser.add_argument("--instructions", type=int, default=None, help="Override number of SSA instructions")
     parser.add_argument("--batch-size", type=int, default=None, help="Number of examples to add to each bit-vector-encoded batch (default: all examples)")
 
-    parser.add_argument("--make-smt2", action="store_true", help="Output SMT-LIB2 format and exit")
-    parser.add_argument("--make-dimacs", action="store_true", help="Output DIMACS CNF format and exit (uses bit-blasting followed by Tseitin transformation)")
+    parser.add_argument("--make-smt2", action="store_true", help="Output the problem in SMT-LIB2 format and exit")
+    parser.add_argument("--make-dimacs", action="store_true", help="Output the problem in DIMACS CNF format and exit (uses bit-blasting followed by Tseitin transformation)")
+    parser.add_argument("--make-blif", action="store_true", help="Output the problem specification in BLIF format and exit")
 
     parser.add_argument("--encode-boolean", action="store_true", help="Enable boolean encoding")
     parser.add_argument("--force-unique", action="store_true", help="Enable uniqueness constraints")
@@ -325,6 +350,10 @@ def main() -> None:
     batch_size = args.batch_size if args.batch_size else len(examples)
     if batch_size <= 0:
         raise SystemExit("Batch size must be positive")
+
+    if args.make_blif:
+        _export_blif(examples, NUM_INPUTS, NUM_OUTPUTS)
+        return
 
     s = make_solver()
 
