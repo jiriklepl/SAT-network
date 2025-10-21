@@ -416,7 +416,7 @@ def main() -> None:
     elapsed = time.time() - start
 
     if str(result) == 'sat':
-        print(f"SAT in {elapsed:.3f} seconds")
+        logger.info(f"SAT in {elapsed:.3f} seconds")
 
         # Pretty-print a compact architecture summary: per-instruction (op, src indices)
         m = s.model()
@@ -464,6 +464,7 @@ def main() -> None:
             print(f"OUT{out_idx}: {fmt_src(sel_val.as_long())}")
             outputs.append(sel_val.as_long())
 
+        mismatches = 0
         for idx, ex in enumerate(examples):
             ins = ex["inputs"]
             expected_outs = [int(bool(v)) for v in ex["outputs"]]
@@ -499,9 +500,17 @@ def main() -> None:
                     actual_outs.append(values[sel_idx])
 
             if actual_outs != expected_outs:
-                print(f"Mismatch on example {idx} with inputs {ins}: expected {expected_outs}, got {actual_outs}")
+                logger.error(f"Mismatch on example {idx} with inputs {ins}: expected {expected_outs}, got {actual_outs}")
+                mismatches += 1
+
+        if mismatches == 0:
+            logger.info("All examples matched successfully")
+        else:
+            logger.error("Total mismatches: %d", mismatches)
+            exit(1)
     else:
-        print(f"UNSAT in {elapsed:.3f} seconds")
+        logger.info(f"UNSAT in {elapsed:.3f} seconds")
+        exit(1)
 
 if __name__ == "__main__":
     main()
