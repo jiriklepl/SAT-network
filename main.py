@@ -15,6 +15,7 @@ from z3 import (
     BitVecVal,
     If,
     Or,
+    And,
     Tactic,
     Then,
     ULE,
@@ -22,6 +23,7 @@ from z3 import (
     Bool,
     Implies,
     Solver,
+    SolverFor,
     BoolRef,
     BitVecRef,
     Goal,
@@ -38,7 +40,8 @@ NUM_INPUTS = 7
 NUM_OUTPUTS = 1
 PROGRAM_LENGTH = 16
 
-force_unique = False
+force_ordered = False
+force_useful = False
 encode_boolean = False
 
 OP_BITS = 2  # encode OR, AND, XOR
@@ -71,7 +74,7 @@ def build_program(num_inputs: int, num_outputs: int, program_length: int) -> Lis
     if program_length < 0:
         raise ValueError("program_length must be non-negative")
 
-    total_sources = num_inputs + 2 + program_length  # inputs + const0 + const1 + temps
+    total_sources = num_inputs + 1 + program_length  # inputs + const1 + temps
     idx_bits = max(1, (total_sources - 1).bit_length())
 
     op_or = BitVecVal(0, OP_BITS)
@@ -81,7 +84,8 @@ def build_program(num_inputs: int, num_outputs: int, program_length: int) -> Lis
     constraints: List[BoolRef] = []
 
     for instr in range(program_length):
-        max_idx = num_inputs + 1 + instr  # inputs + const0 + const1 + previous temps
+        idx = num_inputs + 1 + instr  # inputs + const1 + previous temps
+        max_idx = idx - 1
         max_idx_bv = BitVecVal(max_idx, idx_bits)
 
         op = BitVec(f"OP_{instr}", OP_BITS)
@@ -90,12 +94,28 @@ def build_program(num_inputs: int, num_outputs: int, program_length: int) -> Lis
 
 
         # Force uniqueness of (op, src1, src2) tuples
-        if force_unique:
-            for pre_instr in range(instr):
-                pre_op = BitVec(f"OP_{pre_instr}", OP_BITS)
-                pre_src1 = BitVec(f"S1_{pre_instr}", idx_bits)
-                pre_src2 = BitVec(f"S2_{pre_instr}", idx_bits)
-                constraints.append(Or(pre_op != op, pre_src1 != src1, pre_src2 != src2))
+        if force_ordered:
+            if instr > 0:
+                pre_op = BitVec(f"OP_{instr-1}", OP_BITS)
+                pre_src1 = BitVec(f"S1_{instr-1}", idx_bits)
+                pre_src2 = BitVec(f"S2_{instr-1}", idx_bits)
+
+                constraints.append(ULE(pre_src2, src2))
+                constraints.append(Implies(pre_src2 == src2, ULE(pre_src1, src1)))
+                constraints.append(Implies(And(pre_src2 == src2, pre_src1 == src1), ULT(pre_op, op)))
+
+        # Force usefulness of each instruction
+        if force_useful:
+            srcs = [BitVec(f"OUT_{out_idx}_idx", idx_bits) == BitVecVal(idx, idx_bits) for out_idx in range(num_outputs)]
+
+            for next_instr in range(instr + 1, program_length):
+                next_src1 = BitVec(f"S1_{next_instr}", idx_bits)
+                next_src2 = BitVec(f"S2_{next_instr}", idx_bits)
+
+                srcs.append(next_src1 == BitVecVal(idx, idx_bits))
+                srcs.append(next_src2 == BitVecVal(idx, idx_bits))
+
+            constraints.append(Or(*srcs))
 
         # Encode boolean selection of src1 and src2
         if encode_boolean:
@@ -126,7 +146,7 @@ def build_test(width: int, input_vals: List[int], tag: str) -> Tuple[List[BoolRe
     if PROGRAM_LENGTH < 0:
         raise ValueError("PROGRAM_LENGTH must be non-negative")
 
-    total_sources = NUM_INPUTS + 2 + PROGRAM_LENGTH  # inputs + const0 + const1 + temps
+    total_sources = NUM_INPUTS + 1 + PROGRAM_LENGTH  # inputs + const1 + temps
     idx_bits = max(1, (total_sources - 1).bit_length())
 
     op_or = BitVecVal(0, OP_BITS)
@@ -137,7 +157,6 @@ def build_test(width: int, input_vals: List[int], tag: str) -> Tuple[List[BoolRe
     # Seed values with the batch input truth tables
     values: List[BitVecNumRef | BitVecRef] = [BitVecVal(input_vals[j], width) for j in range(NUM_INPUTS)]
 
-    values.append(BitVecVal(0, width))  # constant 0
     values.append(~BitVecVal(0, width))  # constant 1
 
     for instr in range(PROGRAM_LENGTH):
@@ -251,7 +270,7 @@ def _build_dataset_from_config(cfg: Dict[str, Any]) -> Tuple[List[Dict[str, Any]
 def make_solver() -> Solver:
     # return SolverFor('QF_BV')
     tactic: Tactic = Then(
-        Tactic('simplify'),
+        Tactic('ctx-simplify'),
         Tactic('propagate-values'),
         Tactic('bit-blast'),
         Tactic('sat'),
@@ -306,10 +325,13 @@ def main() -> None:
     parser.add_argument("--make-blif", action="store_true", help="Output the problem specification in BLIF format and exit")
 
     parser.add_argument("--encode-boolean", action="store_true", help="Enable boolean encoding")
-    parser.add_argument("--force-unique", action="store_true", help="Enable uniqueness constraints")
+    parser.add_argument("--force-ordered", action="store_true", help="Enable constraint on ordered instructions")
+    parser.add_argument("--force-useful", action="store_true", help="Enable constraint on useful instructions")
 
     parser.add_argument("--no-shuffle", action="store_true", help="Disable shuffling of examples")
     parser.add_argument("--seed", type=int, default=0, help="Seed for shuffling examples (None means random)")
+
+    parser.add_argument("--do-all", action="store_true", help="Synthesize for all example batches at once")
 
     parser.add_argument("--output-blif", action="store_true", help="Output the found program in BLIF format")
 
@@ -319,11 +341,15 @@ def main() -> None:
         global encode_boolean
         encode_boolean = True
 
-    if args.force_unique:
-        global force_unique
-        force_unique = True
+    if args.force_ordered:
+        global force_ordered
+        force_ordered = True
 
-    config_path = Path("configs")
+    if args.force_useful:
+        global force_useful
+        force_useful = True
+
+    config_path = Path(__file__).parent / "configs"
     if args.config:
         config_path = Path(args.config)
     elif args.dataset:
@@ -361,7 +387,7 @@ def main() -> None:
 
     s.add(*build_program(NUM_INPUTS, NUM_OUTPUTS, PROGRAM_LENGTH))
 
-    if not args.make_smt2 and not args.make_dimacs:
+    if not args.make_smt2 and not args.make_dimacs and not args.do_all:
         s.check()
 
     logger.info("Built program structure with %d instructions", PROGRAM_LENGTH)
@@ -383,7 +409,7 @@ def main() -> None:
 
         logger.info("Solver has %d assertions after batch %d", len(s.assertions()), batch_idx + 1)
 
-        if not args.make_smt2 and not args.make_dimacs:
+        if not args.make_smt2 and not args.make_dimacs and not args.do_all:
             result = s.check()
 
             if str(result) != 'sat':
@@ -415,6 +441,9 @@ def main() -> None:
         print(cnf_goal.dimacs())
         return
 
+    if args.do_all:
+        result = s.check()
+
     elapsed = time.time() - start
 
     if str(result) == 'sat':
@@ -423,7 +452,7 @@ def main() -> None:
         # Pretty-print a compact architecture summary: per-instruction (op, src indices)
         m = s.model()
 
-        total_sources = NUM_INPUTS + 2 + PROGRAM_LENGTH  # inputs + const0 + const1 + temps
+        total_sources = NUM_INPUTS + 1 + PROGRAM_LENGTH  # inputs + const1 + temps
         idx_bits = max(1, (total_sources - 1).bit_length())
 
         instrs: List[Tuple[int | None, int, int]] = []
@@ -432,10 +461,8 @@ def main() -> None:
             if idx < NUM_INPUTS:
                 return f"I{idx}"
             if idx == NUM_INPUTS:
-                return "0"
-            if idx == NUM_INPUTS + 1:
                 return "1"
-            return f"T{idx - NUM_INPUTS - 2}"
+            return f"T{idx - NUM_INPUTS - 1}"
 
         if args.output_blif:
             print(f".model spec")
@@ -503,7 +530,6 @@ def main() -> None:
 
             # Evaluate the synthesized program on this example
             values: List[int] = [int(bool(v)) for v in ins]
-            values.append(0)  # constant 0
             values.append(1)  # constant 1
 
             for instr in range(PROGRAM_LENGTH):
