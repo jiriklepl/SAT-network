@@ -8,7 +8,7 @@ import sys
 import time
 import random
 from pathlib import Path
-from typing import Tuple, List, Dict, Any, Literal, TypeVar
+from typing import Optional, Tuple, List, Dict, Any, Literal, TypeVar, Union
 
 from z3 import (
     BitVec,
@@ -49,7 +49,7 @@ OP_LABELS = {0: 'OR', 1: 'AND', 2: 'XOR'}
 
 
 T = TypeVar('T')
-def _select_bv(values: List[T], idx_var: BitVecNumRef | BitVecRef, bits: int) -> T:
+def _select_bv(values: List[T], idx_var: Union[BitVecNumRef, BitVecRef], bits: int) -> T:
     if not values or len(values) == 0:
         raise ValueError("values must be a non-empty list")
 
@@ -137,7 +137,7 @@ def build_program(num_inputs: int, num_outputs: int, program_length: int) -> Lis
 
     return constraints
 
-def build_test(width: int, input_vals: List[int], tag: str) -> Tuple[List[BoolRef | Literal[False]], List[BitVecRef | BitVecNumRef]]:
+def build_test(width: int, input_vals: List[int], tag: str) -> Tuple[List[Union[BoolRef, Literal[False]]], List[Union[BitVecRef, BitVecNumRef]]]:
     """Build SSA-style straight-line program constraints for a batch.
 
     Returns a tuple (constraints, outputs) where outputs is a list of
@@ -152,10 +152,10 @@ def build_test(width: int, input_vals: List[int], tag: str) -> Tuple[List[BoolRe
     op_or = BitVecVal(0, OP_BITS)
     op_and = BitVecVal(1, OP_BITS)
 
-    constraints: List[BoolRef | Literal[False]] = []
+    constraints: List[Union[BoolRef, Literal[False]]] = []
 
     # Seed values with the batch input truth tables
-    values: List[BitVecNumRef | BitVecRef] = [BitVecVal(input_vals[j], width) for j in range(NUM_INPUTS)]
+    values: List[Union[BitVecNumRef, BitVecRef]] = [BitVecVal(input_vals[j], width) for j in range(NUM_INPUTS)]
 
     values.append(~BitVecVal(0, width))  # constant 1
 
@@ -199,7 +199,7 @@ def build_test(width: int, input_vals: List[int], tag: str) -> Tuple[List[BoolRe
         constraints.append(val == gate_expr)
         values.append(val)
 
-    outputs: List[BitVecRef | BitVecNumRef] = []
+    outputs: List[Union[BitVecRef, BitVecNumRef]] = []
     for out_idx in range(NUM_OUTPUTS):
         selector = BitVec(f"OUT_{out_idx}_idx", idx_bits)
         outputs.append(_select_bv(values, selector, idx_bits))
@@ -230,12 +230,12 @@ def _load_config(config_path: Path) -> Dict[str, Any]:
         return json.load(f)
 
 
-def _build_dataset_from_config(cfg: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], int, int, int]:
+def _build_dataset_from_config(cfg: Dict[str, Any]) -> Tuple[List[Dict[str, List[bool]]], int, int, int]:
     """Returns (examples, num_inputs, num_outputs, instructions)."""
     ctype = cfg.get("type")
 
-    def _collect_examples(data: List[Dict[str, Any]], num_inputs: int, num_outputs: int) -> List[Dict[str, Any]]:
-        result: List[Dict[str, Any]] = []
+    def _collect_examples(data: List[Dict[str, Any]], num_inputs: int, num_outputs: int) -> List[Dict[str, List[bool]]]:
+        result: List[Dict[str, List[bool]]] = []
         for ex in data:
             ins = [bool(v) for v in ex["inputs"]]
             outs = [bool(v) for v in ex["outputs"]]
@@ -291,7 +291,7 @@ def make_solver(solver_choice: str) -> Solver:
 
     raise ValueError(f"Unsupported solver choice: {solver_choice}")
 
-def _export_blif(examples: List[Dict[str, Any]], num_inputs: int, num_outputs: int) -> None:
+def _export_blif(examples: List[Dict[str, List[bool]]], num_inputs: int, num_outputs: int) -> None:
     """Export the problem as a BLIF file to stdout."""
 
     print(f".model synth_program")
@@ -471,7 +471,7 @@ def main() -> None:
         total_sources = NUM_INPUTS + 1 + PROGRAM_LENGTH  # inputs + const1 + temps
         idx_bits = max(1, (total_sources - 1).bit_length())
 
-        instrs: List[Tuple[int | None, int, int]] = []
+        instrs: List[Tuple[Optional[int], int, int]] = []
 
         def fmt_src(idx: int) -> str:
             if idx < NUM_INPUTS:
