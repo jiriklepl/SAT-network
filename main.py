@@ -267,15 +267,29 @@ def _build_dataset_from_config(cfg: Dict[str, Any]) -> Tuple[List[Dict[str, Any]
     return examples, num_inputs, num_outputs, instructions
 
 
-def make_solver() -> Solver:
-    # return SolverFor('QF_BV')
-    tactic: Tactic = Then(
-        Tactic('ctx-simplify'),
-        Tactic('propagate-values'),
-        Tactic('bit-blast'),
-        Tactic('sat'),
-    )
-    return tactic.solver()
+def make_solver(solver_choice: str) -> Solver:
+    if solver_choice == 'z3':
+        return SolverFor('QF_BV')
+
+    if solver_choice == 'simple-tactic':
+        simple_tactic: Tactic = Then(
+            Tactic('simplify'),
+            Tactic('propagate-values'),
+            Tactic('bit-blast'),
+            Tactic('sat'),
+        )
+        return simple_tactic.solver()
+
+    if solver_choice == 'ctx-simplify-tactic':
+        ctx_simplify_tactic: Tactic = Then(
+            Tactic('ctx-simplify'),
+            Tactic('propagate-values'),
+            Tactic('bit-blast'),
+            Tactic('sat'),
+        )
+        return ctx_simplify_tactic.solver()
+
+    raise ValueError(f"Unsupported solver choice: {solver_choice}")
 
 def _export_blif(examples: List[Dict[str, Any]], num_inputs: int, num_outputs: int) -> None:
     """Export the problem as a BLIF file to stdout."""
@@ -323,6 +337,8 @@ def main() -> None:
     parser.add_argument("--make-smt2", action="store_true", help="Output the problem in SMT-LIB2 format and exit")
     parser.add_argument("--make-dimacs", action="store_true", help="Output the problem in DIMACS CNF format and exit (uses bit-blasting followed by Tseitin transformation)")
     parser.add_argument("--make-blif", action="store_true", help="Output the problem specification in BLIF format and exit")
+
+    parser.add_argument("--solver", type=str, choices=["z3", "simple-tactic", "ctx-simplify-tactic"], default="simple-tactic", help="Choose the Z3 solver or tactic to use")
 
     parser.add_argument("--encode-boolean", action="store_true", help="Enable boolean encoding")
     parser.add_argument("--force-ordered", action="store_true", help="Enable constraint on ordered instructions")
@@ -383,7 +399,7 @@ def main() -> None:
         _export_blif(examples, NUM_INPUTS, NUM_OUTPUTS)
         return
 
-    s = make_solver()
+    s = make_solver(args.solver)
 
     s.add(*build_program(NUM_INPUTS, NUM_OUTPUTS, PROGRAM_LENGTH))
 
@@ -417,7 +433,7 @@ def main() -> None:
 
             progress = min(offset + batch_size, len(examples))
             logger.info("Processed %d/%d examples", progress, len(examples))
-    
+
     if args.make_smt2:
         print(s.to_smt2())
         return
