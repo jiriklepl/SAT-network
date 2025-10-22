@@ -93,24 +93,16 @@ def _examples_to_tensors(
 
 
 class SoftProgramModel(nn.Module):
-    def __init__(
-        self,
-        num_inputs: int,
-        num_outputs: int,
-        program_length: int,
-        hidden_dim: int = 128,
-    ):
+    def __init__(self, num_inputs: int, num_outputs: int, program_length: int):
         super().__init__()
         self.num_inputs = num_inputs
         self.num_outputs = num_outputs
         self.program_length = program_length
         self.ops = OPS
         self.num_ops = len(self.ops)
-        self.hidden_dim = hidden_dim
-        self.feature_dim = program_length + num_inputs + num_outputs
 
         self._pair_specs: List[List[Tuple[int, int]]] = []
-        self.instruction_heads = nn.ModuleList()
+        self.instruction_logits = nn.ParameterList()
 
         for instr_idx in range(program_length):
             num_sources = num_inputs + 1 + instr_idx  # inputs + const1 + previous nodes
@@ -120,77 +112,34 @@ class SoftProgramModel(nn.Module):
 
             self._pair_specs.append(pairs)
             output_dim = self.num_ops * len(pairs)
-            self.instruction_heads.append(
-                nn.Sequential(
-                    nn.Linear(self.feature_dim, hidden_dim),
-                    nn.ReLU(),
-                    nn.Linear(hidden_dim, hidden_dim),
-                    nn.ReLU(),
-                    nn.Linear(hidden_dim, output_dim),
-                )
-            )
+            param = nn.Parameter(torch.empty(output_dim))
+            nn.init.uniform_(param, -0.01, 0.01)
+            self.instruction_logits.append(param)
 
         if num_outputs > 1:
-            self.output_heads = nn.ModuleList(
-                [
-                    nn.Sequential(
-                        nn.Linear(self.feature_dim, hidden_dim),
-                        nn.ReLU(),
-                        nn.Linear(hidden_dim, hidden_dim),
-                        nn.ReLU(),
-                        nn.Linear(hidden_dim, program_length),
-                    )
-                    for _ in range(num_outputs)
-                ]
-            )
+            output_param = nn.Parameter(torch.empty(num_outputs, program_length))
+            nn.init.uniform_(output_param, -0.01, 0.01)
+            self.output_logits = output_param
         else:
-            self.output_heads = nn.ModuleList()
-
-    def _build_node_features(
-        self,
-        instruction_outputs: List[torch.Tensor],
-        batch_size: int,
-        dtype: torch.dtype,
-        device: torch.device,
-    ) -> torch.Tensor:
-        if instruction_outputs:
-            computed = torch.cat(instruction_outputs, dim=1)
-            if len(instruction_outputs) < self.program_length:
-                pad = torch.zeros(
-                    batch_size,
-                    self.program_length - len(instruction_outputs),
-                    dtype=dtype,
-                    device=device,
-                )
-                return torch.cat([computed, pad], dim=1)
-            return computed
-        return torch.zeros(
-            batch_size, self.program_length, dtype=dtype, device=device
-        )
+            self.register_parameter("output_logits", None)
 
     def _forward_internal(
         self,
         batch_inputs: torch.Tensor,
-        batch_targets: torch.Tensor | None,
         collect_details: bool = False,
     ) -> Tuple[torch.Tensor, Tuple[List[torch.Tensor], List[torch.Tensor]] | None]:
         batch_size = batch_inputs.size(0)
         dtype = batch_inputs.dtype
         device = batch_inputs.device
 
-        if batch_targets is None:
-            batch_targets = torch.zeros(
-                batch_size, self.num_outputs, dtype=dtype, device=device
-            )
-
         values: List[torch.Tensor] = [batch_inputs]
         const_col = torch.ones((batch_size, 1), dtype=dtype, device=device)
         values.append(const_col)
 
         instruction_outputs: List[torch.Tensor] = []
-        instr_probs: List[torch.Tensor] = [] if collect_details else []
+        instr_probs: List[torch.Tensor] = []
 
-        for instr_idx, head in enumerate(self.instruction_heads):
+        for instr_idx, logits in enumerate(self.instruction_logits):
             sources = torch.cat(values, dim=1)
             candidates: List[torch.Tensor] = []
             for src_a, src_b in self._pair_specs[instr_idx]:
@@ -204,14 +153,9 @@ class SoftProgramModel(nn.Module):
                 candidates.extend([or_val, and_val, xor_val])
 
             candidate_tensor = torch.cat(candidates, dim=1)  # [B, num_choices]
-            node_features = self._build_node_features(
-                instruction_outputs, batch_size, dtype, device
-            )
-            features = torch.cat([node_features, batch_inputs, batch_targets], dim=1)
-            logits = head(features)
-            probs = torch.softmax(logits, dim=1)
-
-            node_val = torch.sum(candidate_tensor * probs, dim=1, keepdim=True)
+            probs = torch.softmax(logits, dim=0)
+            probs_expanded = probs.view(1, -1).expand(batch_size, -1)
+            node_val = torch.sum(candidate_tensor * probs_expanded, dim=1, keepdim=True)
 
             instruction_outputs.append(node_val)
             values.append(node_val)
@@ -224,24 +168,15 @@ class SoftProgramModel(nn.Module):
 
         instr_tensor = torch.cat(instruction_outputs, dim=1)  # [B, program_length]
 
+        output_probs: List[torch.Tensor] = []
         if self.num_outputs == 1:
             outputs = instruction_outputs[-1]
-            output_probs: List[torch.Tensor] = []
         else:
-            node_features = self._build_node_features(
-                instruction_outputs, batch_size, dtype, device
-            )
-            features = torch.cat([node_features, batch_inputs, batch_targets], dim=1)
-            collected_outputs: List[torch.Tensor] = []
-            output_probs = []
-            for head in self.output_heads:
-                logits = head(features)
-                probs = torch.softmax(logits, dim=1)
-                if collect_details:
-                    output_probs.append(probs.detach())
-                weighted = torch.sum(instr_tensor * probs, dim=1, keepdim=True)
-                collected_outputs.append(weighted)
-            outputs = torch.cat(collected_outputs, dim=1)
+            weights = torch.softmax(self.output_logits, dim=1)
+            outputs = instr_tensor @ weights.t()
+            if collect_details:
+                for row in weights:
+                    output_probs.append(row.detach())
 
         details = None
         if collect_details:
@@ -249,19 +184,15 @@ class SoftProgramModel(nn.Module):
         return outputs, details
 
     def forward(
-        self, batch_inputs: torch.Tensor, batch_targets: torch.Tensor | None = None
+        self, batch_inputs: torch.Tensor, *_: torch.Tensor
     ) -> torch.Tensor:
-        outputs, _ = self._forward_internal(
-            batch_inputs, batch_targets, collect_details=False
-        )
+        outputs, _ = self._forward_internal(batch_inputs, collect_details=False)
         return outputs
 
     def collect_distributions(
-        self, batch_inputs: torch.Tensor, batch_targets: torch.Tensor | None = None
+        self, batch_inputs: torch.Tensor, *_: torch.Tensor
     ) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
-        _, details = self._forward_internal(
-            batch_inputs, batch_targets, collect_details=True
-        )
+        _, details = self._forward_internal(batch_inputs, collect_details=True)
         if details is None:
             return [], []
         return details
@@ -288,7 +219,7 @@ def train_model(
             batch_in = inputs[idx]
             batch_out = targets[idx]
 
-            preds = model(batch_in, batch_out).clamp(min=1e-6, max=1.0 - 1e-6)
+            preds = model(batch_in).clamp(min=1e-6, max=1.0 - 1e-6)
             loss = F.binary_cross_entropy(preds, batch_out)
 
             optimizer.zero_grad()
@@ -301,7 +232,7 @@ def train_model(
 
         with torch.no_grad():
             model.eval()
-            preds_full = model(inputs, targets)
+            preds_full = model(inputs)
             accuracy = ((preds_full >= 0.5) == (targets >= 0.5)).float().mean().item()
 
         logger.info(
@@ -318,18 +249,17 @@ def train_model(
 
 
 def decode_program(
-    model: SoftProgramModel, inputs: torch.Tensor, targets: torch.Tensor
+    model: SoftProgramModel, inputs: torch.Tensor, targets: torch.Tensor | None = None
 ) -> Tuple[List[Tuple[str, int, int]], List[int]]:
     model.eval()
     with torch.no_grad():
-        instr_probs, output_probs = model.collect_distributions(inputs, targets)
+        instr_probs, output_probs = model.collect_distributions(inputs)
 
     instructions: List[Tuple[str, int, int]] = []
     for idx, probs in enumerate(instr_probs):
         if probs.numel() == 0:
             raise RuntimeError("Instruction probability tensor is empty")
-        mean_probs = probs.mean(dim=0)
-        best = int(torch.argmax(mean_probs).item())
+        best = int(torch.argmax(probs).item())
         op_idx = best % model.num_ops
         pair_idx = best // model.num_ops
         src_a, src_b = model._pair_specs[idx][pair_idx]
@@ -338,10 +268,7 @@ def decode_program(
     if model.num_outputs == 1:
         outputs = [model.program_length - 1]
     else:
-        outputs = []
-        for probs in output_probs:
-            mean_probs = probs.mean(dim=0)
-            outputs.append(int(torch.argmax(mean_probs).item()))
+        outputs = [int(torch.argmax(probs).item()) for probs in output_probs]
 
     return instructions, outputs
 
