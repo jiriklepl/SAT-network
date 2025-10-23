@@ -324,8 +324,6 @@ def main() -> None:
     )
     logger = logging.getLogger(__name__)
 
-    logger.info("Starting the program")
-
     parser = argparse.ArgumentParser(description="Synthesize a logic program with z3")
 
     parser.add_argument("--dataset", choices=list(available_plugins().keys()), default="gol", help="Choose a built-in dataset config")
@@ -351,6 +349,8 @@ def main() -> None:
 
     parser.add_argument("--output-blif", action="store_true", help="Output the found program in BLIF format")
 
+    parser.add_argument("--quiet", action="store_true", help="Suppress informational output")
+
     args = parser.parse_args()
 
     if args.encode_boolean:
@@ -364,6 +364,18 @@ def main() -> None:
     if args.force_useful:
         global force_useful
         force_useful = True
+
+    if args.quiet:
+        logger.setLevel(logging.WARNING)
+        logging.getLogger("z3").setLevel(logging.WARNING)
+    
+    else:
+        logger.setLevel(logging.INFO)
+        logging.getLogger("z3").setLevel(logging.INFO)
+
+
+    # print the chosen configuration
+    logger.info("Using configuration: %s", vars(args))
 
     config_path = Path(__file__).parent / "configs"
     if args.config:
