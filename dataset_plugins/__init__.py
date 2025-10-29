@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Callable, Dict, Any, List, Tuple
+from typing import Callable, Dict, Any, List, Optional, Tuple
 
-Example = Dict[str, List[bool]]
+IOList = List[Optional[bool]]
+Example = Dict[str, IOList]
 DatasetResult = Tuple[List[Example], int, int]
 PluginBuilder = Callable[[Dict[str, Any]], DatasetResult]
 

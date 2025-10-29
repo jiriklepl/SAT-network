@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from typing import Dict, Any, List, Tuple
 
-from . import register_plugin, DatasetResult
+from . import Example, IOList, register_plugin, DatasetResult
 
 
-def _make_gol_test_case(left_column: int, center_column: int, right_column: int, alive: bool) -> Tuple[List[bool], List[bool]]:
-    inputs: List[bool] = [
+def _make_gol_test_case(left_column: int, center_column: int, right_column: int, alive: bool) -> Tuple[IOList, IOList]:
+    inputs: IOList = [
         left_column % 2 != 0,
         left_column // 2 % 2 != 0,
         center_column % 2 != 0,
@@ -18,7 +18,7 @@ def _make_gol_test_case(left_column: int, center_column: int, right_column: int,
         alive,
     ]
 
-    outputs: List[bool] = [
+    outputs: IOList = [
         left_column + center_column + right_column == 3
         or (left_column + center_column + right_column == 2 and alive)
     ]
@@ -34,7 +34,7 @@ def _build_from_config(cfg: Dict[str, Any]) -> DatasetResult:
     right_range = int(gol_cfg.get("right_range", 4))
     include_alive = bool(gol_cfg.get("include_alive", True))
 
-    examples: List[Dict[str, List[bool]]] = []
+    examples: List[Example] = []
     for left in range(left_range):
         for center in range(center_range):
             for right in range(right_range):

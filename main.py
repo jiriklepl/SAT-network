@@ -31,9 +31,11 @@ from z3 import (
     Tactic,
 )
 
-from dataset_plugins import get_plugin, available_plugins
+from dataset_plugins import Example, IOList, get_plugin, available_plugins
 import dataset_plugins.gol  # ensures GoL plugin registration
 import dataset_plugins.adder3  # ensures 3-bit adder plugin registration
+import dataset_plugins.sloppy_adder  # ensures sloppy adder plugin registration
+import dataset_plugins.sloppy_adder3  # ensures sloppy 3-input adder plugin registration
 
 # Defaults (overridden by config/CLI)
 NUM_INPUTS = 7
@@ -207,22 +209,32 @@ def build_test(width: int, input_vals: List[int], tag: str) -> Tuple[List[Union[
     return constraints, outputs
 
 
-def _pack_examples_to_bitvectors(examples: List[Dict[str, Any]], num_inputs: int, num_outputs: int) -> Tuple[int, List[int], List[int]]:
+def _pack_examples_to_bitvectors(examples: List[Example], num_inputs: int, num_outputs: int) -> Tuple[int, List[int], List[int], List[int]]:
     width = len(examples)
     input_vals = [0] * num_inputs
     output_vals = [0] * num_outputs
+    output_masks = [0] * num_outputs
+
     for t_idx, ex in enumerate(examples):
         ins = ex["inputs"]
         outs = ex["outputs"]
+
         if len(ins) != num_inputs or len(outs) != num_outputs:
             raise ValueError("Example length does not match num_inputs/num_outputs")
+
         for j in range(num_inputs):
-            if bool(ins[j]):
+            if ins[j] is None:
+                raise ValueError("Input values cannot be None")
+            elif bool(ins[j]):
                 input_vals[j] |= (1 << t_idx)
+
         for j in range(num_outputs):
-            if bool(outs[j]):
+            if outs[j] is None:
+                output_masks[j] |= (1 << t_idx)
+            elif bool(outs[j]):
                 output_vals[j] |= (1 << t_idx)
-    return width, input_vals, output_vals
+
+    return width, input_vals, output_vals, output_masks
 
 
 def _load_config(config_path: Path) -> Dict[str, Any]:
@@ -230,15 +242,15 @@ def _load_config(config_path: Path) -> Dict[str, Any]:
         return json.load(f)
 
 
-def _build_dataset_from_config(cfg: Dict[str, Any]) -> Tuple[List[Dict[str, List[bool]]], int, int, int]:
+def _build_dataset_from_config(cfg: Dict[str, Any]) -> Tuple[List[Example], int, int, int]:
     """Returns (examples, num_inputs, num_outputs, instructions)."""
     ctype = cfg.get("type")
 
-    def _collect_examples(data: List[Dict[str, Any]], num_inputs: int, num_outputs: int) -> List[Dict[str, List[bool]]]:
-        result: List[Dict[str, List[bool]]] = []
+    def _collect_examples(data: List[Dict[str, Any]], num_inputs: int, num_outputs: int) -> List[Example]:
+        result: List[Example] = []
         for ex in data:
-            ins = [bool(v) for v in ex["inputs"]]
-            outs = [bool(v) for v in ex["outputs"]]
+            ins: IOList = [bool(v) for v in ex["inputs"]]
+            outs: IOList = [bool(v) for v in ex["outputs"]]
             if len(ins) != num_inputs or len(outs) != num_outputs:
                 raise ValueError("Example length does not match declared input/output sizes")
             result.append({"inputs": ins, "outputs": outs})
@@ -247,7 +259,7 @@ def _build_dataset_from_config(cfg: Dict[str, Any]) -> Tuple[List[Dict[str, List
     if "examples" in cfg:
         num_inputs = int(cfg["num_inputs"])  # required
         num_outputs = int(cfg["num_outputs"])  # required
-        examples: List[Dict[str, List[bool]]] = _collect_examples(cfg["examples"], num_inputs, num_outputs)
+        examples: List[Example] = _collect_examples(cfg["examples"], num_inputs, num_outputs)
     elif ctype:
         try:
             plugin = get_plugin(ctype)
@@ -291,7 +303,7 @@ def make_solver(solver_choice: str) -> Solver:
 
     raise ValueError(f"Unsupported solver choice: {solver_choice}")
 
-def _export_blif(examples: List[Dict[str, List[bool]]], num_inputs: int, num_outputs: int) -> None:
+def _export_blif(examples: List[Example], num_inputs: int, num_outputs: int) -> None:
     """Export the problem as a BLIF file to stdout."""
 
     print(f".model synth_program")
@@ -309,6 +321,8 @@ def _export_blif(examples: List[Dict[str, List[bool]]], num_inputs: int, num_out
         for ex in examples:
             ins = ex["inputs"]
             outs = ex["outputs"]
+            if outs[out_idx] is None:
+                raise ValueError("Cannot export BLIF with don't-care outputs")
             input_line = "".join('1' if bool(v) else '0' for v in ins)
             if bool(outs[out_idx]):
                 print(f"{input_line} 1")
@@ -429,11 +443,14 @@ def main() -> None:
     result = None
     for batch_idx, offset in enumerate(range(0, len(examples), batch_size)):
         batch = examples[offset: offset + batch_size]
-        width, input_vals, output_vals = _pack_examples_to_bitvectors(batch, NUM_INPUTS, NUM_OUTPUTS)
+        width, input_vals, output_vals, output_masks = _pack_examples_to_bitvectors(batch, NUM_INPUTS, NUM_OUTPUTS)
         constraints, outputs = build_test(width, input_vals, tag=f"b{batch_idx}")
         s.add(*constraints)
         for j in range(NUM_OUTPUTS):
-            s.add(outputs[j] == BitVecVal(output_vals[j], width))
+            if output_masks[j] != 0:
+                s.add((outputs[j] | output_masks[j]) == (BitVecVal(output_vals[j], width) | output_masks[j]))
+            else:
+                s.add(outputs[j] == BitVecVal(output_vals[j], width))
 
         logger.info("Solver has %d assertions after batch %d", len(s.assertions()), batch_idx + 1)
 
@@ -534,7 +551,7 @@ def main() -> None:
                 else:
                     print(f"T{instr}: ?({fmt_src(s1_val)}, {fmt_src(s2_val)})")
 
-        outputs: List[int | None] = []
+        outputs: List[Optional[int]] = []
         for out_idx in range(NUM_OUTPUTS):
             selector = BitVec(f"OUT_{out_idx}_idx", idx_bits)
             sel_val = m[selector]
@@ -554,7 +571,10 @@ def main() -> None:
         mismatches = 0
         for idx, ex in enumerate(examples):
             ins = ex["inputs"]
-            expected_outs = [int(bool(v)) for v in ex["outputs"]]
+            outs = ex["outputs"]
+
+            expected_outs_mask = [int(v is None) for v in outs]
+            expected_outs = [int(bool(v)) for v in outs]
 
             # Evaluate the synthesized program on this example
             values: List[int] = [int(bool(v)) for v in ins]
@@ -584,6 +604,12 @@ def main() -> None:
                     actual_outs.append(0)
                 else:
                     actual_outs.append(values[sel_idx])
+
+            # apply masks
+            for j in range(NUM_OUTPUTS):
+                if expected_outs_mask[j]:
+                    actual_outs[j] = -1  # don't care
+                    expected_outs[j] = -1  # don't care
 
             if actual_outs != expected_outs:
                 logger.error(f"Mismatch on example {idx} with inputs {ins}: expected {expected_outs}, got {actual_outs}")
