@@ -33,7 +33,7 @@ from z3 import (
 
 from dataset_plugins import Example, IOList, get_plugin, available_plugins
 import dataset_plugins.gol  # ensures GoL plugin registration
-import dataset_plugins.adder3  # ensures 3-bit adder plugin registration
+import dataset_plugins.adder  # ensures 3-bit adder plugin registration
 import dataset_plugins.sloppy_adder  # ensures sloppy adder plugin registration
 import dataset_plugins.sloppy_adder3  # ensures sloppy 3-input adder plugin registration
 

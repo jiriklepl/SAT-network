@@ -18,16 +18,18 @@ def _make_gol_test_case(left_column: int, center_column: int, right_column: int,
         alive,
     ]
 
+    sum = left_column + center_column + right_column
+
     outputs: IOList = [
-        left_column + center_column + right_column == 3
-        or (left_column + center_column + right_column == 2 and alive)
+        sum == 3 or (sum == 2 and alive)
     ]
     return inputs, outputs
 
 
 def _build_from_config(cfg: Dict[str, Any]) -> DatasetResult:
-    num_inputs = int(cfg.get("num_inputs", 7))
-    num_outputs = int(cfg.get("num_outputs", 1))
+    num_inputs = 7
+    num_outputs = 1
+
     gol_cfg = cfg.get("gol", {})
     left_range = int(gol_cfg.get("left_range", 4))
     center_range = int(gol_cfg.get("center_range", 3))
