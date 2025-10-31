@@ -8,7 +8,7 @@ import sys
 import time
 import random
 from pathlib import Path
-from typing import Optional, Tuple, List, Dict, Any, Literal, TypeVar, Union
+from typing import Optional, TextIO, Tuple, List, Dict, Any, Literal, TypeVar, Union
 
 from z3 import (
     BitVec,
@@ -136,6 +136,75 @@ def build_program(num_inputs: int, num_outputs: int, program_length: int) -> Lis
     for out_idx in range(num_outputs):
         selector = BitVec(f"OUT_{out_idx}_idx", idx_bits)
         constraints.append(ULE(selector, max_total_idx))
+
+    return constraints
+
+def build_assumptions_from_file(file: TextIO) -> List[Union[BoolRef, Literal[False]]]:
+    """Build assumptions from a file with assumed program bits.
+
+    Example file format (3-bit adder):
+    ```
+    T0: XOR(I0, I2)
+    T1: XOR(I0, I1)
+    T2: XOR(I2, T1)
+    T3: OR(T0, T1)
+    T4: XOR(T2, T3)
+    OUT0: T2
+    OUT1: T4
+    ```
+    """
+
+    constraints: List[Union[BoolRef, Literal[False]]] = []
+
+    total_sources = NUM_INPUTS + 1 + PROGRAM_LENGTH  # inputs + const1 + temps
+    idx_bits = max(1, (total_sources - 1).bit_length())
+
+    op_map = {'OR': 0, 'AND': 1, 'XOR': 2}
+
+    for line in file.readlines():
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+
+        if ':' not in line:
+            raise ValueError(f"Invalid assumption line: {line}")
+
+        lhs, rhs = line.split(':', 1)
+        lhs = lhs.strip()
+        rhs = rhs.strip()
+
+        def translate_arg(arg: str) -> int:
+            if arg.startswith('I'):
+                return int(arg[1:])
+            elif arg == '1':
+                return NUM_INPUTS
+            elif arg.startswith('T'):
+                return NUM_INPUTS + 1 + int(arg[1:])
+            else:
+                raise ValueError(f"Unknown argument in assumption: {arg}")
+
+        if lhs.startswith('T'):
+            instr_idx = int(lhs[1:])
+            op_part, args_part = rhs.split('(', 1)
+            args_part = args_part.rstrip(')')
+            arg1_str, arg2_str = [s.strip() for s in args_part.split(',', 1)]
+
+            op_val = op_map.get(op_part.strip())
+            if op_val is None:
+                raise ValueError(f"Unknown operation in assumption: {op_part}")
+
+            constraints.append(BitVec(f"OP_{instr_idx}", OP_BITS) == BitVecVal(op_val, OP_BITS))
+            constraints.append(BitVec(f"S1_{instr_idx}", idx_bits) == BitVecVal(translate_arg(arg1_str), idx_bits))
+            constraints.append(BitVec(f"S2_{instr_idx}", idx_bits) == BitVecVal(translate_arg(arg2_str), idx_bits))
+
+        elif lhs.startswith('OUT'):
+            out_idx = int(lhs[3:])
+            arg_idx = translate_arg(rhs.strip())
+
+            constraints.append(BitVec(f"OUT_{out_idx}_idx", idx_bits) == BitVecVal(arg_idx, idx_bits))
+
+        else:
+            raise ValueError(f"Unknown LHS in assumption: {lhs}")
 
     return constraints
 
@@ -343,6 +412,8 @@ def main() -> None:
     parser.add_argument("--dataset", choices=list(available_plugins().keys()), default="gol", help="Choose a built-in dataset config")
     parser.add_argument("--config", type=str, default=None, help="Path to a custom JSON config")
 
+    parser.add_argument("--assume", type=str, default=None, help="Path to a file with assumed program bits")
+
     parser.add_argument("--instructions", type=int, default=None, help="Override number of SSA instructions")
     parser.add_argument("--batch-size", type=int, default=None, help="Number of examples to add to each bit-vector-encoded batch (default: all examples)")
 
@@ -428,6 +499,17 @@ def main() -> None:
     s = make_solver(args.solver)
 
     s.add(*build_program(NUM_INPUTS, NUM_OUTPUTS, PROGRAM_LENGTH))
+
+    if args.assume:
+        if args.assume=="-":
+            file=sys.stdin
+        else:
+            assume_path = Path(args.assume)
+            if not assume_path.is_file():
+                raise SystemExit(f"Assume file not found: {assume_path}")
+            file = assume_path.open("r", encoding="utf-8")
+
+        s.add(*build_assumptions_from_file(file))
 
     if not args.make_smt2 and not args.make_dimacs and not args.do_all:
         s.check()
