@@ -620,8 +620,11 @@ def main() -> None:
         else:
             logger.error("Total mismatches: %d", mismatches)
             exit(1)
-    else:
+    elif str(result) == 'unsat':
         logger.info(f"UNSAT in {elapsed:.3f} seconds")
+        exit(1)
+    else:
+        logger.info(f"UNKNOWN result: {result} in {elapsed:.3f} seconds")
         exit(1)
 
 if __name__ == "__main__":
