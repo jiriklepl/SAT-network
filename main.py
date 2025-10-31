@@ -64,7 +64,7 @@ def _select_bv(values: List[T], idx_var: Union[BitVecNumRef, BitVecRef], bits: i
     return result
 
 
-def build_program(num_inputs: int, num_outputs: int, program_length: int) -> List[BoolRef]:
+def _build_program(num_inputs: int, num_outputs: int, program_length: int) -> List[BoolRef]:
     """Build SSA-style straight-line program constraints (no examples).
 
     Returns a list of constraints that define the program structure.
@@ -139,7 +139,7 @@ def build_program(num_inputs: int, num_outputs: int, program_length: int) -> Lis
 
     return constraints
 
-def build_assumptions_from_file(file: TextIO) -> List[Union[BoolRef, Literal[False]]]:
+def _build_assumptions_from_file(file: TextIO) -> List[Union[BoolRef, Literal[False]]]:
     """Build assumptions from a file with assumed program bits.
 
     Example file format (3-bit adder):
@@ -208,7 +208,7 @@ def build_assumptions_from_file(file: TextIO) -> List[Union[BoolRef, Literal[Fal
 
     return constraints
 
-def build_test(width: int, input_vals: List[int], tag: str) -> Tuple[List[Union[BoolRef, Literal[False]]], List[Union[BitVecRef, BitVecNumRef]]]:
+def _build_test(width: int, input_vals: List[int], tag: str) -> Tuple[List[Union[BoolRef, Literal[False]]], List[Union[BitVecRef, BitVecNumRef]]]:
     """Build SSA-style straight-line program constraints for a batch.
 
     Returns a tuple (constraints, outputs) where outputs is a list of
@@ -348,7 +348,7 @@ def _build_dataset_from_config(cfg: Dict[str, Any]) -> Tuple[List[Example], int,
     return examples, num_inputs, num_outputs, instructions
 
 
-def make_solver(solver_choice: str) -> Solver:
+def _make_solver(solver_choice: str) -> Solver:
     if solver_choice == 'z3':
         return SolverFor('QF_BV')
 
@@ -496,9 +496,9 @@ def main() -> None:
         _export_blif(examples, NUM_INPUTS, NUM_OUTPUTS)
         return
 
-    s = make_solver(args.solver)
+    s = _make_solver(args.solver)
 
-    s.add(*build_program(NUM_INPUTS, NUM_OUTPUTS, PROGRAM_LENGTH))
+    s.add(*_build_program(NUM_INPUTS, NUM_OUTPUTS, PROGRAM_LENGTH))
 
     if args.assume:
         if args.assume=="-":
@@ -509,7 +509,7 @@ def main() -> None:
                 raise SystemExit(f"Assume file not found: {assume_path}")
             file = assume_path.open("r", encoding="utf-8")
 
-        s.add(*build_assumptions_from_file(file))
+        s.add(*_build_assumptions_from_file(file))
 
     if not args.make_smt2 and not args.make_dimacs and not args.do_all:
         s.check()
@@ -526,7 +526,7 @@ def main() -> None:
     for batch_idx, offset in enumerate(range(0, len(examples), batch_size)):
         batch = examples[offset: offset + batch_size]
         width, input_vals, output_vals, output_masks = _pack_examples_to_bitvectors(batch, NUM_INPUTS, NUM_OUTPUTS)
-        constraints, outputs = build_test(width, input_vals, tag=f"b{batch_idx}")
+        constraints, outputs = _build_test(width, input_vals, tag=f"b{batch_idx}")
         s.add(*constraints)
         for j in range(NUM_OUTPUTS):
             if output_masks[j] != 0:
