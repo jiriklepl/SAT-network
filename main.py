@@ -403,6 +403,8 @@ def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inpu
     """Post-process the synthesized program"""
     logger = logging.getLogger(__name__)
 
+    strong_preprocessing = True
+
     class DAGNode:
         def __init__(self, op: int, s1: int, s2: int):
             self.op = op
@@ -474,100 +476,6 @@ def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inpu
         updated = False
         logger.info("Starting post-processing iteration")
 
-        accessed: set[int] = set()
-        new_accessed: List[int] = []
-
-        for out_idx in range(num_outputs):
-            sel_idx = outputs[out_idx]
-            accessed.add(sel_idx)
-            new_accessed.append(sel_idx)
-
-        while len(new_accessed) > 0:
-            curr = new_accessed.pop()
-            node = dag.get(curr)
-            if node is None:
-                continue
-
-            for src in (node.s1, node.s2):
-                if src not in accessed:
-                    accessed.add(src)
-                    new_accessed.append(src)
-
-        # Eliminate unused nodes
-        for idx in list(dag.keys()):
-            if idx not in accessed:
-                logger.info(f"Eliminating unused instruction T{idx - (num_inputs + 1)}")
-                del dag[idx]
-
-        # Try to replace operands with earlier equivalent nodes
-        for idx, node in dag.items():
-            s1_idx = node.s1
-            s2_idx = node.s2
-
-            # Try to replace s1
-            for cidx in list(range(num_inputs + 1)) + list(dag.keys()):
-                if cidx >= s1_idx:
-                    continue
-
-                node.s1 = cidx
-
-                if not check():
-                    node.s1 = s1_idx
-                    continue
-
-                logger.info(f"Replacing source s1 of T{idx - (num_inputs + 1)} from T{s1_idx - (num_inputs + 1)} to T{cidx - (num_inputs + 1)}")
-                updated = True
-                break
-
-            # Try to replace s2
-            for cidx in list(range(num_inputs + 1)) + list(dag.keys()):
-                if cidx >= s2_idx:
-                    continue
-
-                node.s2 = cidx
-
-                if not check():
-                    node.s2 = s2_idx
-                    continue
-
-                logger.info(f"Replacing source s2 of T{idx - (num_inputs + 1)} from T{s2_idx - (num_inputs + 1)} to T{cidx - (num_inputs + 1)}")
-                updated = True
-                break
-        
-        # Try to use earlier equivalent nodes as outputs
-        for out_idx in range(num_outputs):
-            sel_idx = outputs[out_idx]
-
-            for cidx in list(range(num_inputs + 1)) + list(dag.keys()):
-                if cidx >= sel_idx:
-                    continue
-
-                outputs[out_idx] = cidx
-
-                if not check():
-                    outputs[out_idx] = sel_idx
-                    continue
-
-                logger.info(f"Replacing output OUT{out_idx} from T{sel_idx - (num_inputs + 1)} to T{cidx - (num_inputs + 1)}")
-                updated = True
-                break
-
-        # Try to replace non-OR gates with OR gates where possible
-        for idx, node in dag.items():
-            op = node.op
-            if op == OR:
-                continue
-
-            node.op = OR
-            
-            if not check():
-                node.op = op
-                continue
-            
-            logger.info(f"Replacing instruction T{idx - (num_inputs + 1)} from {"XOR" if op == XOR else "AND"} to OR")
-            node.op = OR
-            updated = True
-
         # Ensure src1 < src2
         for idx, node in dag.items():
             if node.s1 > node.s2:
@@ -579,7 +487,7 @@ def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inpu
         if list(dag.keys()) != [k for k, _ in sorted_items]:
             logger.info("Re-ordering instructions to maintain canonical order")
             updated = True
-            new_idxs = {}
+            new_idxs: Dict[int, int] = {}
             for new_idx, (old_idx, node) in enumerate(sorted_items):
                 new_idxs[old_idx] = num_inputs + 1 + new_idx
 
@@ -593,6 +501,9 @@ def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inpu
                 outputs[out_idx] = new_idxs.get(sel_idx, sel_idx)
 
             dag = new_dag
+
+            if updated:
+                continue
 
         # Update users
         for node in dag.values():
@@ -626,12 +537,133 @@ def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inpu
                 updated = True
                 break
 
+        accessed: set[int] = set()
+        new_accessed: List[int] = []
+
+        for out_idx in range(num_outputs):
+            sel_idx = outputs[out_idx]
+            accessed.add(sel_idx)
+            new_accessed.append(sel_idx)
+
+        while len(new_accessed) > 0:
+            curr = new_accessed.pop()
+            node = dag.get(curr)
+            if node is None:
+                continue
+
+            for src in (node.s1, node.s2):
+                if src not in accessed:
+                    accessed.add(src)
+                    new_accessed.append(src)
+
+        # Eliminate unused nodes
+        for idx in list(dag.keys()):
+            if idx not in accessed:
+                logger.info(f"Eliminating unused instruction T{idx - (num_inputs + 1)}")
+                del dag[idx]
+
+        # Try to replace operands with earlier equivalent nodes
+        for idx, node in dag.items():
+            s1_idx = node.s1
+            s2_idx = node.s2
+
+            possible_idxs = [x for x in list(range(num_inputs + 1)) + list(dag.keys()) if x < idx]
+
+            if strong_preprocessing:
+                old_op = node.op
+                alt_ops = [OR, AND, XOR]
+
+                # cartesian product: (op, s1, s2)
+                product = [(op, s1, s2) for op in alt_ops for s1 in possible_idxs for s2 in possible_idxs if s1 <= s2 and (s1 + s2 + op < s1_idx + s2_idx + old_op)]
+                product.sort(key=lambda x: (x[2], x[1], x[0]))  # sort by (s2, s1, op)
+
+                for op, cidx1, cidx2 in product:
+                    node.op = op
+                    node.s1 = cidx1
+                    node.s2 = cidx2
+
+                    if not check():
+                        node.op = old_op
+                        node.s1 = s1_idx
+                        node.s2 = s2_idx
+                        continue
+
+                    logger.info(f"Replacing instruction T{idx - (num_inputs + 1)} from {OP_LABELS[old_op]}(T{s1_idx - (num_inputs + 1)}, T{s2_idx - (num_inputs + 1)}) to {OP_LABELS[op]}(T{cidx1 - (num_inputs + 1)}, T{cidx2 - (num_inputs + 1)})")
+                    updated = True
+                    break
+
+                continue
+
+            # Try to replace s1
+            for cidx in possible_idxs:
+                if cidx >= s1_idx:
+                    continue
+
+                node.s1 = cidx
+
+                if not check():
+                    node.s1 = s1_idx
+                    continue
+
+                logger.info(f"Replacing source s1 of T{idx - (num_inputs + 1)} from T{s1_idx - (num_inputs + 1)} to T{cidx - (num_inputs + 1)}")
+                updated = True
+                break
+
+            # Try to replace s2
+            for cidx in possible_idxs:
+                if cidx >= s2_idx:
+                    continue
+
+                node.s2 = cidx
+
+                if not check():
+                    node.s2 = s2_idx
+                    continue
+
+                logger.info(f"Replacing source s2 of T{idx - (num_inputs + 1)} from T{s2_idx - (num_inputs + 1)} to T{cidx - (num_inputs + 1)}")
+                updated = True
+                break
+
+        # Try to use earlier equivalent nodes as outputs
+        for out_idx in range(num_outputs):
+            sel_idx = outputs[out_idx]
+
+            for cidx in list(range(num_inputs + 1)) + list(dag.keys()):
+                if cidx >= sel_idx:
+                    continue
+
+                outputs[out_idx] = cidx
+
+                if not check():
+                    outputs[out_idx] = sel_idx
+                    continue
+
+                logger.info(f"Replacing output OUT{out_idx} from T{sel_idx - (num_inputs + 1)} to T{cidx - (num_inputs + 1)}")
+                updated = True
+                break
+
+        # Try to replace non-OR gates with OR gates where possible
+        for idx, node in dag.items():
+            op = node.op
+            if op == OR:
+                continue
+
+            node.op = OR
+
+            if not check():
+                node.op = op
+                continue
+
+            logger.info(f"Replacing instruction T{idx - (num_inputs + 1)} from {"XOR" if op == XOR else "AND"} to OR")
+            node.op = OR
+            updated = True
+
     # Re-number instructions to be contiguous
     new_idxs = {}
     for new_idx, old_idx in enumerate(sorted(dag.keys())):
         new_idxs[old_idx] = new_idx + (num_inputs + 1)
 
-    new_dag: Dict[int, DAGNode] = {}
+    new_dag = {}
     for idx, node in dag.items():
         new_node = DAGNode(node.op, new_idxs.get(node.s1, node.s1), new_idxs.get(node.s2, node.s2))
         new_dag[new_idxs[idx]] = new_node
