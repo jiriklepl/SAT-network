@@ -176,10 +176,10 @@ def _build_assumptions_from_file(file: TextIO) -> List[Union[BoolRef, Literal[Fa
         rhs = rhs.strip()
 
         def translate_arg(arg: str) -> int:
-            if arg.startswith('I'):
-                return int(arg[1:])
-            elif arg == '1':
-                return NUM_INPUTS
+            if arg == '1':
+                return 0
+            elif arg.startswith('I'):
+                return int(arg[1:]) + 1
             elif arg.startswith('T'):
                 return NUM_INPUTS + 1 + int(arg[1:])
             else:
@@ -229,8 +229,7 @@ def _build_test(width: int, input_vals: List[int], tag: str) -> Tuple[List[Union
 
     # Seed values with the batch input truth tables
     values: List[Union[BitVecNumRef, BitVecRef]] = [BitVecVal(input_vals[j], width) for j in range(NUM_INPUTS)]
-
-    values.append(~BitVecVal(0, width))  # constant 1
+    values = [~BitVecVal(0, width)] + values  # constant 1
 
     for instr in range(PROGRAM_LENGTH):
         op = BitVec(f"OP_{instr}", OP_BITS)
@@ -439,8 +438,8 @@ def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inpu
             ins = ex["inputs"]
             outs = ex["outputs"]
 
-            values: Dict[int, bool] = {i: bool(v) for i, v in enumerate(ins)}
-            values[num_inputs] = True  # constant 1
+            values: Dict[int, bool] = {i + 1: bool(v) for i, v in enumerate(ins)}
+            values[0] = True  # constant 1
 
             for idx, node in dag.items():
                 if node.s1 not in values:
@@ -841,10 +840,10 @@ def main() -> None:
         instrs: List[Tuple[Optional[int], int, int]] = []
 
         def fmt_src(idx: int) -> str:
-            if idx < NUM_INPUTS:
-                return f"I{idx}"
-            if idx == NUM_INPUTS:
+            if idx == 0:
                 return "1"
+            if idx <= NUM_INPUTS:
+                return f"I{idx}"
             return f"T{idx - NUM_INPUTS - 1}"
 
         if args.output_blif:
@@ -929,7 +928,7 @@ def main() -> None:
 
             # Evaluate the synthesized program on this example
             values: List[int] = [int(bool(v)) for v in ins]
-            values.append(1)  # constant 1
+            values = [1] + values  # constant 1
 
             for _, (op, s1_idx, s2_idx) in enumerate(instrs):
                 if op is None:
