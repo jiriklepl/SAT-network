@@ -33,6 +33,8 @@ from z3 import (
 
 from dataset_plugins import Example, IOList, get_plugin, available_plugins
 import dataset_plugins.gol  # ensures GoL plugin registration
+import dataset_plugins.gol1  # ensures GoL plugin registration
+import dataset_plugins.gol2  # ensures GoL plugin registration
 import dataset_plugins.adder  # ensures 3-bit adder plugin registration
 import dataset_plugins.sloppy_adder  # ensures sloppy adder plugin registration
 import dataset_plugins.sloppy_adder3  # ensures sloppy 3-input adder plugin registration
@@ -398,6 +400,258 @@ def _export_blif(examples: List[Example], num_inputs: int, num_outputs: int) -> 
 
     print(".end")
 
+def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inputs: int, num_outputs: int, examples: List[Example], outputs: List[int]) -> Tuple[List[Tuple[Optional[int], int, int]], List[int]]:
+    """Post-process the synthesized program"""
+    logger = logging.getLogger(__name__)
+
+    class DAGNode:
+        def __init__(self, op: int, s1: int, s2: int):
+            self.op = op
+            self.s1 = s1
+            self.s2 = s2
+            self.users: set[int] = set()
+
+        def __repr__(self) -> str:
+            return f"({self.op}, {self.s1}, {self.s2})"
+
+    dag: Dict[int, DAGNode] = {}
+
+    for i, (op, s1, s2) in enumerate(instrs):
+        idx = num_inputs + 1 + i
+        if op is None:
+            raise ValueError("Cannot post-process program with unknown operations")
+
+        dag[idx] = DAGNode(op, s1, s2)
+
+    for i, (op, s1, s2) in enumerate(instrs):
+        idx = num_inputs + 1 + i
+        if s1 in dag:
+            dag[s1].users.add(idx)
+        if s2 in dag:
+            dag[s2].users.add(idx)
+
+    OR = 0
+    AND = 1
+    XOR = 2
+
+    def check() -> bool:
+        for ex in examples:
+            ins = ex["inputs"]
+            outs = ex["outputs"]
+
+            values: Dict[int, bool] = {i: bool(v) for i, v in enumerate(ins)}
+            values[num_inputs] = True  # constant 1
+
+            for idx, node in dag.items():
+                if node.s1 not in values:
+                    raise ValueError(f"Missing value for source {node.s1} of node {idx} in {dag} with outputs {outputs}")
+                if node.s2 not in values:
+                    raise ValueError(f"Missing value for source {node.s2} of node {idx} in {dag} with outputs {outputs}")
+                left = values[node.s1]
+                right = values[node.s2]
+                if node.op == 0:  # OR
+                    val = left | right
+                elif node.op == 1:  # AND
+                    val = left & right
+                elif node.op == 2:  # XOR
+                    val = left ^ right
+                else:
+                    val = False
+                values[idx] = val
+
+            for out_idx in range(num_outputs):
+                sel_idx = outputs[out_idx]
+                expected = bool(outs[out_idx])
+                actual = values[sel_idx]
+                if expected != actual:
+                    return False
+
+        return True
+
+    assert check(), "Post-processing started with incorrect program"
+
+    updated = True
+    while updated:
+        updated = False
+        logger.info("Starting post-processing iteration")
+
+        accessed: set[int] = set()
+        new_accessed: List[int] = []
+
+        for out_idx in range(num_outputs):
+            sel_idx = outputs[out_idx]
+            accessed.add(sel_idx)
+            new_accessed.append(sel_idx)
+
+        while len(new_accessed) > 0:
+            curr = new_accessed.pop()
+            node = dag.get(curr)
+            if node is None:
+                continue
+
+            for src in (node.s1, node.s2):
+                if src not in accessed:
+                    accessed.add(src)
+                    new_accessed.append(src)
+
+        # Eliminate unused nodes
+        for idx in list(dag.keys()):
+            if idx not in accessed:
+                logger.info(f"Eliminating unused instruction T{idx - (num_inputs + 1)}")
+                del dag[idx]
+
+        # Try to replace operands with earlier equivalent nodes
+        for idx, node in dag.items():
+            s1_idx = node.s1
+            s2_idx = node.s2
+
+            # Try to replace s1
+            for cidx in list(range(num_inputs + 1)) + list(dag.keys()):
+                if cidx >= s1_idx:
+                    continue
+
+                node.s1 = cidx
+
+                if not check():
+                    node.s1 = s1_idx
+                    continue
+
+                logger.info(f"Replacing source s1 of T{idx - (num_inputs + 1)} from T{s1_idx - (num_inputs + 1)} to T{cidx - (num_inputs + 1)}")
+                updated = True
+                break
+
+            # Try to replace s2
+            for cidx in list(range(num_inputs + 1)) + list(dag.keys()):
+                if cidx >= s2_idx:
+                    continue
+
+                node.s2 = cidx
+
+                if not check():
+                    node.s2 = s2_idx
+                    continue
+
+                logger.info(f"Replacing source s2 of T{idx - (num_inputs + 1)} from T{s2_idx - (num_inputs + 1)} to T{cidx - (num_inputs + 1)}")
+                updated = True
+                break
+        
+        # Try to use earlier equivalent nodes as outputs
+        for out_idx in range(num_outputs):
+            sel_idx = outputs[out_idx]
+
+            for cidx in list(range(num_inputs + 1)) + list(dag.keys()):
+                if cidx >= sel_idx:
+                    continue
+
+                outputs[out_idx] = cidx
+
+                if not check():
+                    outputs[out_idx] = sel_idx
+                    continue
+
+                logger.info(f"Replacing output OUT{out_idx} from T{sel_idx - (num_inputs + 1)} to T{cidx - (num_inputs + 1)}")
+                updated = True
+                break
+
+        # Try to replace non-OR gates with OR gates where possible
+        for idx, node in dag.items():
+            op = node.op
+            if op == OR:
+                continue
+
+            node.op = OR
+            
+            if not check():
+                node.op = op
+                continue
+            
+            logger.info(f"Replacing instruction T{idx - (num_inputs + 1)} from {"XOR" if op == XOR else "AND"} to OR")
+            node.op = OR
+            updated = True
+
+        # Ensure src1 < src2
+        for idx, node in dag.items():
+            if node.s1 > node.s2:
+                logger.info(f"Swapping sources of instruction T{idx - (num_inputs + 1)} to maintain s1 < s2")
+                node.s1, node.s2 = node.s2, node.s1
+
+        # Ensure that instructions are ordered by (s2, s1, op)
+        sorted_items = sorted(dag.items(), key=lambda item: (item[1].s2, item[1].s1, item[1].op))
+        if list(dag.keys()) != [k for k, _ in sorted_items]:
+            logger.info("Re-ordering instructions to maintain canonical order")
+            updated = True
+            new_idxs = {}
+            for new_idx, (old_idx, node) in enumerate(sorted_items):
+                new_idxs[old_idx] = num_inputs + 1 + new_idx
+
+            new_dag: Dict[int, DAGNode] = {}
+            for old_idx, node in sorted_items:
+                new_node = DAGNode(node.op, new_idxs.get(node.s1, node.s1), new_idxs.get(node.s2, node.s2))
+                new_dag[new_idxs[old_idx]] = new_node
+            
+            for out_idx in range(num_outputs):
+                sel_idx = outputs[out_idx]
+                outputs[out_idx] = new_idxs.get(sel_idx, sel_idx)
+
+            dag = new_dag
+
+        # Update users
+        for node in dag.values():
+            node.users.clear()
+
+        for idx, node in dag.items():
+            if node.s1 in dag:
+                dag[node.s1].users.add(idx)
+            if node.s2 in dag:
+                dag[node.s2].users.add(idx)
+
+        # Ensure that if an instruction has one user with the same op, then s1, s2 < user.s1, user.s2
+        for idx, node in dag.items():
+            if len(node.users) != 1:
+                continue
+
+            user_idx = next(iter(node.users))
+            user_node = dag[user_idx]
+
+            if node.op != user_node.op:
+                continue
+
+            if not (node.s1 < user_node.s1 and node.s2 < user_node.s1 and node.s1 < user_node.s2 and node.s2 < user_node.s2):
+                logger.info(f"Adjusting instruction T{idx - (num_inputs + 1)} to satisfy user T{user_idx - (num_inputs + 1)} constraints")
+                if idx == user_node.s1:
+                    others = sorted([node.s1, node.s2, user_node.s2])
+                    node.s1, node.s2, user_node.s2 = others
+                if idx == user_node.s2:
+                    others = sorted([node.s1, node.s2, user_node.s1])
+                    node.s1, node.s2, user_node.s1 = others
+                updated = True
+                break
+
+    # Re-number instructions to be contiguous
+    new_idxs = {}
+    for new_idx, old_idx in enumerate(sorted(dag.keys())):
+        new_idxs[old_idx] = new_idx + (num_inputs + 1)
+
+    new_dag: Dict[int, DAGNode] = {}
+    for idx, node in dag.items():
+        new_node = DAGNode(node.op, new_idxs.get(node.s1, node.s1), new_idxs.get(node.s2, node.s2))
+        new_dag[new_idxs[idx]] = new_node
+
+    for out_idx in range(num_outputs):
+        sel_idx = outputs[out_idx]
+        outputs[out_idx] = new_idxs.get(sel_idx, sel_idx)
+
+    dag = new_dag
+
+    instrs = []
+    for idx in dag.keys():
+        node = dag[idx]
+        instrs.append((node.op, node.s1, node.s2))
+
+    logger.info(f"Post-processing reduced program to {len(instrs)} instructions")
+
+    return instrs, outputs
+
 
 def main() -> None:
     logging.basicConfig(
@@ -413,6 +667,8 @@ def main() -> None:
     parser.add_argument("--config", type=str, default=None, help="Path to a custom JSON config")
 
     parser.add_argument("--assume", type=str, default=None, help="Path to a file with assumed program bits")
+
+    parser.add_argument("--post-process", action="store_true", help="Post-process the synthesized program, attempting to minimize instructions and simplify")
 
     parser.add_argument("--instructions", type=int, default=None, help="Override number of SSA instructions")
     parser.add_argument("--batch-size", type=int, default=None, help="Number of examples to add to each bit-vector-encoded batch (default: all examples)")
@@ -650,6 +906,19 @@ def main() -> None:
         if args.output_blif:
             print(".end")
 
+        # Post-process the synthesized program
+        if args.post_process:
+            logger.info("Post-processing synthesized program")
+            instrs, outputs = _post_process_program(instrs, NUM_INPUTS, NUM_OUTPUTS, examples, outputs)
+
+            for instr in instrs:
+                op_val, s1_val, s2_val = instr
+                label = OP_LABELS.get(op_val, '?')
+                print(f"T{instrs.index(instr)}: {label}({fmt_src(s1_val)}, {fmt_src(s2_val)})")
+            for out_idx, sel in enumerate(outputs):
+                print(f"OUT{out_idx}: {fmt_src(sel)}")
+
+        # Verify the synthesized program against all examples
         mismatches = 0
         for idx, ex in enumerate(examples):
             ins = ex["inputs"]
@@ -662,8 +931,7 @@ def main() -> None:
             values: List[int] = [int(bool(v)) for v in ins]
             values.append(1)  # constant 1
 
-            for instr in range(PROGRAM_LENGTH):
-                op, s1_idx, s2_idx = instrs[instr]
+            for _, (op, s1_idx, s2_idx) in enumerate(instrs):
                 if op is None:
                     val = 0
                 else:
