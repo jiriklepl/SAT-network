@@ -547,11 +547,11 @@ def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inpu
 
         while len(new_accessed) > 0:
             curr = new_accessed.pop()
-            node = dag.get(curr)
-            if node is None:
+            nnode = dag.get(curr)
+            if nnode is None:
                 continue
 
-            for src in (node.s1, node.s2):
+            for src in (nnode.s1, nnode.s2):
                 if src not in accessed:
                     accessed.add(src)
                     new_accessed.append(src)
