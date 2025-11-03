@@ -96,7 +96,6 @@ def _build_program(num_inputs: int, num_outputs: int, program_length: int) -> Li
         src1 = BitVec(f"S1_{instr}", idx_bits)
         src2 = BitVec(f"S2_{instr}", idx_bits)
 
-
         # Force uniqueness of (op, src1, src2) tuples
         if force_ordered:
             if instr > 0:
@@ -140,6 +139,7 @@ def _build_program(num_inputs: int, num_outputs: int, program_length: int) -> Li
         constraints.append(ULE(selector, max_total_idx))
 
     return constraints
+
 
 def _build_assumptions_from_file(file: TextIO) -> List[Union[BoolRef, Literal[False]]]:
     """Build assumptions from a file with assumed program bits.
@@ -210,6 +210,7 @@ def _build_assumptions_from_file(file: TextIO) -> List[Union[BoolRef, Literal[Fa
 
     return constraints
 
+
 def _build_test(width: int, input_vals: List[int], tag: str) -> Tuple[List[Union[BoolRef, Literal[False]]], List[Union[BitVecRef, BitVecNumRef]]]:
     """Build SSA-style straight-line program constraints for a batch.
 
@@ -247,7 +248,6 @@ def _build_test(width: int, input_vals: List[int], tag: str) -> Tuple[List[Union
 
                 constraints.append(Implies(src1_idx, left_expr == value))
                 constraints.append(Implies(src2_idx, right_expr == value))
-
 
             left_expr_ = _select_bv(values, src1, idx_bits)
             right_expr_ = _select_bv(values, src2, idx_bits)
@@ -373,15 +373,11 @@ def _make_solver(solver_choice: str) -> Solver:
 
     raise ValueError(f"Unsupported solver choice: {solver_choice}")
 
+
 def _export_blif(examples: List[Example], num_inputs: int, num_outputs: int) -> None:
     """Export the problem as a BLIF file to stdout."""
 
     print(f".model synth_program")
-    # for i in range(num_inputs):
-    #     print(f".inputs I{i}")
-    # for o in range(num_outputs):
-    #     print(f".outputs OUT{o}")
-
     print(f'.inputs {" ".join(f"I{i}" for i in range(num_inputs))}')
     print(f'.outputs {" ".join(f"OUT{o}" for o in range(num_outputs))}')
 
@@ -398,6 +394,7 @@ def _export_blif(examples: List[Example], num_inputs: int, num_outputs: int) -> 
                 print(f"{input_line} 1")
 
     print(".end")
+
 
 def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inputs: int, num_outputs: int, examples: List[Example], outputs: List[int]) -> Tuple[List[Tuple[Optional[int], int, int]], List[int]]:
     """Post-process the synthesized program"""
@@ -495,7 +492,7 @@ def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inpu
             for old_idx, node in sorted_items:
                 new_node = DAGNode(node.op, new_idxs.get(node.s1, node.s1), new_idxs.get(node.s2, node.s2))
                 new_dag[new_idxs[old_idx]] = new_node
-            
+
             for out_idx in range(num_outputs):
                 sel_idx = outputs[out_idx]
                 outputs[out_idx] = new_idxs.get(sel_idx, sel_idx)
@@ -740,7 +737,6 @@ def main() -> None:
     if args.quiet:
         logger.setLevel(logging.WARNING)
         logging.getLogger("z3").setLevel(logging.WARNING)
-    
     else:
         logger.setLevel(logging.INFO)
         logging.getLogger("z3").setLevel(logging.INFO)
@@ -1007,6 +1003,7 @@ def main() -> None:
     else:
         logger.info(f"UNKNOWN result: {result} in {elapsed:.3f} seconds")
         exit(1)
+
 
 if __name__ == "__main__":
     main()
