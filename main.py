@@ -651,7 +651,7 @@ def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inpu
                 node.op = op
                 continue
 
-            logger.info(f"Replacing instruction T{idx - (num_inputs + 1)} from {"XOR" if op == XOR else "AND"} to OR")
+            logger.info(f"Replacing instruction T{idx - (num_inputs + 1)} from {OP_LABELS[op]} to OR")
             node.op = OR
             updated = True
 
