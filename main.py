@@ -871,7 +871,7 @@ def main() -> None:
             if idx == 0:
                 return "1"
             if idx <= NUM_INPUTS:
-                return f"I{idx}"
+                return f"I{idx - 1}"
             return f"T{idx - NUM_INPUTS - 1}"
 
         if args.output_blif:
