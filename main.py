@@ -3,7 +3,6 @@
 import argparse
 import json
 import logging
-import re
 import sys
 import time
 import random
@@ -31,13 +30,7 @@ from z3 import (
     Tactic,
 )
 
-from dataset_plugins import Example, IOList, get_plugin, available_plugins
-import dataset_plugins.gol  # ensures GoL plugin registration
-import dataset_plugins.gol1  # ensures GoL plugin registration
-import dataset_plugins.gol2  # ensures GoL plugin registration
-import dataset_plugins.adder  # ensures 3-bit adder plugin registration
-import dataset_plugins.sloppy_adder  # ensures sloppy adder plugin registration
-import dataset_plugins.sloppy_adder3  # ensures sloppy 3-input adder plugin registration
+from dataset_plugins import Example, IOList, get_plugin, get_plugin_config, available_plugins
 
 # Defaults (overridden by config/CLI)
 NUM_INPUTS = 7
@@ -745,16 +738,13 @@ def main() -> None:
     # print the chosen configuration
     logger.info("Using configuration: %s", vars(args))
 
-    config_path = Path(__file__).parent / "configs"
     if args.config:
-        config_path = Path(args.config)
+        cfg = _load_config(Path(args.config))
     elif args.dataset:
-        sanitized = re.sub(r'[^a-zA-Z0-9_-]', '', args.dataset)
-        config_path = config_path / f"{sanitized}.json"
+        cfg = get_plugin_config(args.dataset)
     else:
         raise SystemExit("Either --dataset or --config must be specified")
 
-    cfg = _load_config(config_path)
     examples, num_inputs, num_outputs, cfg_instructions = _build_dataset_from_config(cfg)
     if not examples:
         raise SystemExit("Dataset contains no examples")

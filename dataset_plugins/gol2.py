@@ -47,4 +47,6 @@ def _build_from_config(cfg: Dict[str, Any]) -> DatasetResult:
     return examples, num_inputs, num_outputs
 
 
-register_plugin("gol2", _build_from_config)
+register_plugin("gol2", _build_from_config, {
+    "instructions": 8,
+})

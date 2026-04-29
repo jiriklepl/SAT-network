@@ -48,4 +48,12 @@ def _build_from_config(cfg: Dict[str, Any]) -> DatasetResult:
     return examples, num_inputs, num_outputs
 
 
-register_plugin("gol", _build_from_config)
+register_plugin("gol", _build_from_config, {
+    "instructions": 14,
+    "gol": {
+        "left_range": 4,
+        "center_range": 3,
+        "right_range": 4,
+        "include_alive": True,
+    },
+})

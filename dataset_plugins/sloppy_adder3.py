@@ -57,4 +57,13 @@ def _build_from_config(cfg: Dict[str, Any]) -> DatasetResult:
     return examples, num_inputs, num_outputs
 
 
-register_plugin("sloppy-adder3", _build_from_config)
+register_plugin("sloppy-adder3", _build_from_config, {
+    "num_inputs": 6,
+    "num_outputs": 3,
+    "instructions": 12,
+    "sloppy_adder": {
+        "left_range": 4,
+        "center_range": 3,
+        "right_range": 4,
+    },
+})
