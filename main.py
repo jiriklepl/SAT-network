@@ -605,6 +605,9 @@ def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inpu
 
     XOR = OP_BY_LABEL['XOR'].code
 
+    def fmt_source(idx: int) -> str:
+        return _format_source(idx, num_inputs)
+
     def check() -> bool:
         for ex in examples:
             ins = ex["inputs"]
@@ -644,7 +647,7 @@ def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inpu
         # Ensure src1 < src2
         for idx, node in dag.items():
             if node.s1 > node.s2:
-                logger.info(f"Swapping sources of instruction T{idx - (num_inputs + 1)} to maintain s1 < s2")
+                logger.info("Swapping sources of instruction %s to maintain s1 < s2", fmt_source(idx))
                 node.s1, node.s2 = node.s2, node.s1
 
         # Ensure that instructions are ordered by (s2, s1, op)
@@ -694,7 +697,11 @@ def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inpu
             assert idx == user_node.s1 or idx == user_node.s2, f"Node {idx} is not a source of its user {user_idx} in {dag}"
 
             if not (node.s1 < user_node.s1 and node.s2 < user_node.s1 and node.s1 < user_node.s2 and node.s2 < user_node.s2):
-                logger.info(f"Adjusting instruction T{idx - (num_inputs + 1)} to satisfy user T{user_idx - (num_inputs + 1)} constraints")
+                logger.info(
+                    "Adjusting instruction %s to satisfy user %s constraints",
+                    fmt_source(idx),
+                    fmt_source(user_idx),
+                )
                 sources = sorted([node.s1, node.s2, user_node.s1, user_node.s2])
                 node.s1, node.s2, user_node.s1, user_node.s2 = sources
                 updated = True
@@ -721,7 +728,7 @@ def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inpu
         # Eliminate unused nodes
         for idx in list(dag.keys()):
             if idx not in accessed:
-                logger.info(f"Eliminating unused instruction T{idx - (num_inputs + 1)}")
+                logger.info("Eliminating unused instruction %s", fmt_source(idx))
                 del dag[idx]
 
         # Try to replace operands with earlier equivalent nodes
@@ -758,7 +765,16 @@ def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inpu
                     node.s2 = s2_idx
                     continue
 
-                logger.info(f"Replacing instruction T{idx - (num_inputs + 1)} from {_op_label(old_op)}(T{s1_idx - (num_inputs + 1)}, T{s2_idx - (num_inputs + 1)}) to {_op_label(op)}(T{cidx1 - (num_inputs + 1)}, T{cidx2 - (num_inputs + 1)})")
+                logger.info(
+                    "Replacing instruction %s from %s(%s, %s) to %s(%s, %s)",
+                    fmt_source(idx),
+                    _op_label(old_op),
+                    fmt_source(s1_idx),
+                    fmt_source(s2_idx),
+                    _op_label(op),
+                    fmt_source(cidx1),
+                    fmt_source(cidx2),
+                )
                 updated = True
                 break
 
@@ -777,7 +793,7 @@ def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inpu
                     outputs[out_idx] = sel_idx
                     continue
 
-                logger.info(f"Replacing output OUT{out_idx} from T{sel_idx - (num_inputs + 1)} to T{cidx - (num_inputs + 1)}")
+                logger.info("Replacing output OUT%d from %s to %s", out_idx, fmt_source(sel_idx), fmt_source(cidx))
                 updated = True
                 break
 
@@ -802,7 +818,7 @@ def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inpu
         node = dag[idx]
         instrs.append((node.op, node.s1, node.s2))
 
-    logger.info(f"Post-processing reduced program to {len(instrs)} instructions")
+    logger.info("Post-processing reduced program to %d instructions", len(instrs))
 
     return instrs, outputs
 
@@ -970,7 +986,7 @@ def main() -> None:
     elapsed = time.time() - start
 
     if str(result) == 'sat':
-        logger.info(f"SAT in {elapsed:.3f} seconds")
+        logger.info("SAT in %.3f seconds", elapsed)
 
         # Pretty-print a compact architecture summary: per-instruction (op, src indices)
         m = s.model()
@@ -1022,10 +1038,10 @@ def main() -> None:
             logger.error("Total mismatches: %d", len(mismatches))
             exit(1)
     elif str(result) == 'unsat':
-        logger.info(f"UNSAT in {elapsed:.3f} seconds")
+        logger.info("UNSAT in %.3f seconds", elapsed)
         exit(1)
     else:
-        logger.info(f"UNKNOWN result: {result} in {elapsed:.3f} seconds")
+        logger.info("UNKNOWN result: %s in %.3f seconds", result, elapsed)
         exit(1)
 
 
