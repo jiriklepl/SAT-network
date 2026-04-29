@@ -44,9 +44,9 @@ class LogicOperator:
 
 
 LOGIC_OPERATORS: Tuple[LogicOperator, ...] = (
-    LogicOperator(0, 'OR', lambda left, right: left | right, ("10 1", "01 1", "11 1")),
-    LogicOperator(1, 'AND', lambda left, right: left & right, ("11 1",)),
-    LogicOperator(2, 'XOR', lambda left, right: left ^ right, ("10 1", "01 1")),
+    LogicOperator(0, 'AND', lambda left, right: left & right, ("11 1",)),
+    LogicOperator(1, 'XOR', lambda left, right: left ^ right, ("10 1", "01 1")),
+    LogicOperator(2, 'OR', lambda left, right: left | right, ("10 1", "01 1", "11 1")),
 )
 
 OP_BY_CODE = {op.code: op for op in LOGIC_OPERATORS}
@@ -174,7 +174,11 @@ def _build_program(spec: ProgramSpec, options: EncodingOptions) -> List[BoolRef]
         constraints.append(_operator_constraint(op))
         constraints.append(ULE(src1, max_idx_bv))
         constraints.append(ULE(src2, max_idx_bv))
-        constraints.append(ULT(src1, src2))
+        xor_operator = OP_BY_LABEL.get('XOR')
+        if xor_operator is None:
+            constraints.append(ULT(src1, src2))
+        else:
+            constraints.append(Or(ULT(src1, src2), And(op == BitVecVal(xor_operator.code, OP_BITS), src1 == src2)))
 
     max_total_idx = BitVecVal(spec.total_sources - 1, spec.idx_bits)
     for out_idx in range(spec.num_outputs):
@@ -286,12 +290,6 @@ def _build_test(
 
                 constraints.append(Implies(src1_idx, left_expr == value))
                 constraints.append(Implies(src2_idx, right_expr == value))
-
-            left_expr_ = _select_bv(values, src1, spec.idx_bits)
-            right_expr_ = _select_bv(values, src2, spec.idx_bits)
-
-            constraints.append(left_expr == left_expr_)
-            constraints.append(right_expr == right_expr_)
         else:
             left_expr = _select_bv(values, src1, spec.idx_bits)
             right_expr = _select_bv(values, src2, spec.idx_bits)
@@ -350,7 +348,7 @@ def _build_dataset_from_config(cfg: Dict[str, Any]) -> Tuple[List[Example], int,
         result: List[Example] = []
         for ex in data:
             ins: IOList = [bool(v) for v in ex["inputs"]]
-            outs: IOList = [bool(v) for v in ex["outputs"]]
+            outs: IOList = [None if v is None else bool(v) for v in ex["outputs"]]
             if len(ins) != num_inputs or len(outs) != num_outputs:
                 raise ValueError("Example length does not match declared input/output sizes")
             result.append({"inputs": ins, "outputs": outs})
@@ -480,11 +478,50 @@ def _verify_program(
     return mismatches
 
 
+def _emit_program(
+    instrs: List[Tuple[Optional[int], int, int]],
+    outputs: List[int],
+    num_inputs: int,
+    num_outputs: int,
+    output_blif: bool,
+) -> None:
+    if output_blif:
+        print(f".model spec")
+        print(f'.inputs {" ".join(f"I{i}" for i in range(num_inputs))}')
+        print(f'.outputs {" ".join(f"OUT{o}" for o in range(num_outputs))}')
+
+    for instr_idx, (op_val, s1_val, s2_val) in enumerate(instrs):
+        operator = OP_BY_CODE.get(op_val) if op_val is not None else None
+        label = _op_label(op_val) if op_val is not None else '?'
+
+        if output_blif:
+            if operator is None:
+                raise ValueError("Unsupported operation in BLIF output")
+            if s1_val == s2_val:
+                if operator.label != 'XOR':
+                    raise ValueError("Only XOR may use duplicate sources in BLIF output")
+                print(f".names T{instr_idx}")
+            else:
+                print(f".names {_format_source(s1_val, num_inputs)} {_format_source(s2_val, num_inputs)} T{instr_idx}")
+                for row in operator.blif_rows:
+                    print(row)
+        else:
+            print(f"T{instr_idx}: {label}({_format_source(s1_val, num_inputs)}, {_format_source(s2_val, num_inputs)})")
+
+    for out_idx, sel in enumerate(outputs):
+        if output_blif:
+            print(f".names {_format_source(sel, num_inputs)} OUT{out_idx}")
+            print(f"1 1")
+        else:
+            print(f"OUT{out_idx}: {_format_source(sel, num_inputs)}")
+
+    if output_blif:
+        print(".end")
+
+
 def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inputs: int, num_outputs: int, examples: List[Example], outputs: List[int]) -> Tuple[List[Tuple[Optional[int], int, int]], List[int]]:
     """Post-process the synthesized program"""
     logger = logging.getLogger(__name__)
-
-    strong_preprocessing = True
 
     class DAGNode:
         def __init__(self, op: int, s1: int, s2: int):
@@ -512,7 +549,7 @@ def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inpu
         if s2 in dag:
             dag[s2].users.add(idx)
 
-    OR = OP_BY_LABEL['OR'].code
+    XOR = OP_BY_LABEL['XOR'].code
 
     def check() -> bool:
         for ex in examples:
@@ -534,6 +571,8 @@ def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inpu
 
             for out_idx in range(num_outputs):
                 sel_idx = outputs[out_idx]
+                if outs[out_idx] is None:
+                    continue
                 expected = bool(outs[out_idx])
                 actual = values[sel_idx]
                 if expected != actual:
@@ -598,24 +637,21 @@ def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inpu
             if node.op != user_node.op:
                 continue
 
+            assert idx == user_node.s1 or idx == user_node.s2, f"Node {idx} is not a source of its user {user_idx} in {dag}"
+
             if not (node.s1 < user_node.s1 and node.s2 < user_node.s1 and node.s1 < user_node.s2 and node.s2 < user_node.s2):
                 logger.info(f"Adjusting instruction T{idx - (num_inputs + 1)} to satisfy user T{user_idx - (num_inputs + 1)} constraints")
-                if idx == user_node.s1:
-                    others = sorted([node.s1, node.s2, user_node.s2])
-                    node.s1, node.s2, user_node.s2 = others
-                if idx == user_node.s2:
-                    others = sorted([node.s1, node.s2, user_node.s1])
-                    node.s1, node.s2, user_node.s1 = others
+                sources = sorted([node.s1, node.s2, user_node.s1, user_node.s2])
+                node.s1, node.s2, user_node.s1, user_node.s2 = sources
                 updated = True
                 break
 
         accessed: set[int] = set()
         new_accessed: List[int] = []
 
-        for out_idx in range(num_outputs):
-            sel_idx = outputs[out_idx]
-            accessed.add(sel_idx)
-            new_accessed.append(sel_idx)
+        for idx in outputs:
+            accessed.add(idx)
+            new_accessed.append(idx)
 
         while len(new_accessed) > 0:
             curr = new_accessed.pop()
@@ -638,63 +674,37 @@ def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inpu
         for idx, node in dag.items():
             s1_idx = node.s1
             s2_idx = node.s2
+            old_op = node.op
 
             possible_idxs = [x for x in list(range(num_inputs + 1)) + list(dag.keys()) if x < idx]
 
-            if strong_preprocessing:
-                old_op = node.op
-                alt_ops = [operator.code for operator in LOGIC_OPERATORS]
+            alt_ops = [operator.code for operator in LOGIC_OPERATORS]
 
-                # cartesian product: (op, s1, s2)
-                product = [(op, s1, s2) for op in alt_ops for s1 in possible_idxs for s2 in possible_idxs if s1 <= s2 and (s1 + s2 + op < s1_idx + s2_idx + old_op)]
-                product.sort(key=lambda x: (x[2], x[1], x[0]))  # sort by (s2, s1, op)
+            # cartesian product: (op, s1, s2)
+            product = [
+                (op, s1, s2)
+                for op in alt_ops
+                for s1 in possible_idxs
+                for s2 in possible_idxs
+                if (s1 < s2 or (op == XOR and s1 == s2)) and ((s2, s1, op) < (s2_idx, s1_idx, old_op))
+            ]
+            product.sort(key=lambda x: (x[2], x[1], x[0]))  # sort by (s2, s1, op)
 
-                for op, cidx1, cidx2 in product:
-                    node.op = op
-                    node.s1 = cidx1
-                    node.s2 = cidx2
-
-                    if not check():
-                        node.op = old_op
-                        node.s1 = s1_idx
-                        node.s2 = s2_idx
-                        continue
-
-                    logger.info(f"Replacing instruction T{idx - (num_inputs + 1)} from {_op_label(old_op)}(T{s1_idx - (num_inputs + 1)}, T{s2_idx - (num_inputs + 1)}) to {_op_label(op)}(T{cidx1 - (num_inputs + 1)}, T{cidx2 - (num_inputs + 1)})")
-                    updated = True
-                    break
-
-                continue
-
-            # Try to replace s1
-            for cidx in possible_idxs:
-                if cidx >= s1_idx:
-                    continue
-
-                node.s1 = cidx
+            for op, cidx1, cidx2 in product:
+                node.op = op
+                node.s1 = cidx1
+                node.s2 = cidx2
 
                 if not check():
+                    node.op = old_op
                     node.s1 = s1_idx
-                    continue
-
-                logger.info(f"Replacing source s1 of T{idx - (num_inputs + 1)} from T{s1_idx - (num_inputs + 1)} to T{cidx - (num_inputs + 1)}")
-                updated = True
-                break
-
-            # Try to replace s2
-            for cidx in possible_idxs:
-                if cidx >= s2_idx:
-                    continue
-
-                node.s2 = cidx
-
-                if not check():
                     node.s2 = s2_idx
                     continue
 
-                logger.info(f"Replacing source s2 of T{idx - (num_inputs + 1)} from T{s2_idx - (num_inputs + 1)} to T{cidx - (num_inputs + 1)}")
+                logger.info(f"Replacing instruction T{idx - (num_inputs + 1)} from {_op_label(old_op)}(T{s1_idx - (num_inputs + 1)}, T{s2_idx - (num_inputs + 1)}) to {_op_label(op)}(T{cidx1 - (num_inputs + 1)}, T{cidx2 - (num_inputs + 1)})")
                 updated = True
                 break
+
 
         # Try to use earlier equivalent nodes as outputs
         for out_idx in range(num_outputs):
@@ -713,22 +723,6 @@ def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inpu
                 logger.info(f"Replacing output OUT{out_idx} from T{sel_idx - (num_inputs + 1)} to T{cidx - (num_inputs + 1)}")
                 updated = True
                 break
-
-        # Try to replace non-OR gates with OR gates where possible
-        for idx, node in dag.items():
-            op = node.op
-            if op == OR:
-                continue
-
-            node.op = OR
-
-            if not check():
-                node.op = op
-                continue
-
-            logger.info(f"Replacing instruction T{idx - (num_inputs + 1)} from {_op_label(op)} to OR")
-            node.op = OR
-            updated = True
 
     # Re-number instructions to be contiguous
     new_idxs = {}
@@ -859,9 +853,6 @@ def main() -> None:
             with assume_path.open("r", encoding="utf-8") as file:
                 s.add(*_build_assumptions_from_file(file, spec))
 
-    if not args.make_smt2 and not args.make_dimacs and not args.do_all:
-        s.check()
-
     logger.info("Built program structure with %d instructions", spec.program_length)
     logger.info("Solver has %d assertions", len(s.assertions()))
 
@@ -929,11 +920,6 @@ def main() -> None:
 
         instrs: List[Tuple[Optional[int], int, int]] = []
 
-        if args.output_blif:
-            print(f".model spec")
-            print(f'.inputs {" ".join(f"I{i}" for i in range(spec.num_inputs))}')
-            print(f'.outputs {" ".join(f"OUT{o}" for o in range(spec.num_outputs))}')
-
         for instr in range(spec.program_length):
             op_ref = BitVec(f"OP_{instr}", OP_BITS)
             s1_ref = BitVec(f"S1_{instr}", spec.idx_bits)
@@ -947,23 +933,11 @@ def main() -> None:
             s1_val = s1_val_ref.as_long()
             s2_val = s2_val_ref.as_long()
             operator = OP_BY_CODE.get(op_val)
-            label = _op_label(op_val)
 
             if operator is not None:
                 instrs.append((op_val, s1_val, s2_val))
-                if args.output_blif:
-                    print(f".names {_format_source(s1_val, spec.num_inputs)} {_format_source(s2_val, spec.num_inputs)} T{instr}")
-                    for row in operator.blif_rows:
-                        print(row)
-                else:
-                    print(f"T{instr}: {label}({_format_source(s1_val, spec.num_inputs)}, {_format_source(s2_val, spec.num_inputs)})")
             else:
                 instrs.append((None, s1_val, s2_val))
-
-                if args.output_blif:
-                    raise ValueError("Unsupported operation in BLIF output")
-                else:
-                    print(f"T{instr}: ?({_format_source(s1_val, spec.num_inputs)}, {_format_source(s2_val, spec.num_inputs)})")
 
         outputs: List[int] = []
         for out_idx in range(spec.num_outputs):
@@ -973,29 +947,15 @@ def main() -> None:
                 continue
             outputs.append(sel_val.as_long())
 
-            if args.output_blif:
-                print(f".names {_format_source(sel_val.as_long(), spec.num_inputs)} OUT{out_idx}")
-                print(f"1 1")
-            else:
-                print(f"OUT{out_idx}: {_format_source(sel_val.as_long(), spec.num_inputs)}")
-
         if len(outputs) != spec.num_outputs:
             raise RuntimeError(f"Model provided {len(outputs)} outputs, expected {spec.num_outputs}")
-
-        if args.output_blif:
-            print(".end")
 
         # Post-process the synthesized program
         if args.post_process:
             logger.info("Post-processing synthesized program")
             instrs, outputs = _post_process_program(instrs, spec.num_inputs, spec.num_outputs, examples, outputs)
 
-            for instr_idx, instr in enumerate(instrs):
-                op_val, s1_val, s2_val = instr
-                label = _op_label(op_val) if op_val is not None else '?'
-                print(f"T{instr_idx}: {label}({_format_source(s1_val, spec.num_inputs)}, {_format_source(s2_val, spec.num_inputs)})")
-            for out_idx, sel in enumerate(outputs):
-                print(f"OUT{out_idx}: {_format_source(sel, spec.num_inputs)}")
+        _emit_program(instrs, outputs, spec.num_inputs, spec.num_outputs, args.output_blif)
 
         # Verify the synthesized program against all examples
         mismatches = _verify_program(instrs, outputs, examples, spec.num_outputs)
