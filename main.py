@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 
 import argparse
+from dataclasses import dataclass
 import json
 import logging
+import random
 import sys
 import time
-import random
 from pathlib import Path
 from typing import Optional, TextIO, Tuple, List, Dict, Any, Literal, TypeVar, Union
 
@@ -27,22 +28,36 @@ from z3 import (
     BitVecRef,
     Goal,
     BitVecNumRef,
-    Tactic,
 )
 
 from dataset_plugins import Example, IOList, get_plugin, get_plugin_config, available_plugins
 
-# Defaults (overridden by config/CLI)
-NUM_INPUTS = 7
-NUM_OUTPUTS = 1
-PROGRAM_LENGTH = 16
-
-force_ordered = False
-force_useful = False
-encode_boolean = False
+DEFAULT_PROGRAM_LENGTH = 16
 
 OP_BITS = 2  # encode OR, AND, XOR
 OP_LABELS = {0: 'OR', 1: 'AND', 2: 'XOR'}
+
+
+@dataclass(frozen=True)
+class ProgramSpec:
+    num_inputs: int
+    num_outputs: int
+    program_length: int
+
+    @property
+    def total_sources(self) -> int:
+        return self.num_inputs + 1 + self.program_length
+
+    @property
+    def idx_bits(self) -> int:
+        return max(1, (self.total_sources - 1).bit_length())
+
+
+@dataclass(frozen=True)
+class EncodingOptions:
+    encode_boolean: bool = False
+    force_ordered: bool = False
+    force_useful: bool = False
 
 
 T = TypeVar('T')
@@ -59,20 +74,17 @@ def _select_bv(values: List[T], idx_var: Union[BitVecNumRef, BitVecRef], bits: i
     return result
 
 
-def _build_program(num_inputs: int, num_outputs: int, program_length: int) -> List[BoolRef]:
+def _build_program(spec: ProgramSpec, options: EncodingOptions) -> List[BoolRef]:
     """Build SSA-style straight-line program constraints (no examples).
 
     Returns a list of constraints that define the program structure.
     """
-    if num_inputs <= 0:
+    if spec.num_inputs <= 0:
         raise ValueError("num_inputs must be positive")
-    if num_outputs <= 0:
+    if spec.num_outputs <= 0:
         raise ValueError("num_outputs must be positive")
-    if program_length < 0:
+    if spec.program_length < 0:
         raise ValueError("program_length must be non-negative")
-
-    total_sources = num_inputs + 1 + program_length  # inputs + const1 + temps
-    idx_bits = max(1, (total_sources - 1).bit_length())
 
     op_or = BitVecVal(0, OP_BITS)
     op_and = BitVecVal(1, OP_BITS)
@@ -80,61 +92,61 @@ def _build_program(num_inputs: int, num_outputs: int, program_length: int) -> Li
 
     constraints: List[BoolRef] = []
 
-    for instr in range(program_length):
-        idx = num_inputs + 1 + instr  # inputs + const1 + previous temps
+    for instr in range(spec.program_length):
+        idx = spec.num_inputs + 1 + instr  # inputs + const1 + previous temps
         max_idx = idx - 1
-        max_idx_bv = BitVecVal(max_idx, idx_bits)
+        max_idx_bv = BitVecVal(max_idx, spec.idx_bits)
 
         op = BitVec(f"OP_{instr}", OP_BITS)
-        src1 = BitVec(f"S1_{instr}", idx_bits)
-        src2 = BitVec(f"S2_{instr}", idx_bits)
+        src1 = BitVec(f"S1_{instr}", spec.idx_bits)
+        src2 = BitVec(f"S2_{instr}", spec.idx_bits)
 
         # Force uniqueness of (op, src1, src2) tuples
-        if force_ordered:
+        if options.force_ordered:
             if instr > 0:
                 pre_op = BitVec(f"OP_{instr-1}", OP_BITS)
-                pre_src1 = BitVec(f"S1_{instr-1}", idx_bits)
-                pre_src2 = BitVec(f"S2_{instr-1}", idx_bits)
+                pre_src1 = BitVec(f"S1_{instr-1}", spec.idx_bits)
+                pre_src2 = BitVec(f"S2_{instr-1}", spec.idx_bits)
 
                 constraints.append(ULE(pre_src2, src2))
                 constraints.append(Implies(pre_src2 == src2, ULE(pre_src1, src1)))
                 constraints.append(Implies(And(pre_src2 == src2, pre_src1 == src1), ULT(pre_op, op)))
 
         # Force usefulness of each instruction
-        if force_useful:
-            srcs = [BitVec(f"OUT_{out_idx}_idx", idx_bits) == BitVecVal(idx, idx_bits) for out_idx in range(num_outputs)]
+        if options.force_useful:
+            srcs = [BitVec(f"OUT_{out_idx}_idx", spec.idx_bits) == BitVecVal(idx, spec.idx_bits) for out_idx in range(spec.num_outputs)]
 
-            for next_instr in range(instr + 1, program_length):
-                next_src1 = BitVec(f"S1_{next_instr}", idx_bits)
-                next_src2 = BitVec(f"S2_{next_instr}", idx_bits)
+            for next_instr in range(instr + 1, spec.program_length):
+                next_src1 = BitVec(f"S1_{next_instr}", spec.idx_bits)
+                next_src2 = BitVec(f"S2_{next_instr}", spec.idx_bits)
 
-                srcs.append(next_src1 == BitVecVal(idx, idx_bits))
-                srcs.append(next_src2 == BitVecVal(idx, idx_bits))
+                srcs.append(next_src1 == BitVecVal(idx, spec.idx_bits))
+                srcs.append(next_src2 == BitVecVal(idx, spec.idx_bits))
 
             constraints.append(Or(*srcs))
 
         # Encode boolean selection of src1 and src2
-        if encode_boolean:
+        if options.encode_boolean:
             for idx in range(max_idx + 1):
                 src1_idx = Bool(f"S1_{instr}_eq_{idx}")
                 src2_idx = Bool(f"S2_{instr}_eq_{idx}")
-                constraints.append(src1_idx == (src1 == BitVecVal(idx, idx_bits)))
-                constraints.append(src2_idx == (src2 == BitVecVal(idx, idx_bits)))
+                constraints.append(src1_idx == (src1 == BitVecVal(idx, spec.idx_bits)))
+                constraints.append(src2_idx == (src2 == BitVecVal(idx, spec.idx_bits)))
 
         constraints.append(Or(op == op_or, op == op_and, op == op_xor))
         constraints.append(ULE(src1, max_idx_bv))
         constraints.append(ULE(src2, max_idx_bv))
         constraints.append(ULT(src1, src2))
 
-    max_total_idx = BitVecVal(total_sources - 1, idx_bits)
-    for out_idx in range(num_outputs):
-        selector = BitVec(f"OUT_{out_idx}_idx", idx_bits)
+    max_total_idx = BitVecVal(spec.total_sources - 1, spec.idx_bits)
+    for out_idx in range(spec.num_outputs):
+        selector = BitVec(f"OUT_{out_idx}_idx", spec.idx_bits)
         constraints.append(ULE(selector, max_total_idx))
 
     return constraints
 
 
-def _build_assumptions_from_file(file: TextIO) -> List[Union[BoolRef, Literal[False]]]:
+def _build_assumptions_from_file(file: TextIO, spec: ProgramSpec) -> List[Union[BoolRef, Literal[False]]]:
     """Build assumptions from a file with assumed program bits.
 
     Example file format (3-bit adder):
@@ -150,9 +162,6 @@ def _build_assumptions_from_file(file: TextIO) -> List[Union[BoolRef, Literal[Fa
     """
 
     constraints: List[Union[BoolRef, Literal[False]]] = []
-
-    total_sources = NUM_INPUTS + 1 + PROGRAM_LENGTH  # inputs + const1 + temps
-    idx_bits = max(1, (total_sources - 1).bit_length())
 
     op_map = {'OR': 0, 'AND': 1, 'XOR': 2}
 
@@ -174,7 +183,7 @@ def _build_assumptions_from_file(file: TextIO) -> List[Union[BoolRef, Literal[Fa
             elif arg.startswith('I'):
                 return int(arg[1:]) + 1
             elif arg.startswith('T'):
-                return NUM_INPUTS + 1 + int(arg[1:])
+                return spec.num_inputs + 1 + int(arg[1:])
             else:
                 raise ValueError(f"Unknown argument in assumption: {arg}")
 
@@ -189,14 +198,14 @@ def _build_assumptions_from_file(file: TextIO) -> List[Union[BoolRef, Literal[Fa
                 raise ValueError(f"Unknown operation in assumption: {op_part}")
 
             constraints.append(BitVec(f"OP_{instr_idx}", OP_BITS) == BitVecVal(op_val, OP_BITS))
-            constraints.append(BitVec(f"S1_{instr_idx}", idx_bits) == BitVecVal(translate_arg(arg1_str), idx_bits))
-            constraints.append(BitVec(f"S2_{instr_idx}", idx_bits) == BitVecVal(translate_arg(arg2_str), idx_bits))
+            constraints.append(BitVec(f"S1_{instr_idx}", spec.idx_bits) == BitVecVal(translate_arg(arg1_str), spec.idx_bits))
+            constraints.append(BitVec(f"S2_{instr_idx}", spec.idx_bits) == BitVecVal(translate_arg(arg2_str), spec.idx_bits))
 
         elif lhs.startswith('OUT'):
             out_idx = int(lhs[3:])
             arg_idx = translate_arg(rhs.strip())
 
-            constraints.append(BitVec(f"OUT_{out_idx}_idx", idx_bits) == BitVecVal(arg_idx, idx_bits))
+            constraints.append(BitVec(f"OUT_{out_idx}_idx", spec.idx_bits) == BitVecVal(arg_idx, spec.idx_bits))
 
         else:
             raise ValueError(f"Unknown LHS in assumption: {lhs}")
@@ -204,17 +213,20 @@ def _build_assumptions_from_file(file: TextIO) -> List[Union[BoolRef, Literal[Fa
     return constraints
 
 
-def _build_test(width: int, input_vals: List[int], tag: str) -> Tuple[List[Union[BoolRef, Literal[False]]], List[Union[BitVecRef, BitVecNumRef]]]:
+def _build_test(
+    width: int,
+    input_vals: List[int],
+    tag: str,
+    spec: ProgramSpec,
+    options: EncodingOptions,
+) -> Tuple[List[Union[BoolRef, Literal[False]]], List[Union[BitVecRef, BitVecNumRef]]]:
     """Build SSA-style straight-line program constraints for a batch.
 
     Returns a tuple (constraints, outputs) where outputs is a list of
     bit-vector expressions representing the program outputs for this batch.
     """
-    if PROGRAM_LENGTH < 0:
-        raise ValueError("PROGRAM_LENGTH must be non-negative")
-
-    total_sources = NUM_INPUTS + 1 + PROGRAM_LENGTH  # inputs + const1 + temps
-    idx_bits = max(1, (total_sources - 1).bit_length())
+    if spec.program_length < 0:
+        raise ValueError("program_length must be non-negative")
 
     op_or = BitVecVal(0, OP_BITS)
     op_and = BitVecVal(1, OP_BITS)
@@ -222,16 +234,16 @@ def _build_test(width: int, input_vals: List[int], tag: str) -> Tuple[List[Union
     constraints: List[Union[BoolRef, Literal[False]]] = []
 
     # Seed values with the batch input truth tables
-    values: List[Union[BitVecNumRef, BitVecRef]] = [BitVecVal(input_vals[j], width) for j in range(NUM_INPUTS)]
+    values: List[Union[BitVecNumRef, BitVecRef]] = [BitVecVal(input_vals[j], width) for j in range(spec.num_inputs)]
     values = [~BitVecVal(0, width)] + values  # constant 1
 
-    for instr in range(PROGRAM_LENGTH):
+    for instr in range(spec.program_length):
         op = BitVec(f"OP_{instr}", OP_BITS)
-        src1 = BitVec(f"S1_{instr}", idx_bits)
-        src2 = BitVec(f"S2_{instr}", idx_bits)
+        src1 = BitVec(f"S1_{instr}", spec.idx_bits)
+        src2 = BitVec(f"S2_{instr}", spec.idx_bits)
         val = BitVec(f"VAL_{tag}_{instr}", width)
 
-        if encode_boolean:
+        if options.encode_boolean:
             left_expr = BitVec(f"LEFT_{tag}_{instr}", width)
             right_expr = BitVec(f"RIGHT_{tag}_{instr}", width)
 
@@ -242,14 +254,14 @@ def _build_test(width: int, input_vals: List[int], tag: str) -> Tuple[List[Union
                 constraints.append(Implies(src1_idx, left_expr == value))
                 constraints.append(Implies(src2_idx, right_expr == value))
 
-            left_expr_ = _select_bv(values, src1, idx_bits)
-            right_expr_ = _select_bv(values, src2, idx_bits)
+            left_expr_ = _select_bv(values, src1, spec.idx_bits)
+            right_expr_ = _select_bv(values, src2, spec.idx_bits)
 
             constraints.append(left_expr == left_expr_)
             constraints.append(right_expr == right_expr_)
         else:
-            left_expr = _select_bv(values, src1, idx_bits)
-            right_expr = _select_bv(values, src2, idx_bits)
+            left_expr = _select_bv(values, src1, spec.idx_bits)
+            right_expr = _select_bv(values, src2, spec.idx_bits)
 
         gate_expr = If(
             op == op_or,
@@ -265,9 +277,9 @@ def _build_test(width: int, input_vals: List[int], tag: str) -> Tuple[List[Union
         values.append(val)
 
     outputs: List[Union[BitVecRef, BitVecNumRef]] = []
-    for out_idx in range(NUM_OUTPUTS):
-        selector = BitVec(f"OUT_{out_idx}_idx", idx_bits)
-        outputs.append(_select_bv(values, selector, idx_bits))
+    for out_idx in range(spec.num_outputs):
+        selector = BitVec(f"OUT_{out_idx}_idx", spec.idx_bits)
+        outputs.append(_select_bv(values, selector, spec.idx_bits))
 
     return constraints, outputs
 
@@ -334,7 +346,7 @@ def _build_dataset_from_config(cfg: Dict[str, Any]) -> Tuple[List[Example], int,
 
     instructions = cfg.get("instructions")
     if instructions is None:
-        instructions = PROGRAM_LENGTH
+        instructions = DEFAULT_PROGRAM_LENGTH
     instructions = int(instructions)
     if instructions < 0:
         raise ValueError("instructions must be non-negative")
@@ -387,6 +399,67 @@ def _export_blif(examples: List[Example], num_inputs: int, num_outputs: int) -> 
                 print(f"{input_line} 1")
 
     print(".end")
+
+
+def _format_source(idx: int, num_inputs: int) -> str:
+    if idx == 0:
+        return "1"
+    if idx <= num_inputs:
+        return f"I{idx - 1}"
+    return f"T{idx - num_inputs - 1}"
+
+
+def _evaluate_program(
+    instrs: List[Tuple[Optional[int], int, int]],
+    output_selectors: List[int],
+    inputs: IOList,
+) -> List[int]:
+    values: List[int] = [1] + [int(bool(v)) for v in inputs]
+
+    for op, s1_idx, s2_idx in instrs:
+        if op is None:
+            val = 0
+        else:
+            left = values[s1_idx]
+            right = values[s2_idx]
+            if op == 0:  # OR
+                val = left | right
+            elif op == 1:  # AND
+                val = left & right
+            elif op == 2:  # XOR
+                val = left ^ right
+            else:
+                val = 0
+        values.append(val)
+
+    return [values[selector] for selector in output_selectors]
+
+
+def _verify_program(
+    instrs: List[Tuple[Optional[int], int, int]],
+    output_selectors: List[int],
+    examples: List[Example],
+    num_outputs: int,
+) -> List[Tuple[int, IOList, List[int], List[int]]]:
+    mismatches: List[Tuple[int, IOList, List[int], List[int]]] = []
+
+    for idx, ex in enumerate(examples):
+        ins = ex["inputs"]
+        outs = ex["outputs"]
+
+        expected_outs_mask = [int(v is None) for v in outs]
+        expected_outs = [int(bool(v)) for v in outs]
+        actual_outs = _evaluate_program(instrs, output_selectors, ins)
+
+        for j in range(num_outputs):
+            if expected_outs_mask[j]:
+                actual_outs[j] = -1  # don't care
+                expected_outs[j] = -1  # don't care
+
+        if actual_outs != expected_outs:
+            mismatches.append((idx, ins, expected_outs, actual_outs))
+
+    return mismatches
 
 
 def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inputs: int, num_outputs: int, examples: List[Example], outputs: List[int]) -> Tuple[List[Tuple[Optional[int], int, int]], List[int]]:
@@ -715,17 +788,11 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    if args.encode_boolean:
-        global encode_boolean
-        encode_boolean = True
-
-    if args.force_ordered:
-        global force_ordered
-        force_ordered = True
-
-    if args.force_useful:
-        global force_useful
-        force_useful = True
+    options = EncodingOptions(
+        encode_boolean=args.encode_boolean,
+        force_ordered=args.force_ordered,
+        force_useful=args.force_useful,
+    )
 
     if args.quiet:
         logger.setLevel(logging.WARNING)
@@ -755,39 +822,38 @@ def main() -> None:
         if instructions < 0:
             raise SystemExit("--instructions must be non-negative")
 
-    # Update globals
-    global NUM_INPUTS, NUM_OUTPUTS, PROGRAM_LENGTH
-    NUM_INPUTS = num_inputs
-    NUM_OUTPUTS = num_outputs
-    PROGRAM_LENGTH = instructions
+    spec = ProgramSpec(
+        num_inputs=num_inputs,
+        num_outputs=num_outputs,
+        program_length=instructions,
+    )
 
     batch_size = args.batch_size if args.batch_size else len(examples)
     if batch_size <= 0:
         raise SystemExit("Batch size must be positive")
 
     if args.make_blif:
-        _export_blif(examples, NUM_INPUTS, NUM_OUTPUTS)
+        _export_blif(examples, spec.num_inputs, spec.num_outputs)
         return
 
     s = _make_solver(args.solver)
 
-    s.add(*_build_program(NUM_INPUTS, NUM_OUTPUTS, PROGRAM_LENGTH))
+    s.add(*_build_program(spec, options))
 
     if args.assume:
-        if args.assume=="-":
-            file=sys.stdin
+        if args.assume == "-":
+            s.add(*_build_assumptions_from_file(sys.stdin, spec))
         else:
             assume_path = Path(args.assume)
             if not assume_path.is_file():
                 raise SystemExit(f"Assume file not found: {assume_path}")
-            file = assume_path.open("r", encoding="utf-8")
-
-        s.add(*_build_assumptions_from_file(file))
+            with assume_path.open("r", encoding="utf-8") as file:
+                s.add(*_build_assumptions_from_file(file, spec))
 
     if not args.make_smt2 and not args.make_dimacs and not args.do_all:
         s.check()
 
-    logger.info("Built program structure with %d instructions", PROGRAM_LENGTH)
+    logger.info("Built program structure with %d instructions", spec.program_length)
     logger.info("Solver has %d assertions", len(s.assertions()))
 
     if not args.no_shuffle:
@@ -798,10 +864,10 @@ def main() -> None:
     result = None
     for batch_idx, offset in enumerate(range(0, len(examples), batch_size)):
         batch = examples[offset: offset + batch_size]
-        width, input_vals, output_vals, output_masks = _pack_examples_to_bitvectors(batch, NUM_INPUTS, NUM_OUTPUTS)
-        constraints, outputs = _build_test(width, input_vals, tag=f"b{batch_idx}")
+        width, input_vals, output_vals, output_masks = _pack_examples_to_bitvectors(batch, spec.num_inputs, spec.num_outputs)
+        constraints, outputs = _build_test(width, input_vals, tag=f"b{batch_idx}", spec=spec, options=options)
         s.add(*constraints)
-        for j in range(NUM_OUTPUTS):
+        for j in range(spec.num_outputs):
             if output_masks[j] != 0:
                 s.add((outputs[j] | output_masks[j]) == (BitVecVal(output_vals[j], width) | output_masks[j]))
             else:
@@ -852,27 +918,17 @@ def main() -> None:
         # Pretty-print a compact architecture summary: per-instruction (op, src indices)
         m = s.model()
 
-        total_sources = NUM_INPUTS + 1 + PROGRAM_LENGTH  # inputs + const1 + temps
-        idx_bits = max(1, (total_sources - 1).bit_length())
-
         instrs: List[Tuple[Optional[int], int, int]] = []
-
-        def fmt_src(idx: int) -> str:
-            if idx == 0:
-                return "1"
-            if idx <= NUM_INPUTS:
-                return f"I{idx - 1}"
-            return f"T{idx - NUM_INPUTS - 1}"
 
         if args.output_blif:
             print(f".model spec")
-            print(f'.inputs {" ".join(f"I{i}" for i in range(num_inputs))}')
-            print(f'.outputs {" ".join(f"OUT{o}" for o in range(num_outputs))}')
+            print(f'.inputs {" ".join(f"I{i}" for i in range(spec.num_inputs))}')
+            print(f'.outputs {" ".join(f"OUT{o}" for o in range(spec.num_outputs))}')
 
-        for instr in range(PROGRAM_LENGTH):
+        for instr in range(spec.program_length):
             op_ref = BitVec(f"OP_{instr}", OP_BITS)
-            s1_ref = BitVec(f"S1_{instr}", idx_bits)
-            s2_ref = BitVec(f"S2_{instr}", idx_bits)
+            s1_ref = BitVec(f"S1_{instr}", spec.idx_bits)
+            s2_ref = BitVec(f"S2_{instr}", spec.idx_bits)
             op_val_ref = m[op_ref]
             s1_val_ref = m[s1_ref]
             s2_val_ref = m[s2_ref]
@@ -886,7 +942,7 @@ def main() -> None:
             if op_val in (0, 1, 2):  # binary
                 instrs.append((op_val, s1_val, s2_val))
                 if args.output_blif:
-                    print(f".names {fmt_src(s1_val)} {fmt_src(s2_val)} T{instr}")
+                    print(f".names {_format_source(s1_val, spec.num_inputs)} {_format_source(s2_val, spec.num_inputs)} T{instr}")
                     if op_val == 0:  # OR
                         print(f"10 1")
                         print(f"01 1")
@@ -897,28 +953,31 @@ def main() -> None:
                         print(f"10 1")
                         print(f"01 1")
                 else:
-                    print(f"T{instr}: {label}({fmt_src(s1_val)}, {fmt_src(s2_val)})")
+                    print(f"T{instr}: {label}({_format_source(s1_val, spec.num_inputs)}, {_format_source(s2_val, spec.num_inputs)})")
             else:
                 instrs.append((None, s1_val, s2_val))
 
                 if args.output_blif:
                     raise ValueError("Unsupported operation in BLIF output")
                 else:
-                    print(f"T{instr}: ?({fmt_src(s1_val)}, {fmt_src(s2_val)})")
+                    print(f"T{instr}: ?({_format_source(s1_val, spec.num_inputs)}, {_format_source(s2_val, spec.num_inputs)})")
 
-        outputs: List[Optional[int]] = []
-        for out_idx in range(NUM_OUTPUTS):
-            selector = BitVec(f"OUT_{out_idx}_idx", idx_bits)
+        outputs: List[int] = []
+        for out_idx in range(spec.num_outputs):
+            selector = BitVec(f"OUT_{out_idx}_idx", spec.idx_bits)
             sel_val = m[selector]
             if sel_val is None:
                 continue
             outputs.append(sel_val.as_long())
 
             if args.output_blif:
-                print(f".names {fmt_src(sel_val.as_long())} OUT{out_idx}")
+                print(f".names {_format_source(sel_val.as_long(), spec.num_inputs)} OUT{out_idx}")
                 print(f"1 1")
             else:
-                print(f"OUT{out_idx}: {fmt_src(sel_val.as_long())}")
+                print(f"OUT{out_idx}: {_format_source(sel_val.as_long(), spec.num_inputs)}")
+
+        if len(outputs) != spec.num_outputs:
+            raise RuntimeError(f"Model provided {len(outputs)} outputs, expected {spec.num_outputs}")
 
         if args.output_blif:
             print(".end")
@@ -926,66 +985,23 @@ def main() -> None:
         # Post-process the synthesized program
         if args.post_process:
             logger.info("Post-processing synthesized program")
-            instrs, outputs = _post_process_program(instrs, NUM_INPUTS, NUM_OUTPUTS, examples, outputs)
+            instrs, outputs = _post_process_program(instrs, spec.num_inputs, spec.num_outputs, examples, outputs)
 
-            for instr in instrs:
+            for instr_idx, instr in enumerate(instrs):
                 op_val, s1_val, s2_val = instr
                 label = OP_LABELS.get(op_val, '?')
-                print(f"T{instrs.index(instr)}: {label}({fmt_src(s1_val)}, {fmt_src(s2_val)})")
+                print(f"T{instr_idx}: {label}({_format_source(s1_val, spec.num_inputs)}, {_format_source(s2_val, spec.num_inputs)})")
             for out_idx, sel in enumerate(outputs):
-                print(f"OUT{out_idx}: {fmt_src(sel)}")
+                print(f"OUT{out_idx}: {_format_source(sel, spec.num_inputs)}")
 
         # Verify the synthesized program against all examples
-        mismatches = 0
-        for idx, ex in enumerate(examples):
-            ins = ex["inputs"]
-            outs = ex["outputs"]
-
-            expected_outs_mask = [int(v is None) for v in outs]
-            expected_outs = [int(bool(v)) for v in outs]
-
-            # Evaluate the synthesized program on this example
-            values: List[int] = [int(bool(v)) for v in ins]
-            values = [1] + values  # constant 1
-
-            for _, (op, s1_idx, s2_idx) in enumerate(instrs):
-                if op is None:
-                    val = 0
-                else:
-                    left = values[s1_idx]
-                    right = values[s2_idx]
-                    if op == 0:  # OR
-                        val = left | right
-                    elif op == 1:  # AND
-                        val = left & right
-                    elif op == 2:  # XOR
-                        val = left ^ right
-                    else:
-                        val = 0
-                values.append(val)
-
-            actual_outs: List[int] = []
-            for out_idx in range(NUM_OUTPUTS):
-                sel_idx = outputs[out_idx]
-                if sel_idx is None:
-                    actual_outs.append(0)
-                else:
-                    actual_outs.append(values[sel_idx])
-
-            # apply masks
-            for j in range(NUM_OUTPUTS):
-                if expected_outs_mask[j]:
-                    actual_outs[j] = -1  # don't care
-                    expected_outs[j] = -1  # don't care
-
-            if actual_outs != expected_outs:
-                logger.error(f"Mismatch on example {idx} with inputs {ins}: expected {expected_outs}, got {actual_outs}")
-                mismatches += 1
-
-        if mismatches == 0:
+        mismatches = _verify_program(instrs, outputs, examples, spec.num_outputs)
+        if not mismatches:
             logger.info("All examples matched successfully")
         else:
-            logger.error("Total mismatches: %d", mismatches)
+            for idx, ins, expected, actual in mismatches:
+                logger.error("Mismatch on example %d with inputs %s: expected %s, got %s", idx, ins, expected, actual)
+            logger.error("Total mismatches: %d", len(mismatches))
             exit(1)
     elif str(result) == 'unsat':
         logger.info(f"UNSAT in {elapsed:.3f} seconds")
