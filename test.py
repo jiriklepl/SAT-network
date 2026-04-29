@@ -15,6 +15,7 @@ from main import (
     _emit_program,
     _operator_sort_key,
 )
+from build_assumptions import build_assumption_lines
 from dataset_plugins import available_plugins, get_plugin, get_plugin_config
 
 
@@ -27,6 +28,37 @@ def _state_bits(states: list[int], width: int) -> list[bool]:
     for state in states:
         result.extend(_bits(state, width))
     return result
+
+
+def _eval_assumption_lines(lines: list[str], inputs: list[bool], num_outputs: int) -> list[bool]:
+    values: dict[str, bool] = {"1": True}
+    values.update({f"I{idx}": value for idx, value in enumerate(inputs)})
+    outputs: list[bool | None] = [None] * num_outputs
+
+    for line in lines:
+        if not line or line.startswith("#"):
+            continue
+        lhs, rhs = [part.strip() for part in line.split(":", 1)]
+        if lhs.startswith("OUT"):
+            outputs[int(lhs[3:])] = values[rhs]
+            continue
+
+        op, args_part = rhs.split("(", 1)
+        left_name, right_name = [arg.strip() for arg in args_part.rstrip(")").split(",", 1)]
+        left = values[left_name]
+        right = values[right_name]
+        if op == "AND":
+            values[lhs] = left and right
+        elif op == "OR":
+            values[lhs] = left or right
+        elif op == "XOR":
+            values[lhs] = left != right
+        else:
+            raise AssertionError(f"Unexpected operator: {op}")
+
+    if any(output is None for output in outputs):
+        raise AssertionError("Missing output in assumption lines")
+    return [bool(output) for output in outputs]
 
 
 class MainEncodingTests(unittest.TestCase):
@@ -90,6 +122,42 @@ class MainEncodingTests(unittest.TestCase):
         self.assertIn("OUT_0_eq_0", structure_text)
         self.assertIn("OUTVAL_b0_0", str(outputs[0]))
         self.assertIn("OUT_0_eq_0", batch_text)
+
+    def test_build_assumptions_dnf_matches_examples_and_parser(self) -> None:
+        examples = [
+            {"inputs": [False, False], "outputs": [False]},
+            {"inputs": [False, True], "outputs": [True]},
+            {"inputs": [True, False], "outputs": [True]},
+            {"inputs": [True, True], "outputs": [False]},
+        ]
+        lines, required_instructions = build_assumption_lines(examples, 2, 1)
+
+        spec = ProgramSpec(num_inputs=2, num_outputs=1, program_length=required_instructions)
+        constraints = _build_assumptions_from_file(io.StringIO("\n".join(lines)), spec)
+
+        self.assertGreater(required_instructions, 0)
+        self.assertGreater(len(constraints), 0)
+        for ex in examples:
+            self.assertEqual(_eval_assumption_lines(lines, ex["inputs"], 1), ex["outputs"])
+
+    def test_build_assumptions_auto_uses_compact_life_circuit(self) -> None:
+        examples, num_inputs, num_outputs = get_plugin("life-compressed")(get_plugin_config("life-compressed"))
+        lines, required_instructions = build_assumption_lines(
+            examples,
+            num_inputs,
+            num_outputs,
+            dataset_name="life-compressed",
+            strategy="auto",
+        )
+
+        spec = ProgramSpec(num_inputs=num_inputs, num_outputs=num_outputs, program_length=required_instructions)
+        constraints = _build_assumptions_from_file(io.StringIO("\n".join(lines)), spec)
+
+        self.assertEqual(required_instructions, 14)
+        self.assertEqual(lines[-1], "OUT0: T13")
+        self.assertGreater(len(constraints), 0)
+        for ex in examples:
+            self.assertEqual(_eval_assumption_lines(lines, ex["inputs"], num_outputs), ex["outputs"])
 
     def test_cellular_automata_plugins_are_registered(self) -> None:
         plugins = available_plugins()

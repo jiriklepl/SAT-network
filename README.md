@@ -42,6 +42,13 @@ python3 main.py --dataset gol --batch-size 16
 # Use a custom config and override instruction budget
 python3 main.py --config path/to/dataset.json --instructions 12
 
+# Build and use an assumption file for a dataset
+python3 build_assumptions.py --dataset life-compressed --output /tmp/life-compressed.assume
+python3 main.py --dataset life-compressed --assume /tmp/life-compressed.assume
+
 # Use the plain Z3 QF_BV solver
 python3 main.py --solver z3
 ```
+
+`build_assumptions.py` emits a complete program in the `--assume` file format accepted by `main.py`.
+The default `auto` strategy uses a compact hand-built circuit for `gol`/`life-compressed` and falls back to an exact DNF construction for other datasets. If the header reports `required-instructions`, pass that value to `main.py` with `--instructions` when it differs from the dataset default.
