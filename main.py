@@ -41,17 +41,20 @@ class LogicOperator:
     label: str
     apply: Callable[[Any, Any], Any]
     blif_rows: Tuple[str, ...]
+    canonical_rank: int
 
 
 LOGIC_OPERATORS: Tuple[LogicOperator, ...] = (
-    LogicOperator(0, 'AND', lambda left, right: left & right, ("11 1",)),
-    LogicOperator(1, 'XOR', lambda left, right: left ^ right, ("10 1", "01 1")),
-    LogicOperator(2, 'OR', lambda left, right: left | right, ("10 1", "01 1", "11 1")),
+    LogicOperator(0, 'AND', lambda left, right: left & right, ("11 1",), 0),
+    LogicOperator(1, 'XOR', lambda left, right: left ^ right, ("10 1", "01 1"), 1),
+    LogicOperator(2, 'OR', lambda left, right: left | right, ("10 1", "01 1", "11 1"), 2),
 )
 
 OP_BY_CODE = {op.code: op for op in LOGIC_OPERATORS}
 OP_BY_LABEL = {op.label: op for op in LOGIC_OPERATORS}
+OP_RANK_BY_CODE = {op.code: op.canonical_rank for op in LOGIC_OPERATORS}
 OP_BITS = max(1, max(op.code for op in LOGIC_OPERATORS).bit_length())
+OP_RANK_BITS = max(1, max(op.canonical_rank for op in LOGIC_OPERATORS).bit_length())
 
 
 def _op_label(op_code: int) -> str:
@@ -78,6 +81,27 @@ def _operator_expr(op: BitVecRef, left: Any, right: Any) -> Any:
     for operator in reversed(LOGIC_OPERATORS[:-1]):
         expr = If(op == BitVecVal(operator.code, OP_BITS), operator.apply(left, right), expr)
     return expr
+
+
+def _operator_rank_expr(op: BitVecRef) -> BitVecRef:
+    if not LOGIC_OPERATORS:
+        raise ValueError("At least one logic operator must be defined")
+
+    expr = BitVecVal(LOGIC_OPERATORS[-1].canonical_rank, OP_RANK_BITS)
+    for operator in reversed(LOGIC_OPERATORS[:-1]):
+        expr = If(
+            op == BitVecVal(operator.code, OP_BITS),
+            BitVecVal(operator.canonical_rank, OP_RANK_BITS),
+            expr,
+        )
+    return expr
+
+
+def _operator_sort_key(op_code: int) -> int:
+    try:
+        return OP_RANK_BY_CODE[op_code]
+    except KeyError as exc:
+        raise ValueError(f"Unknown operation code: {op_code}") from exc
 
 
 @dataclass(frozen=True)
@@ -145,10 +169,12 @@ def _build_program(spec: ProgramSpec, options: EncodingOptions) -> List[BoolRef]
                 pre_op = BitVec(f"OP_{instr-1}", OP_BITS)
                 pre_src1 = BitVec(f"S1_{instr-1}", spec.idx_bits)
                 pre_src2 = BitVec(f"S2_{instr-1}", spec.idx_bits)
+                pre_rank = _operator_rank_expr(pre_op)
+                rank = _operator_rank_expr(op)
 
                 constraints.append(ULE(pre_src2, src2))
                 constraints.append(Implies(pre_src2 == src2, ULE(pre_src1, src1)))
-                constraints.append(Implies(And(pre_src2 == src2, pre_src1 == src1), ULT(pre_op, op)))
+                constraints.append(Implies(And(pre_src2 == src2, pre_src1 == src1), ULT(pre_rank, rank)))
 
         # Force usefulness of each instruction
         if options.force_useful:
@@ -184,6 +210,10 @@ def _build_program(spec: ProgramSpec, options: EncodingOptions) -> List[BoolRef]
     for out_idx in range(spec.num_outputs):
         selector = BitVec(f"OUT_{out_idx}_idx", spec.idx_bits)
         constraints.append(ULE(selector, max_total_idx))
+        if options.encode_boolean:
+            for idx in range(spec.total_sources):
+                selector_idx = Bool(f"OUT_{out_idx}_eq_{idx}")
+                constraints.append(selector_idx == (selector == BitVecVal(idx, spec.idx_bits)))
 
     return constraints
 
@@ -217,18 +247,33 @@ def _build_assumptions_from_file(file: TextIO, spec: ProgramSpec) -> List[Union[
         lhs = lhs.strip()
         rhs = rhs.strip()
 
+        def parse_index(kind: str, raw: str) -> int:
+            try:
+                return int(raw)
+            except ValueError as exc:
+                raise ValueError(f"Invalid {kind} index in assumption: {kind}{raw}") from exc
+
         def translate_arg(arg: str) -> int:
             if arg == '1':
                 return 0
             elif arg.startswith('I'):
-                return int(arg[1:]) + 1
+                input_idx = parse_index('I', arg[1:])
+                if not 0 <= input_idx < spec.num_inputs:
+                    raise ValueError(f"Input index out of range in assumption: {arg}")
+                return input_idx + 1
             elif arg.startswith('T'):
-                return spec.num_inputs + 1 + int(arg[1:])
+                temp_idx = parse_index('T', arg[1:])
+                if not 0 <= temp_idx < spec.program_length:
+                    raise ValueError(f"Temporary index out of range in assumption: {arg}")
+                return spec.num_inputs + 1 + temp_idx
             else:
                 raise ValueError(f"Unknown argument in assumption: {arg}")
 
         if lhs.startswith('T'):
-            instr_idx = int(lhs[1:])
+            instr_idx = parse_index('T', lhs[1:])
+            if not 0 <= instr_idx < spec.program_length:
+                raise ValueError(f"Temporary index out of range in assumption: {lhs}")
+
             op_part, args_part = rhs.split('(', 1)
             args_part = args_part.rstrip(')')
             arg1_str, arg2_str = [s.strip() for s in args_part.split(',', 1)]
@@ -242,7 +287,9 @@ def _build_assumptions_from_file(file: TextIO, spec: ProgramSpec) -> List[Union[
             constraints.append(BitVec(f"S2_{instr_idx}", spec.idx_bits) == BitVecVal(translate_arg(arg2_str), spec.idx_bits))
 
         elif lhs.startswith('OUT'):
-            out_idx = int(lhs[3:])
+            out_idx = parse_index('OUT', lhs[3:])
+            if not 0 <= out_idx < spec.num_outputs:
+                raise ValueError(f"Output index out of range in assumption: {lhs}")
             arg_idx = translate_arg(rhs.strip())
 
             constraints.append(BitVec(f"OUT_{out_idx}_idx", spec.idx_bits) == BitVecVal(arg_idx, spec.idx_bits))
@@ -302,7 +349,14 @@ def _build_test(
     outputs: List[Union[BitVecRef, BitVecNumRef]] = []
     for out_idx in range(spec.num_outputs):
         selector = BitVec(f"OUT_{out_idx}_idx", spec.idx_bits)
-        outputs.append(_select_bv(values, selector, spec.idx_bits))
+        if options.encode_boolean:
+            out_expr = BitVec(f"OUTVAL_{tag}_{out_idx}", width)
+            for idx, value in enumerate(values):
+                selector_idx = Bool(f"OUT_{out_idx}_eq_{idx}")
+                constraints.append(Implies(selector_idx, out_expr == value))
+            outputs.append(out_expr)
+        else:
+            outputs.append(_select_bv(values, selector, spec.idx_bits))
 
     return constraints, outputs
 
@@ -594,7 +648,7 @@ def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inpu
                 node.s1, node.s2 = node.s2, node.s1
 
         # Ensure that instructions are ordered by (s2, s1, op)
-        sorted_items = sorted(dag.items(), key=lambda item: (item[1].s2, item[1].s1, item[1].op))
+        sorted_items = sorted(dag.items(), key=lambda item: (item[1].s2, item[1].s1, _operator_sort_key(item[1].op)))
         if list(dag.keys()) != [k for k, _ in sorted_items]:
             logger.info("Re-ordering instructions to maintain canonical order")
             updated = True
@@ -686,9 +740,12 @@ def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inpu
                 for op in alt_ops
                 for s1 in possible_idxs
                 for s2 in possible_idxs
-                if (s1 < s2 or (op == XOR and s1 == s2)) and ((s2, s1, op) < (s2_idx, s1_idx, old_op))
+                if (
+                    (s1 < s2 or (op == XOR and s1 == s2))
+                    and ((s2, s1, _operator_sort_key(op)) < (s2_idx, s1_idx, _operator_sort_key(old_op)))
+                )
             ]
-            product.sort(key=lambda x: (x[2], x[1], x[0]))  # sort by (s2, s1, op)
+            product.sort(key=lambda x: (x[2], x[1], _operator_sort_key(x[0])))  # sort by (s2, s1, op rank)
 
             for op, cidx1, cidx2 in product:
                 node.op = op
@@ -920,18 +977,19 @@ def main() -> None:
 
         instrs: List[Tuple[Optional[int], int, int]] = []
 
+        def eval_bv_as_long(name: str, ref: BitVecRef) -> int:
+            value = m.evaluate(ref, model_completion=True)
+            if not isinstance(value, BitVecNumRef):
+                raise RuntimeError(f"Model did not provide a concrete value for {name}: {value}")
+            return value.as_long()
+
         for instr in range(spec.program_length):
             op_ref = BitVec(f"OP_{instr}", OP_BITS)
             s1_ref = BitVec(f"S1_{instr}", spec.idx_bits)
             s2_ref = BitVec(f"S2_{instr}", spec.idx_bits)
-            op_val_ref = m[op_ref]
-            s1_val_ref = m[s1_ref]
-            s2_val_ref = m[s2_ref]
-            if op_val_ref is None or s1_val_ref is None or s2_val_ref is None:
-                continue
-            op_val = op_val_ref.as_long()
-            s1_val = s1_val_ref.as_long()
-            s2_val = s2_val_ref.as_long()
+            op_val = eval_bv_as_long(f"OP_{instr}", op_ref)
+            s1_val = eval_bv_as_long(f"S1_{instr}", s1_ref)
+            s2_val = eval_bv_as_long(f"S2_{instr}", s2_ref)
             operator = OP_BY_CODE.get(op_val)
 
             if operator is not None:
@@ -942,10 +1000,7 @@ def main() -> None:
         outputs: List[int] = []
         for out_idx in range(spec.num_outputs):
             selector = BitVec(f"OUT_{out_idx}_idx", spec.idx_bits)
-            sel_val = m[selector]
-            if sel_val is None:
-                continue
-            outputs.append(sel_val.as_long())
+            outputs.append(eval_bv_as_long(f"OUT_{out_idx}_idx", selector))
 
         if len(outputs) != spec.num_outputs:
             raise RuntimeError(f"Model provided {len(outputs)} outputs, expected {spec.num_outputs}")
