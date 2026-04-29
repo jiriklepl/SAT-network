@@ -6,7 +6,7 @@ This implementation encodes straight-line (SSA-style) logic programs and solves 
 
 Built-in datasets are registered in `dataset_plugins/` and can be selected via CLI:
 
-- Built-ins: `adder`, `gol`, `gol1`, `gol2`, `sloppy-adder`, and `sloppy-adder3`.
+- Built-ins: `adder`, `gol`, `gol1`, `gol2`, `sloppy-adder`, `sloppy-adder3`, `life`, `life-compressed`, `maze`, `maze-compressed`, `brian`, `brian-compressed`, `fire`, `fire-compressed`, `wire`, `wire-compressed`, `excitable`, `excitable-compressed`, `cyclic`, `cyclic-compressed`, `fluid`, `critters`, and `traffic`.
 - Custom: pass a JSON path via `--config`.
 
 Schema options:
