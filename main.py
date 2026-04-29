@@ -8,7 +8,7 @@ import random
 import sys
 import time
 from pathlib import Path
-from typing import Optional, TextIO, Tuple, List, Dict, Any, Literal, TypeVar, Union
+from typing import Callable, Optional, TextIO, Tuple, List, Dict, Any, Literal, TypeVar, Union
 
 from z3 import (
     BitVec,
@@ -34,8 +34,50 @@ from dataset_plugins import Example, IOList, get_plugin, get_plugin_config, avai
 
 DEFAULT_PROGRAM_LENGTH = 16
 
-OP_BITS = 2  # encode OR, AND, XOR
-OP_LABELS = {0: 'OR', 1: 'AND', 2: 'XOR'}
+
+@dataclass(frozen=True)
+class LogicOperator:
+    code: int
+    label: str
+    apply: Callable[[Any, Any], Any]
+    blif_rows: Tuple[str, ...]
+
+
+LOGIC_OPERATORS: Tuple[LogicOperator, ...] = (
+    LogicOperator(0, 'OR', lambda left, right: left | right, ("10 1", "01 1", "11 1")),
+    LogicOperator(1, 'AND', lambda left, right: left & right, ("11 1",)),
+    LogicOperator(2, 'XOR', lambda left, right: left ^ right, ("10 1", "01 1")),
+)
+
+OP_BY_CODE = {op.code: op for op in LOGIC_OPERATORS}
+OP_BY_LABEL = {op.label: op for op in LOGIC_OPERATORS}
+OP_BITS = max(1, max(op.code for op in LOGIC_OPERATORS).bit_length())
+
+
+def _op_label(op_code: int) -> str:
+    operator = OP_BY_CODE.get(op_code)
+    return operator.label if operator else '?'
+
+
+def _apply_operator(op_code: int, left: Any, right: Any, default: Any) -> Any:
+    operator = OP_BY_CODE.get(op_code)
+    if operator is None:
+        return default
+    return operator.apply(left, right)
+
+
+def _operator_constraint(op: BitVecRef) -> BoolRef:
+    return Or(*(op == BitVecVal(operator.code, OP_BITS) for operator in LOGIC_OPERATORS))
+
+
+def _operator_expr(op: BitVecRef, left: Any, right: Any) -> Any:
+    if not LOGIC_OPERATORS:
+        raise ValueError("At least one logic operator must be defined")
+
+    expr = LOGIC_OPERATORS[-1].apply(left, right)
+    for operator in reversed(LOGIC_OPERATORS[:-1]):
+        expr = If(op == BitVecVal(operator.code, OP_BITS), operator.apply(left, right), expr)
+    return expr
 
 
 @dataclass(frozen=True)
@@ -86,10 +128,6 @@ def _build_program(spec: ProgramSpec, options: EncodingOptions) -> List[BoolRef]
     if spec.program_length < 0:
         raise ValueError("program_length must be non-negative")
 
-    op_or = BitVecVal(0, OP_BITS)
-    op_and = BitVecVal(1, OP_BITS)
-    op_xor = BitVecVal(2, OP_BITS)
-
     constraints: List[BoolRef] = []
 
     for instr in range(spec.program_length):
@@ -133,7 +171,7 @@ def _build_program(spec: ProgramSpec, options: EncodingOptions) -> List[BoolRef]
                 constraints.append(src1_idx == (src1 == BitVecVal(idx, spec.idx_bits)))
                 constraints.append(src2_idx == (src2 == BitVecVal(idx, spec.idx_bits)))
 
-        constraints.append(Or(op == op_or, op == op_and, op == op_xor))
+        constraints.append(_operator_constraint(op))
         constraints.append(ULE(src1, max_idx_bv))
         constraints.append(ULE(src2, max_idx_bv))
         constraints.append(ULT(src1, src2))
@@ -163,8 +201,6 @@ def _build_assumptions_from_file(file: TextIO, spec: ProgramSpec) -> List[Union[
 
     constraints: List[Union[BoolRef, Literal[False]]] = []
 
-    op_map = {'OR': 0, 'AND': 1, 'XOR': 2}
-
     for line in file.readlines():
         line = line.strip()
         if not line or line.startswith('#'):
@@ -193,11 +229,11 @@ def _build_assumptions_from_file(file: TextIO, spec: ProgramSpec) -> List[Union[
             args_part = args_part.rstrip(')')
             arg1_str, arg2_str = [s.strip() for s in args_part.split(',', 1)]
 
-            op_val = op_map.get(op_part.strip())
-            if op_val is None:
+            operator = OP_BY_LABEL.get(op_part.strip())
+            if operator is None:
                 raise ValueError(f"Unknown operation in assumption: {op_part}")
 
-            constraints.append(BitVec(f"OP_{instr_idx}", OP_BITS) == BitVecVal(op_val, OP_BITS))
+            constraints.append(BitVec(f"OP_{instr_idx}", OP_BITS) == BitVecVal(operator.code, OP_BITS))
             constraints.append(BitVec(f"S1_{instr_idx}", spec.idx_bits) == BitVecVal(translate_arg(arg1_str), spec.idx_bits))
             constraints.append(BitVec(f"S2_{instr_idx}", spec.idx_bits) == BitVecVal(translate_arg(arg2_str), spec.idx_bits))
 
@@ -227,9 +263,6 @@ def _build_test(
     """
     if spec.program_length < 0:
         raise ValueError("program_length must be non-negative")
-
-    op_or = BitVecVal(0, OP_BITS)
-    op_and = BitVecVal(1, OP_BITS)
 
     constraints: List[Union[BoolRef, Literal[False]]] = []
 
@@ -263,15 +296,7 @@ def _build_test(
             left_expr = _select_bv(values, src1, spec.idx_bits)
             right_expr = _select_bv(values, src2, spec.idx_bits)
 
-        gate_expr = If(
-            op == op_or,
-            left_expr | right_expr, # OR
-            If(
-                op == op_and,
-                left_expr & right_expr, # AND
-                left_expr ^ right_expr # XOR
-            ),
-        )
+        gate_expr = _operator_expr(op, left_expr, right_expr)
 
         constraints.append(val == gate_expr)
         values.append(val)
@@ -422,14 +447,7 @@ def _evaluate_program(
         else:
             left = values[s1_idx]
             right = values[s2_idx]
-            if op == 0:  # OR
-                val = left | right
-            elif op == 1:  # AND
-                val = left & right
-            elif op == 2:  # XOR
-                val = left ^ right
-            else:
-                val = 0
+            val = _apply_operator(op, left, right, 0)
         values.append(val)
 
     return [values[selector] for selector in output_selectors]
@@ -494,9 +512,7 @@ def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inpu
         if s2 in dag:
             dag[s2].users.add(idx)
 
-    OR = 0
-    AND = 1
-    XOR = 2
+    OR = OP_BY_LABEL['OR'].code
 
     def check() -> bool:
         for ex in examples:
@@ -513,14 +529,7 @@ def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inpu
                     raise ValueError(f"Missing value for source {node.s2} of node {idx} in {dag} with outputs {outputs}")
                 left = values[node.s1]
                 right = values[node.s2]
-                if node.op == 0:  # OR
-                    val = left | right
-                elif node.op == 1:  # AND
-                    val = left & right
-                elif node.op == 2:  # XOR
-                    val = left ^ right
-                else:
-                    val = False
+                val = _apply_operator(node.op, left, right, False)
                 values[idx] = val
 
             for out_idx in range(num_outputs):
@@ -634,7 +643,7 @@ def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inpu
 
             if strong_preprocessing:
                 old_op = node.op
-                alt_ops = [OR, AND, XOR]
+                alt_ops = [operator.code for operator in LOGIC_OPERATORS]
 
                 # cartesian product: (op, s1, s2)
                 product = [(op, s1, s2) for op in alt_ops for s1 in possible_idxs for s2 in possible_idxs if s1 <= s2 and (s1 + s2 + op < s1_idx + s2_idx + old_op)]
@@ -651,7 +660,7 @@ def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inpu
                         node.s2 = s2_idx
                         continue
 
-                    logger.info(f"Replacing instruction T{idx - (num_inputs + 1)} from {OP_LABELS[old_op]}(T{s1_idx - (num_inputs + 1)}, T{s2_idx - (num_inputs + 1)}) to {OP_LABELS[op]}(T{cidx1 - (num_inputs + 1)}, T{cidx2 - (num_inputs + 1)})")
+                    logger.info(f"Replacing instruction T{idx - (num_inputs + 1)} from {_op_label(old_op)}(T{s1_idx - (num_inputs + 1)}, T{s2_idx - (num_inputs + 1)}) to {_op_label(op)}(T{cidx1 - (num_inputs + 1)}, T{cidx2 - (num_inputs + 1)})")
                     updated = True
                     break
 
@@ -717,7 +726,7 @@ def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inpu
                 node.op = op
                 continue
 
-            logger.info(f"Replacing instruction T{idx - (num_inputs + 1)} from {OP_LABELS[op]} to OR")
+            logger.info(f"Replacing instruction T{idx - (num_inputs + 1)} from {_op_label(op)} to OR")
             node.op = OR
             updated = True
 
@@ -937,21 +946,15 @@ def main() -> None:
             op_val = op_val_ref.as_long()
             s1_val = s1_val_ref.as_long()
             s2_val = s2_val_ref.as_long()
-            label = OP_LABELS.get(op_val, '?')
+            operator = OP_BY_CODE.get(op_val)
+            label = _op_label(op_val)
 
-            if op_val in (0, 1, 2):  # binary
+            if operator is not None:
                 instrs.append((op_val, s1_val, s2_val))
                 if args.output_blif:
                     print(f".names {_format_source(s1_val, spec.num_inputs)} {_format_source(s2_val, spec.num_inputs)} T{instr}")
-                    if op_val == 0:  # OR
-                        print(f"10 1")
-                        print(f"01 1")
-                        print(f"11 1")
-                    elif op_val == 1:  # AND
-                        print(f"11 1")
-                    elif op_val == 2:  # XOR
-                        print(f"10 1")
-                        print(f"01 1")
+                    for row in operator.blif_rows:
+                        print(row)
                 else:
                     print(f"T{instr}: {label}({_format_source(s1_val, spec.num_inputs)}, {_format_source(s2_val, spec.num_inputs)})")
             else:
@@ -989,7 +992,7 @@ def main() -> None:
 
             for instr_idx, instr in enumerate(instrs):
                 op_val, s1_val, s2_val = instr
-                label = OP_LABELS.get(op_val, '?')
+                label = _op_label(op_val) if op_val is not None else '?'
                 print(f"T{instr_idx}: {label}({_format_source(s1_val, spec.num_inputs)}, {_format_source(s2_val, spec.num_inputs)})")
             for out_idx, sel in enumerate(outputs):
                 print(f"OUT{out_idx}: {_format_source(sel, spec.num_inputs)}")
