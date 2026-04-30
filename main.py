@@ -45,8 +45,8 @@ class LogicOperator:
 
 
 LOGIC_OPERATORS: Tuple[LogicOperator, ...] = (
-    LogicOperator(0, 'AND', lambda left, right: left & right, ("11 1",), 0),
-    LogicOperator(1, 'XOR', lambda left, right: left ^ right, ("10 1", "01 1"), 1),
+    LogicOperator(0, 'AND', lambda left, right: left & right, ("11 1",), 1),
+    LogicOperator(1, 'XOR', lambda left, right: left ^ right, ("10 1", "01 1"), 0),
     LogicOperator(2, 'OR', lambda left, right: left | right, ("10 1", "01 1", "11 1"), 2),
 )
 
@@ -637,6 +637,41 @@ def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inpu
 
         return True
 
+    def clear_dag() -> None:
+        accessed: set[int] = set()
+        new_accessed: List[int] = []
+
+        for idx in outputs:
+            accessed.add(idx)
+            new_accessed.append(idx)
+
+        while len(new_accessed) > 0:
+            curr = new_accessed.pop()
+            nnode = dag.get(curr)
+            if nnode is None:
+                continue
+
+            for src in (nnode.s1, nnode.s2):
+                if src not in accessed:
+                    accessed.add(src)
+                    new_accessed.append(src)
+
+        # Eliminate unused nodes
+        for idx in list(dag.keys()):
+            if idx not in accessed:
+                logger.info("Eliminating unused instruction %s", fmt_source(idx))
+                del dag[idx]
+
+        # Update users
+        for node in dag.values():
+            node.users.clear()
+
+        for idx, node in dag.items():
+            if node.s1 in dag:
+                dag[node.s1].users.add(idx)
+            if node.s2 in dag:
+                dag[node.s2].users.add(idx)
+
     assert check(), "Post-processing started with incorrect program"
 
     updated = True
@@ -673,19 +708,11 @@ def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inpu
             if updated:
                 continue
 
-        # Update users
-        for node in dag.values():
-            node.users.clear()
-
-        for idx, node in dag.items():
-            if node.s1 in dag:
-                dag[node.s1].users.add(idx)
-            if node.s2 in dag:
-                dag[node.s2].users.add(idx)
+        clear_dag()
 
         # Ensure that if an instruction has one user with the same op, then s1, s2 < user.s1, user.s2
         for idx, node in dag.items():
-            if len(node.users) != 1:
+            if len(node.users) != 1 or idx in outputs:
                 continue
 
             user_idx = next(iter(node.users))
@@ -696,7 +723,7 @@ def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inpu
 
             assert idx == user_node.s1 or idx == user_node.s2, f"Node {idx} is not a source of its user {user_idx} in {dag}"
 
-            if not (node.s1 < user_node.s1 and node.s2 < user_node.s1 and node.s1 < user_node.s2 and node.s2 < user_node.s2):
+            if not (node.s1 <= user_node.s1 and node.s2 <= user_node.s1 and node.s1 <= user_node.s2 and node.s2 <= user_node.s2):
                 logger.info(
                     "Adjusting instruction %s to satisfy user %s constraints",
                     fmt_source(idx),
@@ -707,95 +734,122 @@ def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inpu
                 updated = True
                 break
 
-        accessed: set[int] = set()
-        new_accessed: List[int] = []
+        clear_dag()
 
-        for idx in outputs:
-            accessed.add(idx)
-            new_accessed.append(idx)
+        def node_rank(idx: int) -> Tuple[int, int]:
+            dag_node = dag.get(idx)
+            if dag_node is None:
+                return (0, -len(dag))
+            else:
+                s1_rank = node_rank(dag_node.s1)
+                s2_rank = node_rank(dag_node.s2)
 
-        while len(new_accessed) > 0:
-            curr = new_accessed.pop()
-            nnode = dag.get(curr)
-            if nnode is None:
-                continue
+                return ((s1_rank[0] + s2_rank[0]) + 1, -len(dag_node.users))
 
-            for src in (nnode.s1, nnode.s2):
-                if src not in accessed:
-                    accessed.add(src)
-                    new_accessed.append(src)
+        def add_ranks(rank1: Tuple[int, int], rank2: Tuple[int, int]) -> Tuple[int, int]:
+            return ((rank1[0] + rank2[0]) + 1, -rank1[1] * rank2[1])
 
-        # Eliminate unused nodes
-        for idx in list(dag.keys()):
-            if idx not in accessed:
-                logger.info("Eliminating unused instruction %s", fmt_source(idx))
-                del dag[idx]
-
-        # Try to replace operands with earlier equivalent nodes
-        for idx, node in dag.items():
-            s1_idx = node.s1
-            s2_idx = node.s2
-            old_op = node.op
-
-            possible_idxs = [x for x in list(range(num_inputs + 1)) + list(dag.keys()) if x < idx]
-
-            alt_ops = [operator.code for operator in LOGIC_OPERATORS]
-
-            # cartesian product: (op, s1, s2)
-            product = [
-                (op, s1, s2)
-                for op in alt_ops
-                for s1 in possible_idxs
-                for s2 in possible_idxs
-                if (
-                    (s1 < s2 or (op == XOR and s1 == s2))
-                    and ((s2, s1, _operator_sort_key(op)) < (s2_idx, s1_idx, _operator_sort_key(old_op)))
-                )
-            ]
-            product.sort(key=lambda x: (x[2], x[1], _operator_sort_key(x[0])))  # sort by (s2, s1, op rank)
-
-            for op, cidx1, cidx2 in product:
-                node.op = op
-                node.s1 = cidx1
-                node.s2 = cidx2
-
-                if not check():
-                    node.op = old_op
-                    node.s1 = s1_idx
-                    node.s2 = s2_idx
+        replacing = True
+        while replacing:
+            replacing = False
+            # Try to replace operands with earlier equivalent nodes
+            for idx, node in sorted(dag.items()):
+                if idx not in dag:
                     continue
+                s1_idx = node.s1
+                s2_idx = node.s2
+                old_op = node.op
 
-                logger.info(
-                    "Replacing instruction %s from %s(%s, %s) to %s(%s, %s)",
-                    fmt_source(idx),
-                    _op_label(old_op),
-                    fmt_source(s1_idx),
-                    fmt_source(s2_idx),
-                    _op_label(op),
-                    fmt_source(cidx1),
-                    fmt_source(cidx2),
-                )
-                updated = True
-                break
+                possible_idxs = [x for x in list(range(num_inputs + 1)) + list(dag.keys()) if x < idx]
 
+                alt_ops = [operator.code for operator in LOGIC_OPERATORS]
 
-        # Try to use earlier equivalent nodes as outputs
-        for out_idx in range(num_outputs):
-            sel_idx = outputs[out_idx]
+                # cartesian product: (op, s1, s2)
+                product = [
+                    (op, s1, s2)
+                    for op in alt_ops
+                    for s1 in possible_idxs
+                    for s2 in possible_idxs
+                    if (
+                        (s1 < s2 or (op == XOR and s1 == s2))
+                        and ((add_ranks(node_rank(s2), node_rank(s1)), _operator_sort_key(op)) < (add_ranks(node_rank(s2_idx), node_rank(s1_idx)), _operator_sort_key(old_op)))
+                    )
+                ]
+                product.sort(key=lambda x: (add_ranks(node_rank(x[2]), node_rank(x[1])), _operator_sort_key(x[0])))  # sort by (s2, s1, op rank)
 
-            for cidx in list(range(num_inputs + 1)) + list(dag.keys()):
-                if cidx >= sel_idx:
-                    continue
+                for op, cidx1, cidx2 in product:
+                    node.op = op
+                    node.s1 = cidx1
+                    node.s2 = cidx2
 
-                outputs[out_idx] = cidx
+                    if not check():
+                        node.op = old_op
+                        node.s1 = s1_idx
+                        node.s2 = s2_idx
+                        continue
 
-                if not check():
-                    outputs[out_idx] = sel_idx
-                    continue
+                    logger.info(
+                        "Replacing instruction %s from %s(%s, %s) to %s(%s, %s)",
+                        fmt_source(idx),
+                        _op_label(old_op),
+                        fmt_source(s1_idx),
+                        fmt_source(s2_idx),
+                        _op_label(op),
+                        fmt_source(cidx1),
+                        fmt_source(cidx2),
+                    )
+                    updated = True
+                    replacing = True
+                    break
 
-                logger.info("Replacing output OUT%d from %s to %s", out_idx, fmt_source(sel_idx), fmt_source(cidx))
-                updated = True
-                break
+                clear_dag()
+
+                # Ensure that if an instruction has one user with the same op, then s1, s2 < user.s1, user.s2
+                for idx, node in dag.items():
+                    if len(node.users) != 1 or idx in outputs:
+                        continue
+
+                    user_idx = next(iter(node.users))
+                    user_node = dag[user_idx]
+
+                    if node.op != user_node.op:
+                        continue
+
+                    assert idx == user_node.s1 or idx == user_node.s2, f"Node {idx} is not a source of its user {user_idx} in {dag}"
+
+                    if not (node.s1 <= user_node.s1 and node.s2 <= user_node.s1 and node.s1 <= user_node.s2 and node.s2 <= user_node.s2):
+                        logger.info(
+                            "Adjusting instruction %s to satisfy user %s constraints",
+                            fmt_source(idx),
+                            fmt_source(user_idx),
+                        )
+                        sources = sorted([node.s1, node.s2, user_node.s1, user_node.s2])
+                        node.s1, node.s2, user_node.s1, user_node.s2 = sources
+                        updated = True
+                        replacing = True
+                        break
+
+                # Try to use earlier equivalent nodes as outputs
+                for out_idx in range(num_outputs):
+                    sel_idx = outputs[out_idx]
+
+                    for cidx in list(range(num_inputs + 1)) + sorted(dag.keys()):
+                        if cidx >= sel_idx:
+                            continue
+
+                        outputs[out_idx] = cidx
+
+                        if not check():
+                            outputs[out_idx] = sel_idx
+                            continue
+
+                        logger.info("Replacing output OUT%d from %s to %s", out_idx, fmt_source(sel_idx), fmt_source(cidx))
+                        updated = True
+                        replacing = True
+                        break
+
+                clear_dag()
+
 
     # Re-number instructions to be contiguous
     new_idxs = {}

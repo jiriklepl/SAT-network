@@ -106,8 +106,8 @@ class MainEncodingTests(unittest.TestCase):
         self.assertIn(".names T0\n.names T0 OUT0", buf.getvalue())
 
     def test_operator_sort_key_is_explicit(self) -> None:
-        self.assertLess(_operator_sort_key(OP_BY_LABEL["AND"].code), _operator_sort_key(OP_BY_LABEL["XOR"].code))
-        self.assertLess(_operator_sort_key(OP_BY_LABEL["XOR"].code), _operator_sort_key(OP_BY_LABEL["OR"].code))
+        self.assertLess(_operator_sort_key(OP_BY_LABEL["XOR"].code), _operator_sort_key(OP_BY_LABEL["AND"].code))
+        self.assertLess(_operator_sort_key(OP_BY_LABEL["AND"].code), _operator_sort_key(OP_BY_LABEL["OR"].code))
 
     def test_boolean_encoding_uses_output_selector_guards(self) -> None:
         spec = ProgramSpec(num_inputs=1, num_outputs=1, program_length=1)
