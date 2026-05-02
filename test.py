@@ -145,6 +145,31 @@ class MainEncodingTests(unittest.TestCase):
                 outputs=[2],
             )
 
+    def test_post_process_afterburner_accepts_only_final_size_reductions(self) -> None:
+        xor = OP_BY_LABEL["XOR"].code
+        or_op = OP_BY_LABEL["OR"].code
+        examples = [
+            {"inputs": [False, False], "outputs": [False]},
+            {"inputs": [False, True], "outputs": [True]},
+            {"inputs": [True, False], "outputs": [True]},
+            {"inputs": [True, True], "outputs": [False]},
+        ]
+
+        instrs, outputs = _post_process_program(
+            [
+                (xor, 1, 2),
+                (xor, 1, 2),
+                (or_op, 3, 4),
+            ],
+            num_inputs=2,
+            num_outputs=1,
+            examples=examples,
+            outputs=[5],
+        )
+
+        self.assertEqual(instrs, [(xor, 1, 2)])
+        self.assertEqual(outputs, [3])
+
     def test_boolean_encoding_uses_output_selector_guards(self) -> None:
         spec = ProgramSpec(num_inputs=1, num_outputs=1, program_length=1)
         options = EncodingOptions(encode_boolean=True)

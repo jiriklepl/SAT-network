@@ -573,7 +573,14 @@ def _emit_program(
         print(".end")
 
 
-def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inputs: int, num_outputs: int, examples: List[Example], outputs: List[int]) -> Tuple[List[Tuple[Optional[int], int, int]], List[int]]:
+def _post_process_program(
+    instrs: List[Tuple[Optional[int], int, int]],
+    num_inputs: int,
+    num_outputs: int,
+    examples: List[Example],
+    outputs: List[int],
+    enable_afterburner: bool = True,
+) -> Tuple[List[Tuple[Optional[int], int, int]], List[int]]:
     """Post-process the synthesized program"""
     logger = logging.getLogger(__name__)
     outputs = list(outputs)
@@ -867,6 +874,117 @@ def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inpu
 
                 clear_dag()
 
+
+    def materialize_program() -> Tuple[List[Tuple[Optional[int], int, int]], List[int]]:
+        new_idxs = {}
+        for new_idx, old_idx in enumerate(sorted(dag.keys())):
+            new_idxs[old_idx] = new_idx + (num_inputs + 1)
+
+        materialized_instrs: List[Tuple[Optional[int], int, int]] = []
+        for idx in sorted(dag.keys()):
+            node = dag[idx]
+            materialized_instrs.append((node.op, new_idxs.get(node.s1, node.s1), new_idxs.get(node.s2, node.s2)))
+
+        materialized_outputs = [new_idxs.get(sel_idx, sel_idx) for sel_idx in outputs]
+        return materialized_instrs, materialized_outputs
+
+    def compute_signatures() -> Dict[int, Tuple[bool, ...]]:
+        source_values: Dict[int, List[bool]] = {0: [True] * len(examples)}
+        for input_idx in range(num_inputs):
+            source_values[input_idx + 1] = [bool(ex["inputs"][input_idx]) for ex in examples]
+
+        for idx in sorted(dag):
+            node = dag[idx]
+            left_values = source_values[node.s1]
+            right_values = source_values[node.s2]
+            source_values[idx] = [
+                bool(_apply_operator(node.op, left, right, False))
+                for left, right in zip(left_values, right_values)
+            ]
+
+        return {idx: tuple(values) for idx, values in source_values.items()}
+
+    def redirect_source(old_idx: int, new_idx: int) -> None:
+        for out_idx, sel_idx in enumerate(outputs):
+            if sel_idx == old_idx:
+                outputs[out_idx] = new_idx
+
+        for node in dag.values():
+            if node.s1 == old_idx:
+                node.s1 = new_idx
+            if node.s2 == old_idx:
+                node.s2 = new_idx
+
+    def restore_snapshot(snapshot: Tuple[Dict[int, DAGNode], List[int]]) -> None:
+        nonlocal dag, outputs
+        dag = snapshot[0]
+        outputs = snapshot[1]
+        clear_dag()
+
+    def try_afterburner() -> Optional[Tuple[List[Tuple[Optional[int], int, int]], List[int]]]:
+        if not enable_afterburner or not examples:
+            return None
+
+        base_instrs, _ = materialize_program()
+        base_count = len(base_instrs)
+        signatures = compute_signatures()
+        representative_by_signature: Dict[Tuple[bool, ...], int] = {}
+        best_result: Optional[Tuple[int, int, List[Tuple[Optional[int], int, int]], List[int]]] = None
+
+        for idx in list(range(num_inputs + 1)) + sorted(dag):
+            signature = signatures[idx]
+            representative = representative_by_signature.get(signature)
+            if representative is None:
+                representative_by_signature[signature] = idx
+                continue
+            if idx not in dag:
+                continue
+
+            snapshot = (
+                {snap_idx: DAGNode(node.op, node.s1, node.s2) for snap_idx, node in dag.items()},
+                list(outputs),
+            )
+            redirect_source(idx, representative)
+            clear_dag()
+            candidate_instrs, candidate_outputs = materialize_program()
+            restore_snapshot(snapshot)
+
+            processed_instrs, processed_outputs = _post_process_program(
+                candidate_instrs,
+                num_inputs,
+                num_outputs,
+                examples,
+                candidate_outputs,
+                enable_afterburner=False,
+            )
+
+            if len(processed_instrs) < base_count:
+                candidate_result = (len(processed_instrs), idx, processed_instrs, processed_outputs)
+                if best_result is None or candidate_result[:2] < best_result[:2]:
+                    best_result = candidate_result
+
+        if best_result is not None:
+            best_count, best_idx, best_instrs, best_outputs = best_result
+            logger.info(
+                "Accepted afterburner rewrite at %s reducing program from %d to %d instructions",
+                fmt_source(best_idx),
+                base_count,
+                best_count,
+            )
+            return best_instrs, best_outputs
+
+        return None
+
+    afterburner_result = try_afterburner()
+    if afterburner_result is not None:
+        return _post_process_program(
+            afterburner_result[0],
+            num_inputs,
+            num_outputs,
+            examples,
+            afterburner_result[1],
+            enable_afterburner=True,
+        )
 
     # Re-number instructions to be contiguous
     new_idxs = {}
