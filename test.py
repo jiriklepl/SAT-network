@@ -14,6 +14,7 @@ from main import (
     _build_test,
     _emit_program,
     _operator_sort_key,
+    _post_process_program,
 )
 from build_assumptions import build_assumption_lines
 from dataset_plugins import available_plugins, get_plugin, get_plugin_config
@@ -108,6 +109,41 @@ class MainEncodingTests(unittest.TestCase):
     def test_operator_sort_key_is_explicit(self) -> None:
         self.assertLess(_operator_sort_key(OP_BY_LABEL["XOR"].code), _operator_sort_key(OP_BY_LABEL["AND"].code))
         self.assertLess(_operator_sort_key(OP_BY_LABEL["AND"].code), _operator_sort_key(OP_BY_LABEL["OR"].code))
+
+    def test_post_process_does_not_mutate_output_selectors(self) -> None:
+        xor = OP_BY_LABEL["XOR"].code
+        examples = [
+            {"inputs": [False, False], "outputs": [False]},
+            {"inputs": [False, True], "outputs": [True]},
+            {"inputs": [True, False], "outputs": [True]},
+            {"inputs": [True, True], "outputs": [False]},
+        ]
+        outputs = [3]
+
+        instrs, processed_outputs = _post_process_program(
+            [(xor, 1, 2)],
+            num_inputs=2,
+            num_outputs=1,
+            examples=examples,
+            outputs=outputs,
+        )
+
+        self.assertEqual(instrs, [(xor, 1, 2)])
+        self.assertEqual(processed_outputs, [3])
+        self.assertEqual(outputs, [3])
+
+    def test_post_process_rejects_invalid_program_instead_of_asserting(self) -> None:
+        and_op = OP_BY_LABEL["AND"].code
+        examples = [{"inputs": [True], "outputs": [False]}]
+
+        with self.assertRaisesRegex(ValueError, "incorrect program"):
+            _post_process_program(
+                [(and_op, 0, 1)],
+                num_inputs=1,
+                num_outputs=1,
+                examples=examples,
+                outputs=[2],
+            )
 
     def test_boolean_encoding_uses_output_selector_guards(self) -> None:
         spec = ProgramSpec(num_inputs=1, num_outputs=1, program_length=1)

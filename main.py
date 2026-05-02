@@ -576,6 +576,10 @@ def _emit_program(
 def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inputs: int, num_outputs: int, examples: List[Example], outputs: List[int]) -> Tuple[List[Tuple[Optional[int], int, int]], List[int]]:
     """Post-process the synthesized program"""
     logger = logging.getLogger(__name__)
+    outputs = list(outputs)
+
+    if len(outputs) != num_outputs:
+        raise ValueError(f"Expected {num_outputs} output selectors, got {len(outputs)}")
 
     class DAGNode:
         def __init__(self, op: int, s1: int, s2: int):
@@ -593,8 +597,17 @@ def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inpu
         idx = num_inputs + 1 + i
         if op is None:
             raise ValueError("Cannot post-process program with unknown operations")
+        if op not in OP_BY_CODE:
+            raise ValueError(f"Cannot post-process program with unsupported operation code: {op}")
+        if not 0 <= s1 < idx or not 0 <= s2 < idx:
+            raise ValueError(f"Instruction {idx} references an invalid source")
 
         dag[idx] = DAGNode(op, s1, s2)
+
+    max_source = num_inputs + len(instrs)
+    for out_idx, sel_idx in enumerate(outputs):
+        if not 0 <= sel_idx <= max_source:
+            raise ValueError(f"Output OUT{out_idx} selector out of range: {sel_idx}")
 
     for i, (op, s1, s2) in enumerate(instrs):
         idx = num_inputs + 1 + i
@@ -616,7 +629,8 @@ def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inpu
             values: Dict[int, bool] = {i + 1: bool(v) for i, v in enumerate(ins)}
             values[0] = True  # constant 1
 
-            for idx, node in dag.items():
+            for idx in sorted(dag):
+                node = dag[idx]
                 if node.s1 not in values:
                     raise ValueError(f"Missing value for source {node.s1} of node {idx} in {dag} with outputs {outputs}")
                 if node.s2 not in values:
@@ -631,6 +645,8 @@ def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inpu
                 if outs[out_idx] is None:
                     continue
                 expected = bool(outs[out_idx])
+                if sel_idx not in values:
+                    raise ValueError(f"Missing value for output OUT{out_idx} selector {sel_idx}")
                 actual = values[sel_idx]
                 if expected != actual:
                     return False
@@ -672,7 +688,8 @@ def _post_process_program(instrs: List[Tuple[Optional[int], int, int]], num_inpu
             if node.s2 in dag:
                 dag[node.s2].users.add(idx)
 
-    assert check(), "Post-processing started with incorrect program"
+    if not check():
+        raise ValueError("Post-processing started with incorrect program")
 
     updated = True
     while updated:
