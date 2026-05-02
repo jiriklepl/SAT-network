@@ -653,12 +653,51 @@ def _post_process_program(
             if bool(outs[out_idx]):
                 expected_output_values[out_idx] |= bit
 
+    def topological_dag_order() -> List[int]:
+        ordered_idxs: List[int] = []
+        visit_state: Dict[int, int] = {}
+
+        def visit(idx: int) -> None:
+            state = visit_state.get(idx, 0)
+            if state == 2:
+                return
+            if state == 1:
+                raise ValueError(f"Cycle detected while ordering instruction {fmt_source(idx)}")
+            node = dag.get(idx)
+            if node is None:
+                return
+
+            visit_state[idx] = 1
+            visit(node.s1)
+            visit(node.s2)
+            visit_state[idx] = 2
+            ordered_idxs.append(idx)
+
+        for idx in sorted(dag.keys()):
+            visit(idx)
+
+        return ordered_idxs
+
+    def topological_positions() -> Dict[int, int]:
+        return {idx: pos for pos, idx in enumerate(topological_dag_order())}
+
+    def source_topological_key(idx: int, positions: Optional[Dict[int, int]] = None) -> Tuple[int, int]:
+        if idx not in dag:
+            return (0, idx)
+        if positions is None:
+            positions = topological_positions()
+        return (1, positions[idx])
+
+    def ordered_sources(srcs: List[int]) -> List[int]:
+        positions = topological_positions()
+        return sorted(srcs, key=lambda src: source_topological_key(src, positions))
+
     def evaluate_masks() -> Dict[int, int]:
         values: Dict[int, int] = {0: all_examples_mask}
         for input_idx, input_mask in enumerate(input_masks):
             values[input_idx + 1] = input_mask
 
-        for idx in sorted(dag):
+        for idx in topological_dag_order():
             node = dag[idx]
             if node.s1 not in values:
                 raise ValueError(f"Missing value for source {node.s1} of node {idx} in {dag} with outputs {outputs}")
@@ -727,12 +766,13 @@ def _post_process_program(
 
 
     def materialize_program() -> Tuple[List[Tuple[Optional[int], int, int]], List[int]]:
+        ordered_idxs = topological_dag_order()
         new_idxs = {}
-        for new_idx, old_idx in enumerate(sorted(dag.keys())):
+        for new_idx, old_idx in enumerate(ordered_idxs):
             new_idxs[old_idx] = new_idx + (num_inputs + 1)
 
         materialized_instrs: List[Tuple[Optional[int], int, int]] = []
-        for idx in sorted(dag.keys()):
+        for idx in ordered_idxs:
             node = dag[idx]
             materialized_instrs.append((node.op, new_idxs.get(node.s1, node.s1), new_idxs.get(node.s2, node.s2)))
 
@@ -755,6 +795,21 @@ def _post_process_program(
     def compute_signatures() -> Dict[int, int]:
         return evaluate_masks()
 
+    def depends_on(source_idx: int, target_idx: int, cache: Dict[int, bool]) -> bool:
+        cached = cache.get(source_idx)
+        if cached is not None:
+            return cached
+        if source_idx == target_idx:
+            cache[source_idx] = True
+            return True
+        source_node = dag.get(source_idx)
+        if source_node is None:
+            cache[source_idx] = False
+            return False
+        result = depends_on(source_node.s1, target_idx, cache) or depends_on(source_node.s2, target_idx, cache)
+        cache[source_idx] = result
+        return result
+
     def redirect_source(old_idx: int, new_idx: int) -> None:
         for out_idx, sel_idx in enumerate(outputs):
             if sel_idx == old_idx:
@@ -772,6 +827,13 @@ def _post_process_program(
         outputs = snapshot[1]
         rebuild_users()
 
+    def canonicalize_dag() -> None:
+        positions = topological_positions()
+        for node in dag.values():
+            if source_topological_key(node.s1, positions) > source_topological_key(node.s2, positions):
+                node.s1, node.s2 = node.s2, node.s1
+        rebuild_users()
+
     def process_materialized_candidate(
         strategy: str,
         description: str,
@@ -786,6 +848,7 @@ def _post_process_program(
         )
         try:
             load_materialized_program(candidate_instrs, candidate_outputs)
+            canonicalize_dag()
             clear_dag(False)
             processed_instrs, processed_outputs = materialize_program()
             valid = check()
@@ -812,7 +875,10 @@ def _post_process_program(
         signatures = compute_signatures()
         representative_by_signature: Dict[int, int] = {}
 
-        for idx in list(range(num_inputs + 1)) + sorted(dag):
+        positions = topological_positions()
+        sources_by_topology = list(range(num_inputs + 1)) + sorted(dag, key=lambda source_idx: source_topological_key(source_idx, positions))
+
+        for idx in sources_by_topology:
             signature = signatures[idx]
             representative = representative_by_signature.get(signature)
             if representative is None:
@@ -838,50 +904,32 @@ def _post_process_program(
         base_score = program_score(base_instrs, base_outputs, parent_updates)
         current_masks = evaluate_masks()
 
-        def local_node_rank(rank_idx: int, cache: Dict[int, Tuple[int, int]]) -> Tuple[int, int]:
-            cached = cache.get(rank_idx)
-            if cached is not None:
-                return cached
-            rank_node = dag.get(rank_idx)
-            if rank_node is None:
-                rank = (0, -len(dag))
-            else:
-                s1_rank = local_node_rank(rank_node.s1, cache)
-                s2_rank = local_node_rank(rank_node.s2, cache)
-                rank = ((s1_rank[0] + s2_rank[0]) + 1, -len(rank_node.users))
-            cache[rank_idx] = rank
-            return rank
-
-        def add_ranks_local(rank1: Tuple[int, int], rank2: Tuple[int, int]) -> Tuple[int, int]:
-            return ((rank1[0] + rank2[0]) + 1, -rank1[1] * rank2[1])
-
-        for idx, node in sorted(dag.items()):
+        positions = topological_positions()
+        for idx in sorted(dag, key=lambda node_idx: source_topological_key(node_idx, positions)):
+            node = dag[idx]
             if idx not in dag:
                 continue
-            rank_cache: Dict[int, Tuple[int, int]] = {}
             old_op = node.op
             old_s1 = node.s1
             old_s2 = node.s2
-            old_score = (
-                add_ranks_local(local_node_rank(old_s2, rank_cache), local_node_rank(old_s1, rank_cache))[::-1],
-                _operator_sort_key(old_op),
-            )
-            possible_idxs = [x for x in list(range(num_inputs + 1)) + list(dag.keys()) if x < idx]
-
+            dependency_cache: Dict[int, bool] = {}
+            possible_idxs = [
+                x
+                for x in list(range(num_inputs + 1)) + list(dag.keys())
+                if x != idx and not depends_on(x, idx, dependency_cache)
+            ]
             product = [
                 (op, s1, s2)
                 for op in [operator.code for operator in LOGIC_OPERATORS]
                 for s1 in possible_idxs
                 for s2 in possible_idxs
                 if (
-                    (s1 < s2 or (op == XOR and s1 == s2))
-                    and ((add_ranks_local(local_node_rank(s2, rank_cache), local_node_rank(s1, rank_cache))[::-1], _operator_sort_key(op)) < old_score)
+                    (source_topological_key(s1, positions) < source_topological_key(s2, positions) or (op == XOR and s1 == s2))
                 )
             ]
-            # product.sort(key=lambda x: (add_ranks_local(local_node_rank(x[2], rank_cache), local_node_rank(x[1], rank_cache)), _operator_sort_key(x[0])))
             random.shuffle(product)
             
-            patience = 30
+            patience = 2000
             for op, s1, s2 in product:
                 candidate_mask = _apply_operator(op, current_masks[s1], current_masks[s2], 0) & all_examples_mask
                 if candidate_mask != current_masks[idx]:
@@ -902,8 +950,12 @@ def _post_process_program(
                 dag[idx].op = op
                 dag[idx].s1 = s1
                 dag[idx].s2 = s2
-                candidate_instrs, candidate_outputs = materialize_program()
-                restore_snapshot(snapshot)
+                try:
+                    candidate_instrs, candidate_outputs = materialize_program()
+                except ValueError:
+                    continue
+                finally:
+                    restore_snapshot(snapshot)
 
                 candidate = process_materialized_candidate("replace", f"{fmt_source(idx)}", base_score, candidate_instrs, candidate_outputs, parent_updates)
                 if candidate is not None:
@@ -911,28 +963,42 @@ def _post_process_program(
 
                 patience -= 1
                 if patience <= 0:
-                    break
+                    return
 
     def generate_adjustment_candidates(consider_candidate: Callable[[Candidate], None], parent_updates: int) -> None:
         base_instrs, base_outputs = materialize_program()
         base_score = program_score(base_instrs, base_outputs, parent_updates)
 
-        for idx, node in sorted(dag.items()):
+        positions = topological_positions()
+        for idx in sorted(dag, key=lambda node_idx: source_topological_key(node_idx, positions)):
+            node = dag[idx]
             if len(node.users) != 1 or idx in outputs:
                 continue
             user_idx = next(iter(node.users))
             user_node = dag[user_idx]
             if node.op != user_node.op:
                 continue
-            if node.s1 <= user_node.s1 and node.s2 <= user_node.s1 and node.s1 <= user_node.s2 and node.s2 <= user_node.s2:
+
+            if user_node.s1 == idx:
+                user_other_source = user_node.s2
+            elif user_node.s2 == idx:
+                user_other_source = user_node.s1
+            else:
+                raise ValueError(f"Node {idx} is not a source of its user {user_idx} in {dag}")
+
+            sources = ordered_sources([node.s1, node.s2, user_other_source])
+            if [node.s1, node.s2] == sources[:2] and user_other_source == sources[2]:
                 continue
 
             snapshot = (
                 {snap_idx: DAGNode(snap_node.op, snap_node.s1, snap_node.s2) for snap_idx, snap_node in dag.items()},
                 list(outputs),
             )
-            sources = sorted([node.s1, node.s2, user_node.s1, user_node.s2])
-            dag[idx].s1, dag[idx].s2, dag[user_idx].s1, dag[user_idx].s2 = sources
+            dag[idx].s1, dag[idx].s2 = sources[0], sources[1]
+            if source_topological_key(idx) < source_topological_key(sources[2]):
+                dag[user_idx].s1, dag[user_idx].s2 = idx, sources[2]
+            else:
+                dag[user_idx].s1, dag[user_idx].s2 = sources[2], idx
             candidate_instrs, candidate_outputs = materialize_program()
             restore_snapshot(snapshot)
 
@@ -944,12 +1010,14 @@ def _post_process_program(
         base_instrs, base_outputs = materialize_program()
         base_score = program_score(base_instrs, base_outputs, parent_updates)
         values = evaluate_masks()
+        positions = topological_positions()
+        sources_by_topology = list(range(num_inputs + 1)) + sorted(dag.keys(), key=lambda source_idx: source_topological_key(source_idx, positions))
 
         for out_idx in range(num_outputs):
             sel_idx = outputs[out_idx]
             care_mask = expected_output_masks[out_idx]
-            for cidx in list(range(num_inputs + 1)) + sorted(dag.keys()):
-                if cidx >= sel_idx:
+            for cidx in sources_by_topology:
+                if source_topological_key(cidx, positions) >= source_topological_key(sel_idx, positions):
                     continue
                 if (values[cidx] & care_mask) != (expected_output_values[out_idx] & care_mask):
                     continue
@@ -966,50 +1034,11 @@ def _post_process_program(
                 if candidate is not None:
                     consider_candidate(candidate)
 
-    def generate_canonicalization_candidates(consider_candidate: Callable[[Candidate], None], parent_updates: int) -> None:
-        base_instrs, base_outputs = materialize_program()
-        base_score = program_score(base_instrs, base_outputs, parent_updates)
-        updates = 0
-        snapshot = (
-            {snap_idx: DAGNode(snap_node.op, snap_node.s1, snap_node.s2) for snap_idx, snap_node in dag.items()},
-            list(outputs),
-        )
-
-        for node in dag.values():
-            if node.s1 > node.s2:
-                node.s1, node.s2 = node.s2, node.s1
-                updates += 1
-
-        sorted_items = sorted(dag.items(), key=lambda item: (item[1].s2, item[1].s1, _operator_sort_key(item[1].op)))
-        if list(dag.keys()) != [k for k, _ in sorted_items]:
-            updates += 1
-            new_idxs: Dict[int, int] = {}
-            for new_idx, (old_idx, _node) in enumerate(sorted_items):
-                new_idxs[old_idx] = num_inputs + 1 + new_idx
-
-            new_dag: Dict[int, DAGNode] = {}
-            for old_idx, node in sorted_items:
-                new_node = DAGNode(node.op, new_idxs.get(node.s1, node.s1), new_idxs.get(node.s2, node.s2))
-                new_dag[new_idxs[old_idx]] = new_node
-
-            for out_idx, sel_idx in enumerate(outputs):
-                outputs[out_idx] = new_idxs.get(sel_idx, sel_idx)
-
-            dag.clear()
-            dag.update(new_dag)
-
-        rebuild_users()
-        candidate_instrs, candidate_outputs = materialize_program()
-        restore_snapshot(snapshot)
-
-        if updates == 0:
-            return
-
-        candidate = process_materialized_candidate("canonicalize", "operand/order", base_score, candidate_instrs, candidate_outputs, parent_updates)
-        if candidate is not None:
-            consider_candidate(candidate)
-
-    def generate_beam_candidates(candidate_limit: int, parent_updates: int) -> List[Candidate]:
+    def generate_beam_candidates(
+        candidate_limit: int,
+        parent_updates: int,
+        seen_programs: set[Tuple[Tuple[Tuple[Optional[int], int, int], ...], Tuple[int, ...]]],
+    ) -> List[Candidate]:
         result: List[Candidate] = []
         result_keys: Dict[Tuple[Tuple[Tuple[Optional[int], int, int], ...], Tuple[int, ...]], int] = {}
 
@@ -1030,6 +1059,8 @@ def _post_process_program(
 
         def consider_candidate(candidate: Candidate) -> None:
             key = (tuple(candidate[2]), tuple(candidate[3]))
+            if key in seen_programs:
+                return
             existing_idx = result_keys.get(key)
             if existing_idx is not None:
                 if candidate[0] >= result[existing_idx][0]:
@@ -1063,7 +1094,6 @@ def _post_process_program(
             log_candidate(candidate)
 
         for generator in (
-            generate_canonicalization_candidates,
             generate_afterburner_candidates,
             generate_replacement_candidates,
             generate_adjustment_candidates,
@@ -1074,6 +1104,7 @@ def _post_process_program(
         return result
 
     def run_beam() -> Optional[Tuple[List[Tuple[Optional[int], int, int]], List[int]]]:
+        canonicalize_dag()
         clear_dag(False)
         start_instrs, start_outputs = materialize_program()
         start_key = (tuple(start_instrs), tuple(start_outputs))
@@ -1092,7 +1123,7 @@ def _post_process_program(
 
             for state_instrs, state_outputs, state_updates in beam:
                 load_materialized_program(state_instrs, state_outputs)
-                for score, _description, candidate_instrs, candidate_outputs in generate_beam_candidates(post_process_beam_candidates, state_updates):
+                for score, _description, candidate_instrs, candidate_outputs in generate_beam_candidates(post_process_beam_candidates, state_updates, seen):
                     key = (tuple(candidate_instrs), tuple(candidate_outputs))
                     if key in seen:
                         continue
@@ -1126,26 +1157,7 @@ def _post_process_program(
     if afterburner_result is not None:
         load_materialized_program(afterburner_result[0], afterburner_result[1])
 
-    # Re-number instructions to be contiguous
-    new_idxs = {}
-    for new_idx, old_idx in enumerate(sorted(dag.keys())):
-        new_idxs[old_idx] = new_idx + (num_inputs + 1)
-
-    new_dag = {}
-    for idx, node in dag.items():
-        new_node = DAGNode(node.op, new_idxs.get(node.s1, node.s1), new_idxs.get(node.s2, node.s2))
-        new_dag[new_idxs[idx]] = new_node
-
-    for out_idx in range(num_outputs):
-        sel_idx = outputs[out_idx]
-        outputs[out_idx] = new_idxs.get(sel_idx, sel_idx)
-
-    dag = new_dag
-
-    instrs = []
-    for idx in dag.keys():
-        node = dag[idx]
-        instrs.append((node.op, node.s1, node.s2))
+    instrs, outputs = materialize_program()
 
     logger.info("Post-processing reduced program to %d instructions", len(instrs))
 
