@@ -580,6 +580,9 @@ def _post_process_program(
     examples: List[Example],
     outputs: List[int],
     enable_afterburner: bool = True,
+    post_process_beam_width: int = 1,
+    post_process_beam_rounds: int = 0,
+    post_process_beam_candidates: int = 0,
 ) -> Tuple[List[Tuple[Optional[int], int, int]], List[int]]:
     """Post-process the synthesized program"""
     logger = logging.getLogger(__name__)
@@ -678,7 +681,17 @@ def _post_process_program(
 
         return True
 
-    def clear_dag() -> None:
+    def rebuild_users() -> None:
+        for node in dag.values():
+            node.users.clear()
+
+        for idx, node in dag.items():
+            if node.s1 in dag:
+                dag[node.s1].users.add(idx)
+            if node.s2 in dag:
+                dag[node.s2].users.add(idx)
+
+    def clear_dag(log_eliminations: bool = True) -> int:
         accessed: set[int] = set()
         new_accessed: List[int] = []
 
@@ -698,225 +711,19 @@ def _post_process_program(
                     new_accessed.append(src)
 
         # Eliminate unused nodes
+        eliminated = 0
         for idx in list(dag.keys()):
             if idx not in accessed:
-                logger.info("Eliminating unused instruction %s", fmt_source(idx))
+                if log_eliminations:
+                    logger.info("Eliminating unused instruction %s", fmt_source(idx))
                 del dag[idx]
+                eliminated += 1
 
-        # Update users
-        for node in dag.values():
-            node.users.clear()
-
-        for idx, node in dag.items():
-            if node.s1 in dag:
-                dag[node.s1].users.add(idx)
-            if node.s2 in dag:
-                dag[node.s2].users.add(idx)
+        rebuild_users()
+        return eliminated
 
     if not check():
         raise ValueError("Post-processing started with incorrect program")
-
-    updated = True
-    while updated:
-        updated = False
-        logger.info("Starting post-processing iteration")
-
-        # Ensure src1 < src2
-        for idx, node in dag.items():
-            if node.s1 > node.s2:
-                logger.info("Swapping sources of instruction %s to maintain s1 < s2", fmt_source(idx))
-                node.s1, node.s2 = node.s2, node.s1
-
-        # Ensure that instructions are ordered by (s2, s1, op)
-        sorted_items = sorted(dag.items(), key=lambda item: (item[1].s2, item[1].s1, _operator_sort_key(item[1].op)))
-        if list(dag.keys()) != [k for k, _ in sorted_items]:
-            logger.info("Re-ordering instructions to maintain canonical order")
-            updated = True
-            new_idxs: Dict[int, int] = {}
-            for new_idx, (old_idx, node) in enumerate(sorted_items):
-                new_idxs[old_idx] = num_inputs + 1 + new_idx
-
-            new_dag: Dict[int, DAGNode] = {}
-            for old_idx, node in sorted_items:
-                new_node = DAGNode(node.op, new_idxs.get(node.s1, node.s1), new_idxs.get(node.s2, node.s2))
-                new_dag[new_idxs[old_idx]] = new_node
-
-            for out_idx in range(num_outputs):
-                sel_idx = outputs[out_idx]
-                outputs[out_idx] = new_idxs.get(sel_idx, sel_idx)
-
-            dag = new_dag
-
-            if updated:
-                continue
-
-        clear_dag()
-
-        # Ensure that if an instruction has one user with the same op, then s1, s2 < user.s1, user.s2
-        for idx, node in dag.items():
-            if len(node.users) != 1 or idx in outputs:
-                continue
-
-            user_idx = next(iter(node.users))
-            user_node = dag[user_idx]
-
-            if node.op != user_node.op:
-                continue
-
-            assert idx == user_node.s1 or idx == user_node.s2, f"Node {idx} is not a source of its user {user_idx} in {dag}"
-
-            if not (node.s1 <= user_node.s1 and node.s2 <= user_node.s1 and node.s1 <= user_node.s2 and node.s2 <= user_node.s2):
-                logger.info(
-                    "Adjusting instruction %s to satisfy user %s constraints",
-                    fmt_source(idx),
-                    fmt_source(user_idx),
-                )
-                sources = sorted([node.s1, node.s2, user_node.s1, user_node.s2])
-                node.s1, node.s2, user_node.s1, user_node.s2 = sources
-                updated = True
-                break
-
-        clear_dag()
-
-        def node_rank(idx: int) -> Tuple[int, int]:
-            dag_node = dag.get(idx)
-            if dag_node is None:
-                return (0, -len(dag))
-            else:
-                s1_rank = node_rank(dag_node.s1)
-                s2_rank = node_rank(dag_node.s2)
-
-                return ((s1_rank[0] + s2_rank[0]) + 1, -len(dag_node.users))
-
-        def add_ranks(rank1: Tuple[int, int], rank2: Tuple[int, int]) -> Tuple[int, int]:
-            return ((rank1[0] + rank2[0]) + 1, -rank1[1] * rank2[1])
-
-        replacing = True
-        while replacing:
-            replacing = False
-            # Try to replace operands with earlier equivalent nodes
-            for idx, node in sorted(dag.items()):
-                if idx not in dag:
-                    continue
-                current_masks = evaluate_masks()
-                rank_cache: Dict[int, Tuple[int, int]] = {}
-
-                def cached_node_rank(rank_idx: int) -> Tuple[int, int]:
-                    cached = rank_cache.get(rank_idx)
-                    if cached is not None:
-                        return cached
-                    rank_node = dag.get(rank_idx)
-                    if rank_node is None:
-                        rank = (0, -len(dag))
-                    else:
-                        s1_rank = cached_node_rank(rank_node.s1)
-                        s2_rank = cached_node_rank(rank_node.s2)
-                        rank = ((s1_rank[0] + s2_rank[0]) + 1, -len(rank_node.users))
-                    rank_cache[rank_idx] = rank
-                    return rank
-
-                s1_idx = node.s1
-                s2_idx = node.s2
-                old_op = node.op
-                old_score = (add_ranks(cached_node_rank(s2_idx), cached_node_rank(s1_idx)), _operator_sort_key(old_op))
-
-                possible_idxs = [x for x in list(range(num_inputs + 1)) + list(dag.keys()) if x < idx]
-
-                alt_ops = [operator.code for operator in LOGIC_OPERATORS]
-
-                # cartesian product: (op, s1, s2)
-                product = [
-                    (op, s1, s2)
-                    for op in alt_ops
-                    for s1 in possible_idxs
-                    for s2 in possible_idxs
-                    if (
-                        (s1 < s2 or (op == XOR and s1 == s2))
-                        and ((add_ranks(cached_node_rank(s2), cached_node_rank(s1)), _operator_sort_key(op)) < old_score)
-                    )
-                ]
-                product.sort(key=lambda x: (add_ranks(cached_node_rank(x[2]), cached_node_rank(x[1])), _operator_sort_key(x[0])))  # sort by (s2, s1, op rank)
-
-                for op, cidx1, cidx2 in product:
-                    candidate_mask = _apply_operator(op, current_masks[cidx1], current_masks[cidx2], 0) & all_examples_mask
-                    if candidate_mask == current_masks[idx]:
-                        valid = True
-                    else:
-                        node.op = op
-                        node.s1 = cidx1
-                        node.s2 = cidx2
-                        valid = check()
-                        node.op = old_op
-                        node.s1 = s1_idx
-                        node.s2 = s2_idx
-
-                    if not valid:
-                        continue
-
-                    node.op = op
-                    node.s1 = cidx1
-                    node.s2 = cidx2
-                    logger.info(
-                        "Replacing instruction %s from %s(%s, %s) to %s(%s, %s)",
-                        fmt_source(idx),
-                        _op_label(old_op),
-                        fmt_source(s1_idx),
-                        fmt_source(s2_idx),
-                        _op_label(op),
-                        fmt_source(cidx1),
-                        fmt_source(cidx2),
-                    )
-                    updated = True
-                    replacing = True
-                    break
-
-                clear_dag()
-
-                # Ensure that if an instruction has one user with the same op, then s1, s2 < user.s1, user.s2
-                for idx, node in dag.items():
-                    if len(node.users) != 1 or idx in outputs:
-                        continue
-
-                    user_idx = next(iter(node.users))
-                    user_node = dag[user_idx]
-
-                    if node.op != user_node.op:
-                        continue
-
-                    assert idx == user_node.s1 or idx == user_node.s2, f"Node {idx} is not a source of its user {user_idx} in {dag}"
-
-                    if not (node.s1 <= user_node.s1 and node.s2 <= user_node.s1 and node.s1 <= user_node.s2 and node.s2 <= user_node.s2):
-                        logger.info(
-                            "Adjusting instruction %s to satisfy user %s constraints",
-                            fmt_source(idx),
-                            fmt_source(user_idx),
-                        )
-                        sources = sorted([node.s1, node.s2, user_node.s1, user_node.s2])
-                        node.s1, node.s2, user_node.s1, user_node.s2 = sources
-                        updated = True
-                        replacing = True
-                        break
-
-                # Try to use earlier equivalent nodes as outputs
-                output_masks = evaluate_masks()
-                for out_idx in range(num_outputs):
-                    sel_idx = outputs[out_idx]
-                    care_mask = expected_output_masks[out_idx]
-
-                    for cidx in list(range(num_inputs + 1)) + sorted(dag.keys()):
-                        if cidx >= sel_idx:
-                            continue
-
-                        if (output_masks[cidx] & care_mask) != (expected_output_values[out_idx] & care_mask):
-                            continue
-
-                        outputs[out_idx] = cidx
-                        logger.info("Replacing output OUT%d from %s to %s", out_idx, fmt_source(sel_idx), fmt_source(cidx))
-                        updated = True
-                        replacing = True
-                        break
-
-                clear_dag()
 
 
     def materialize_program() -> Tuple[List[Tuple[Optional[int], int, int]], List[int]]:
@@ -931,6 +738,19 @@ def _post_process_program(
 
         materialized_outputs = [new_idxs.get(sel_idx, sel_idx) for sel_idx in outputs]
         return materialized_instrs, materialized_outputs
+
+    def load_materialized_program(materialized_instrs: List[Tuple[Optional[int], int, int]], materialized_outputs: List[int]) -> None:
+        nonlocal dag, outputs
+        outputs = list(materialized_outputs)
+        dag = {}
+        for instr_idx, (op, s1, s2) in enumerate(materialized_instrs):
+            if op is None:
+                raise ValueError("Cannot load materialized program with unknown operations")
+            dag[num_inputs + 1 + instr_idx] = DAGNode(op, s1, s2)
+        rebuild_users()
+
+    def program_score(candidate_instrs: List[Tuple[Optional[int], int, int]], candidate_outputs: List[int], updates: int = 0) -> Tuple[int, int, Tuple[int, ...], Tuple[Tuple[Optional[int], int, int], ...]]:
+        return (len(candidate_instrs), -updates, tuple(candidate_outputs), tuple(candidate_instrs))
 
     def compute_signatures() -> Dict[int, int]:
         return evaluate_masks()
@@ -950,17 +770,47 @@ def _post_process_program(
         nonlocal dag, outputs
         dag = snapshot[0]
         outputs = snapshot[1]
-        clear_dag()
+        rebuild_users()
 
-    def try_afterburner() -> Optional[Tuple[List[Tuple[Optional[int], int, int]], List[int]]]:
-        if not enable_afterburner or not examples:
+    def process_materialized_candidate(
+        strategy: str,
+        description: str,
+        base_score: Tuple[int, int, Tuple[int, ...], Tuple[Tuple[Optional[int], int, int], ...]],
+        candidate_instrs: List[Tuple[Optional[int], int, int]],
+        candidate_outputs: List[int],
+        parent_updates: int,
+    ) -> Optional[Tuple[Tuple[int, int, Tuple[int, ...], Tuple[Tuple[Optional[int], int, int], ...]], str, List[Tuple[Optional[int], int, int]], List[int]]]:
+        snapshot = (
+            {snap_idx: DAGNode(snap_node.op, snap_node.s1, snap_node.s2) for snap_idx, snap_node in dag.items()},
+            list(outputs),
+        )
+        try:
+            load_materialized_program(candidate_instrs, candidate_outputs)
+            clear_dag(False)
+            processed_instrs, processed_outputs = materialize_program()
+            valid = check()
+        except ValueError:
+            valid = False
+            processed_instrs, processed_outputs = candidate_instrs, candidate_outputs
+        restore_snapshot(snapshot)
+        if not valid:
             return None
+        updates = parent_updates + 1
+        score = program_score(processed_instrs, processed_outputs, updates)
+        if score >= base_score:
+            return None
+        return (score, f"{strategy}:{description}", processed_instrs, processed_outputs)
 
-        base_instrs, _ = materialize_program()
-        base_count = len(base_instrs)
+    Candidate = Tuple[Tuple[int, int, Tuple[int, ...], Tuple[Tuple[Optional[int], int, int], ...]], str, List[Tuple[Optional[int], int, int]], List[int]]
+
+    def generate_afterburner_candidates(consider_candidate: Callable[[Candidate], None], parent_updates: int) -> None:
+        if not enable_afterburner or not examples:
+            return
+
+        base_instrs, base_outputs = materialize_program()
+        base_score = program_score(base_instrs, base_outputs, parent_updates)
         signatures = compute_signatures()
         representative_by_signature: Dict[int, int] = {}
-        best_result: Optional[Tuple[int, int, List[Tuple[Optional[int], int, int]], List[int]]] = None
 
         for idx in list(range(num_inputs + 1)) + sorted(dag):
             signature = signatures[idx]
@@ -976,46 +826,305 @@ def _post_process_program(
                 list(outputs),
             )
             redirect_source(idx, representative)
-            clear_dag()
             candidate_instrs, candidate_outputs = materialize_program()
             restore_snapshot(snapshot)
 
-            processed_instrs, processed_outputs = _post_process_program(
-                candidate_instrs,
-                num_inputs,
-                num_outputs,
-                examples,
-                candidate_outputs,
-                enable_afterburner=False,
+            candidate = process_materialized_candidate("afterburner", f"{fmt_source(idx)}->{fmt_source(representative)}", base_score, candidate_instrs, candidate_outputs, parent_updates)
+            if candidate is not None:
+                consider_candidate(candidate)
+
+    def generate_replacement_candidates(consider_candidate: Callable[[Candidate], None], parent_updates: int) -> None:
+        base_instrs, base_outputs = materialize_program()
+        base_score = program_score(base_instrs, base_outputs, parent_updates)
+        current_masks = evaluate_masks()
+
+        def local_node_rank(rank_idx: int, cache: Dict[int, Tuple[int, int]]) -> Tuple[int, int]:
+            cached = cache.get(rank_idx)
+            if cached is not None:
+                return cached
+            rank_node = dag.get(rank_idx)
+            if rank_node is None:
+                rank = (0, -len(dag))
+            else:
+                s1_rank = local_node_rank(rank_node.s1, cache)
+                s2_rank = local_node_rank(rank_node.s2, cache)
+                rank = ((s1_rank[0] + s2_rank[0]) + 1, -len(rank_node.users))
+            cache[rank_idx] = rank
+            return rank
+
+        def add_ranks_local(rank1: Tuple[int, int], rank2: Tuple[int, int]) -> Tuple[int, int]:
+            return ((rank1[0] + rank2[0]) + 1, -rank1[1] * rank2[1])
+
+        for idx, node in sorted(dag.items()):
+            if idx not in dag:
+                continue
+            rank_cache: Dict[int, Tuple[int, int]] = {}
+            old_op = node.op
+            old_s1 = node.s1
+            old_s2 = node.s2
+            old_score = (
+                add_ranks_local(local_node_rank(old_s2, rank_cache), local_node_rank(old_s1, rank_cache))[::-1],
+                _operator_sort_key(old_op),
+            )
+            possible_idxs = [x for x in list(range(num_inputs + 1)) + list(dag.keys()) if x < idx]
+
+            product = [
+                (op, s1, s2)
+                for op in [operator.code for operator in LOGIC_OPERATORS]
+                for s1 in possible_idxs
+                for s2 in possible_idxs
+                if (
+                    (s1 < s2 or (op == XOR and s1 == s2))
+                    and ((add_ranks_local(local_node_rank(s2, rank_cache), local_node_rank(s1, rank_cache))[::-1], _operator_sort_key(op)) < old_score)
+                )
+            ]
+            # product.sort(key=lambda x: (add_ranks_local(local_node_rank(x[2], rank_cache), local_node_rank(x[1], rank_cache)), _operator_sort_key(x[0])))
+            random.shuffle(product)
+            
+            patience = 30
+            for op, s1, s2 in product:
+                candidate_mask = _apply_operator(op, current_masks[s1], current_masks[s2], 0) & all_examples_mask
+                if candidate_mask != current_masks[idx]:
+                    node.op = op
+                    node.s1 = s1
+                    node.s2 = s2
+                    valid = check()
+                    node.op = old_op
+                    node.s1 = old_s1
+                    node.s2 = old_s2
+                    if not valid:
+                        continue
+
+                snapshot = (
+                    {snap_idx: DAGNode(snap_node.op, snap_node.s1, snap_node.s2) for snap_idx, snap_node in dag.items()},
+                    list(outputs),
+                )
+                dag[idx].op = op
+                dag[idx].s1 = s1
+                dag[idx].s2 = s2
+                candidate_instrs, candidate_outputs = materialize_program()
+                restore_snapshot(snapshot)
+
+                candidate = process_materialized_candidate("replace", f"{fmt_source(idx)}", base_score, candidate_instrs, candidate_outputs, parent_updates)
+                if candidate is not None:
+                    consider_candidate(candidate)
+
+                patience -= 1
+                if patience <= 0:
+                    break
+
+    def generate_adjustment_candidates(consider_candidate: Callable[[Candidate], None], parent_updates: int) -> None:
+        base_instrs, base_outputs = materialize_program()
+        base_score = program_score(base_instrs, base_outputs, parent_updates)
+
+        for idx, node in sorted(dag.items()):
+            if len(node.users) != 1 or idx in outputs:
+                continue
+            user_idx = next(iter(node.users))
+            user_node = dag[user_idx]
+            if node.op != user_node.op:
+                continue
+            if node.s1 <= user_node.s1 and node.s2 <= user_node.s1 and node.s1 <= user_node.s2 and node.s2 <= user_node.s2:
+                continue
+
+            snapshot = (
+                {snap_idx: DAGNode(snap_node.op, snap_node.s1, snap_node.s2) for snap_idx, snap_node in dag.items()},
+                list(outputs),
+            )
+            sources = sorted([node.s1, node.s2, user_node.s1, user_node.s2])
+            dag[idx].s1, dag[idx].s2, dag[user_idx].s1, dag[user_idx].s2 = sources
+            candidate_instrs, candidate_outputs = materialize_program()
+            restore_snapshot(snapshot)
+
+            candidate = process_materialized_candidate("adjust", f"{fmt_source(idx)}->{fmt_source(user_idx)}", base_score, candidate_instrs, candidate_outputs, parent_updates)
+            if candidate is not None:
+                consider_candidate(candidate)
+
+    def generate_output_candidates(consider_candidate: Callable[[Candidate], None], parent_updates: int) -> None:
+        base_instrs, base_outputs = materialize_program()
+        base_score = program_score(base_instrs, base_outputs, parent_updates)
+        values = evaluate_masks()
+
+        for out_idx in range(num_outputs):
+            sel_idx = outputs[out_idx]
+            care_mask = expected_output_masks[out_idx]
+            for cidx in list(range(num_inputs + 1)) + sorted(dag.keys()):
+                if cidx >= sel_idx:
+                    continue
+                if (values[cidx] & care_mask) != (expected_output_values[out_idx] & care_mask):
+                    continue
+                candidate_outputs = list(outputs)
+                candidate_outputs[out_idx] = cidx
+                snapshot = (
+                    {snap_idx: DAGNode(snap_node.op, snap_node.s1, snap_node.s2) for snap_idx, snap_node in dag.items()},
+                    list(outputs),
+                )
+                outputs[out_idx] = cidx
+                candidate_instrs, candidate_outputs = materialize_program()
+                restore_snapshot(snapshot)
+                candidate = process_materialized_candidate("output", f"OUT{out_idx}", base_score, candidate_instrs, candidate_outputs, parent_updates)
+                if candidate is not None:
+                    consider_candidate(candidate)
+
+    def generate_canonicalization_candidates(consider_candidate: Callable[[Candidate], None], parent_updates: int) -> None:
+        base_instrs, base_outputs = materialize_program()
+        base_score = program_score(base_instrs, base_outputs, parent_updates)
+        updates = 0
+        snapshot = (
+            {snap_idx: DAGNode(snap_node.op, snap_node.s1, snap_node.s2) for snap_idx, snap_node in dag.items()},
+            list(outputs),
+        )
+
+        for node in dag.values():
+            if node.s1 > node.s2:
+                node.s1, node.s2 = node.s2, node.s1
+                updates += 1
+
+        sorted_items = sorted(dag.items(), key=lambda item: (item[1].s2, item[1].s1, _operator_sort_key(item[1].op)))
+        if list(dag.keys()) != [k for k, _ in sorted_items]:
+            updates += 1
+            new_idxs: Dict[int, int] = {}
+            for new_idx, (old_idx, _node) in enumerate(sorted_items):
+                new_idxs[old_idx] = num_inputs + 1 + new_idx
+
+            new_dag: Dict[int, DAGNode] = {}
+            for old_idx, node in sorted_items:
+                new_node = DAGNode(node.op, new_idxs.get(node.s1, node.s1), new_idxs.get(node.s2, node.s2))
+                new_dag[new_idxs[old_idx]] = new_node
+
+            for out_idx, sel_idx in enumerate(outputs):
+                outputs[out_idx] = new_idxs.get(sel_idx, sel_idx)
+
+            dag.clear()
+            dag.update(new_dag)
+
+        rebuild_users()
+        candidate_instrs, candidate_outputs = materialize_program()
+        restore_snapshot(snapshot)
+
+        if updates == 0:
+            return
+
+        candidate = process_materialized_candidate("canonicalize", "operand/order", base_score, candidate_instrs, candidate_outputs, parent_updates)
+        if candidate is not None:
+            consider_candidate(candidate)
+
+    def generate_beam_candidates(candidate_limit: int, parent_updates: int) -> List[Candidate]:
+        result: List[Candidate] = []
+        result_keys: Dict[Tuple[Tuple[Tuple[Optional[int], int, int], ...], Tuple[int, ...]], int] = {}
+
+        def log_candidate(candidate: Candidate) -> None:
+            score, description, candidate_instrs, _candidate_outputs = candidate
+            logger.info(
+                "Considering post-process candidate %s score=%s length=%d updates=%d",
+                description,
+                score,
+                len(candidate_instrs),
+                -score[1],
             )
 
-            if len(processed_instrs) < base_count:
-                candidate_result = (len(processed_instrs), idx, processed_instrs, processed_outputs)
-                if best_result is None or candidate_result[:2] < best_result[:2]:
-                    best_result = candidate_result
+        def rebuild_result_keys() -> None:
+            result_keys.clear()
+            for idx, item in enumerate(result):
+                result_keys[(tuple(item[2]), tuple(item[3]))] = idx
 
-        if best_result is not None:
-            best_count, best_idx, best_instrs, best_outputs = best_result
+        def consider_candidate(candidate: Candidate) -> None:
+            key = (tuple(candidate[2]), tuple(candidate[3]))
+            existing_idx = result_keys.get(key)
+            if existing_idx is not None:
+                if candidate[0] >= result[existing_idx][0]:
+                    return
+                result[existing_idx] = candidate
+                result.sort(key=lambda item: item[0])
+                rebuild_result_keys()
+                log_candidate(candidate)
+                return
+
+            if candidate_limit <= 0:
+                result.append(candidate)
+                result_keys[key] = len(result) - 1
+                log_candidate(candidate)
+                return
+
+            if len(result) < candidate_limit:
+                result.append(candidate)
+                result.sort(key=lambda item: item[0])
+                rebuild_result_keys()
+                log_candidate(candidate)
+                return
+
+            if candidate[0] >= result[-1][0]:
+                return
+
+            del result_keys[(tuple(result[-1][2]), tuple(result[-1][3]))]
+            result[-1] = candidate
+            result.sort(key=lambda item: item[0])
+            rebuild_result_keys()
+            log_candidate(candidate)
+
+        for generator in (
+            generate_canonicalization_candidates,
+            generate_afterburner_candidates,
+            generate_replacement_candidates,
+            generate_adjustment_candidates,
+            generate_output_candidates,
+        ):
+            generator(consider_candidate, parent_updates)
+        result.sort(key=lambda item: item[0])
+        return result
+
+    def run_beam() -> Optional[Tuple[List[Tuple[Optional[int], int, int]], List[int]]]:
+        clear_dag(False)
+        start_instrs, start_outputs = materialize_program()
+        start_key = (tuple(start_instrs), tuple(start_outputs))
+        best_instrs = start_instrs
+        best_outputs = start_outputs
+        best_score = program_score(best_instrs, best_outputs)
+        beam: List[Tuple[List[Tuple[Optional[int], int, int]], List[int], int]] = [(start_instrs, start_outputs, 0)]
+        seen = {start_key}
+        round_idx = 0
+
+        while True:
+            if post_process_beam_rounds > 0 and round_idx >= post_process_beam_rounds:
+                break
+            round_idx += 1
+            next_states: List[Tuple[Tuple[int, int, Tuple[int, ...], Tuple[Tuple[Optional[int], int, int], ...]], List[Tuple[Optional[int], int, int]], List[int], int]] = []
+
+            for state_instrs, state_outputs, state_updates in beam:
+                load_materialized_program(state_instrs, state_outputs)
+                for score, _description, candidate_instrs, candidate_outputs in generate_beam_candidates(post_process_beam_candidates, state_updates):
+                    key = (tuple(candidate_instrs), tuple(candidate_outputs))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    next_states.append((score, candidate_instrs, candidate_outputs, -score[1]))
+
+            if not next_states:
+                break
+
+            next_states.sort(key=lambda item: item[0])
+            beam = [(candidate_instrs, candidate_outputs, candidate_updates) for _score, candidate_instrs, candidate_outputs, candidate_updates in next_states[:post_process_beam_width]]
+
+            if next_states[0][0] < best_score:
+                best_score, best_instrs, best_outputs, _best_updates = next_states[0]
+
+        load_materialized_program(start_instrs, start_outputs)
+        if best_score < program_score(start_instrs, start_outputs, 0):
             logger.info(
-                "Accepted afterburner rewrite at %s reducing program from %d to %d instructions",
-                fmt_source(best_idx),
-                base_count,
-                best_count,
+                "Accepted post-process beam reducing program from %d to %d instructions",
+                len(start_instrs),
+                len(best_instrs),
             )
             return best_instrs, best_outputs
 
         return None
 
+    def try_afterburner() -> Optional[Tuple[List[Tuple[Optional[int], int, int]], List[int]]]:
+        return run_beam()
+
     afterburner_result = try_afterburner()
     if afterburner_result is not None:
-        return _post_process_program(
-            afterburner_result[0],
-            num_inputs,
-            num_outputs,
-            examples,
-            afterburner_result[1],
-            enable_afterburner=True,
-        )
+        load_materialized_program(afterburner_result[0], afterburner_result[1])
 
     # Re-number instructions to be contiguous
     new_idxs = {}
@@ -1059,6 +1168,9 @@ def main() -> None:
     parser.add_argument("--assume", type=str, default=None, help="Path to a file with assumed program bits")
 
     parser.add_argument("--post-process", action="store_true", help="Post-process the synthesized program, attempting to minimize instructions and simplify")
+    parser.add_argument("--post-process-beam-width", type=int, default=1, help="Beam width for post-process neighbor exploration")
+    parser.add_argument("--post-process-beam-rounds", type=int, default=0, help="Maximum post-process beam search rounds (0 means until no better candidates are found)")
+    parser.add_argument("--post-process-beam-candidates", type=int, default=0, help="Maximum post-process neighbor candidates generated per beam state (0 means unlimited)")
 
     parser.add_argument("--instructions", type=int, default=None, help="Override number of SSA instructions")
     parser.add_argument("--batch-size", type=int, default=None, help="Number of examples to add to each bit-vector-encoded batch (default: all examples)")
@@ -1097,6 +1209,12 @@ def main() -> None:
         logger.setLevel(logging.INFO)
         logging.getLogger("z3").setLevel(logging.INFO)
 
+    if args.post_process_beam_width < 1:
+        raise SystemExit("--post-process-beam-width must be at least 1")
+    if args.post_process_beam_rounds < 0:
+        raise SystemExit("--post-process-beam-rounds must be non-negative")
+    if args.post_process_beam_candidates < 0:
+        raise SystemExit("--post-process-beam-candidates must be non-negative")
 
     # print the chosen configuration
     logger.info("Using configuration: %s", vars(args))
@@ -1244,7 +1362,16 @@ def main() -> None:
         # Post-process the synthesized program
         if args.post_process:
             logger.info("Post-processing synthesized program")
-            instrs, outputs = _post_process_program(instrs, spec.num_inputs, spec.num_outputs, examples, outputs)
+            instrs, outputs = _post_process_program(
+                instrs,
+                spec.num_inputs,
+                spec.num_outputs,
+                examples,
+                outputs,
+                post_process_beam_width=args.post_process_beam_width,
+                post_process_beam_rounds=args.post_process_beam_rounds,
+                post_process_beam_candidates=args.post_process_beam_candidates,
+            )
 
         _emit_program(instrs, outputs, spec.num_inputs, spec.num_outputs, args.output_blif)
 
