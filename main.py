@@ -4,6 +4,7 @@ import argparse
 from dataclasses import dataclass
 import json
 import logging
+import itertools
 import random
 import sys
 import time
@@ -583,10 +584,12 @@ def _post_process_program(
     post_process_beam_width: int = 1,
     post_process_beam_rounds: int = 0,
     post_process_beam_candidates: int = 0,
+    post_process_score: Optional[List[str]] = None,
 ) -> Tuple[List[Tuple[Optional[int], int, int]], List[int]]:
     """Post-process the synthesized program"""
     logger = logging.getLogger(__name__)
     outputs = list(outputs)
+    score_metrics = post_process_score or ["program-length"]
 
     if len(outputs) != num_outputs:
         raise ValueError(f"Expected {num_outputs} output selectors, got {len(outputs)}")
@@ -789,8 +792,36 @@ def _post_process_program(
             dag[num_inputs + 1 + instr_idx] = DAGNode(op, s1, s2)
         rebuild_users()
 
-    def program_score(candidate_instrs: List[Tuple[Optional[int], int, int]], candidate_outputs: List[int], updates: int = 0) -> Tuple[int, int, Tuple[int, ...], Tuple[Tuple[Optional[int], int, int], ...]]:
-        return (len(candidate_instrs), -updates, tuple(candidate_outputs), tuple(candidate_instrs))
+    Score = Tuple[Any, ...]
+
+    def output_depths(candidate_instrs: List[Tuple[Optional[int], int, int]], candidate_outputs: List[int]) -> Tuple[int, ...]:
+        depths: Dict[int, int] = {idx: 0 for idx in range(num_inputs + 1)}
+        for instr_idx, (_op, s1, s2) in enumerate(candidate_instrs):
+            idx = num_inputs + 1 + instr_idx
+            if s1 not in depths or s2 not in depths:
+                raise ValueError(f"Cannot score output depth for non-topological program at {fmt_source(idx)}")
+            depths[idx] = max(depths[s1], depths[s2]) + 1
+        return tuple(depths[sel_idx] for sel_idx in candidate_outputs)
+
+    def program_score(candidate_instrs: List[Tuple[Optional[int], int, int]], candidate_outputs: List[int], updates: int = 0) -> Score:
+        score_parts: List[Any] = []
+        for metric in score_metrics:
+            if metric == "program-length":
+                score_parts.append(len(candidate_instrs))
+            elif metric == "output-depth":
+                score_parts.append(output_depths(candidate_instrs, candidate_outputs))
+            else:
+                raise ValueError(f"Unsupported post-process score metric: {metric}")
+
+        score_parts.extend([
+            -updates,
+            tuple(candidate_outputs),
+            tuple(candidate_instrs),
+        ])
+        return tuple(score_parts)
+
+    def score_updates(score: Score) -> int:
+        return -score[len(score_metrics)]
 
     def compute_signatures() -> Dict[int, int]:
         return evaluate_masks()
@@ -837,11 +868,11 @@ def _post_process_program(
     def process_materialized_candidate(
         strategy: str,
         description: str,
-        base_score: Tuple[int, int, Tuple[int, ...], Tuple[Tuple[Optional[int], int, int], ...]],
+        base_score: Score,
         candidate_instrs: List[Tuple[Optional[int], int, int]],
         candidate_outputs: List[int],
         parent_updates: int,
-    ) -> Optional[Tuple[Tuple[int, int, Tuple[int, ...], Tuple[Tuple[Optional[int], int, int], ...]], str, List[Tuple[Optional[int], int, int]], List[int]]]:
+    ) -> Optional[Tuple[Score, str, List[Tuple[Optional[int], int, int]], List[int]]]:
         snapshot = (
             {snap_idx: DAGNode(snap_node.op, snap_node.s1, snap_node.s2) for snap_idx, snap_node in dag.items()},
             list(outputs),
@@ -864,7 +895,7 @@ def _post_process_program(
             return None
         return (score, f"{strategy}:{description}", processed_instrs, processed_outputs)
 
-    Candidate = Tuple[Tuple[int, int, Tuple[int, ...], Tuple[Tuple[Optional[int], int, int], ...]], str, List[Tuple[Optional[int], int, int]], List[int]]
+    Candidate = Tuple[Score, str, List[Tuple[Optional[int], int, int]], List[int]]
 
     def generate_afterburner_candidates(consider_candidate: Callable[[Candidate], None], parent_updates: int) -> None:
         if not enable_afterburner or not examples:
@@ -986,25 +1017,39 @@ def _post_process_program(
             else:
                 raise ValueError(f"Node {idx} is not a source of its user {user_idx} in {dag}")
 
-            sources = ordered_sources([node.s1, node.s2, user_other_source])
-            if [node.s1, node.s2] == sources[:2] and user_other_source == sources[2]:
-                continue
+            original_inner_sources = ordered_sources([node.s1, node.s2])
+            original_remaining_source = user_other_source
+            seen_regroupings: set[Tuple[int, int, int]] = set()
 
-            snapshot = (
-                {snap_idx: DAGNode(snap_node.op, snap_node.s1, snap_node.s2) for snap_idx, snap_node in dag.items()},
-                list(outputs),
-            )
-            dag[idx].s1, dag[idx].s2 = sources[0], sources[1]
-            if source_topological_key(idx) < source_topological_key(sources[2]):
-                dag[user_idx].s1, dag[user_idx].s2 = idx, sources[2]
-            else:
-                dag[user_idx].s1, dag[user_idx].s2 = sources[2], idx
-            candidate_instrs, candidate_outputs = materialize_program()
-            restore_snapshot(snapshot)
+            for inner_a, inner_b, remaining_source in itertools.permutations([node.s1, node.s2, user_other_source], 3):
+                inner_sources = ordered_sources([inner_a, inner_b])
+                grouping_key = (inner_sources[0], inner_sources[1], remaining_source)
+                if grouping_key in seen_regroupings:
+                    continue
+                seen_regroupings.add(grouping_key)
+                if inner_sources == original_inner_sources and remaining_source == original_remaining_source:
+                    continue
 
-            candidate = process_materialized_candidate("adjust", f"{fmt_source(idx)}->{fmt_source(user_idx)}", base_score, candidate_instrs, candidate_outputs, parent_updates)
-            if candidate is not None:
-                consider_candidate(candidate)
+                snapshot = (
+                    {snap_idx: DAGNode(snap_node.op, snap_node.s1, snap_node.s2) for snap_idx, snap_node in dag.items()},
+                    list(outputs),
+                )
+                dag[idx].s1, dag[idx].s2 = inner_sources[0], inner_sources[1]
+                current_positions = topological_positions()
+                if source_topological_key(idx, current_positions) < source_topological_key(remaining_source, current_positions):
+                    dag[user_idx].s1, dag[user_idx].s2 = idx, remaining_source
+                else:
+                    dag[user_idx].s1, dag[user_idx].s2 = remaining_source, idx
+                try:
+                    candidate_instrs, candidate_outputs = materialize_program()
+                except ValueError:
+                    restore_snapshot(snapshot)
+                    continue
+                restore_snapshot(snapshot)
+
+                candidate = process_materialized_candidate("adjust", f"{fmt_source(idx)}->{fmt_source(user_idx)}", base_score, candidate_instrs, candidate_outputs, parent_updates)
+                if candidate is not None:
+                    consider_candidate(candidate)
 
     def generate_output_candidates(consider_candidate: Callable[[Candidate], None], parent_updates: int) -> None:
         base_instrs, base_outputs = materialize_program()
@@ -1047,9 +1092,9 @@ def _post_process_program(
             logger.info(
                 "Considering post-process candidate %s score=%s length=%d updates=%d",
                 description,
-                score,
+                score[:-1],
                 len(candidate_instrs),
-                -score[1],
+                score_updates(score),
             )
 
         def rebuild_result_keys() -> None:
@@ -1119,7 +1164,7 @@ def _post_process_program(
             if post_process_beam_rounds > 0 and round_idx >= post_process_beam_rounds:
                 break
             round_idx += 1
-            next_states: List[Tuple[Tuple[int, int, Tuple[int, ...], Tuple[Tuple[Optional[int], int, int], ...]], List[Tuple[Optional[int], int, int]], List[int], int]] = []
+            next_states: List[Tuple[Score, List[Tuple[Optional[int], int, int]], List[int], int]] = []
 
             for state_instrs, state_outputs, state_updates in beam:
                 load_materialized_program(state_instrs, state_outputs)
@@ -1128,7 +1173,7 @@ def _post_process_program(
                     if key in seen:
                         continue
                     seen.add(key)
-                    next_states.append((score, candidate_instrs, candidate_outputs, -score[1]))
+                    next_states.append((score, candidate_instrs, candidate_outputs, score_updates(score)))
 
             if not next_states:
                 break
@@ -1183,6 +1228,7 @@ def main() -> None:
     parser.add_argument("--post-process-beam-width", type=int, default=1, help="Beam width for post-process neighbor exploration")
     parser.add_argument("--post-process-beam-rounds", type=int, default=0, help="Maximum post-process beam search rounds (0 means until no better candidates are found)")
     parser.add_argument("--post-process-beam-candidates", type=int, default=0, help="Maximum post-process neighbor candidates generated per beam state (0 means unlimited)")
+    parser.add_argument("--post-process-score", type=str, default="program-length", help="Comma-separated lexicographic post-process score metrics: program-length, output-depth")
 
     parser.add_argument("--instructions", type=int, default=None, help="Override number of SSA instructions")
     parser.add_argument("--batch-size", type=int, default=None, help="Number of examples to add to each bit-vector-encoded batch (default: all examples)")
@@ -1227,6 +1273,13 @@ def main() -> None:
         raise SystemExit("--post-process-beam-rounds must be non-negative")
     if args.post_process_beam_candidates < 0:
         raise SystemExit("--post-process-beam-candidates must be non-negative")
+    post_process_score = [metric.strip() for metric in args.post_process_score.split(",") if metric.strip()]
+    valid_post_process_score_metrics = {"program-length", "output-depth"}
+    if not post_process_score:
+        raise SystemExit("--post-process-score must specify at least one metric")
+    for metric in post_process_score:
+        if metric not in valid_post_process_score_metrics:
+            raise SystemExit(f"Unsupported --post-process-score metric: {metric}")
 
     # print the chosen configuration
     logger.info("Using configuration: %s", vars(args))
@@ -1383,6 +1436,7 @@ def main() -> None:
                 post_process_beam_width=args.post_process_beam_width,
                 post_process_beam_rounds=args.post_process_beam_rounds,
                 post_process_beam_candidates=args.post_process_beam_candidates,
+                post_process_score=post_process_score,
             )
 
         _emit_program(instrs, outputs, spec.num_inputs, spec.num_outputs, args.output_blif)
