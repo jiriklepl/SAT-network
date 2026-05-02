@@ -733,7 +733,7 @@ def _post_process_program(
             if node.s2 in dag:
                 dag[node.s2].users.add(idx)
 
-    def clear_dag(log_eliminations: bool = True) -> int:
+    def clear_dag() -> None:
         accessed: set[int] = set()
         new_accessed: List[int] = []
 
@@ -752,17 +752,11 @@ def _post_process_program(
                     accessed.add(src)
                     new_accessed.append(src)
 
-        # Eliminate unused nodes
-        eliminated = 0
         for idx in list(dag.keys()):
             if idx not in accessed:
-                if log_eliminations:
-                    logger.info("Eliminating unused instruction %s", fmt_source(idx))
                 del dag[idx]
-                eliminated += 1
 
         rebuild_users()
-        return eliminated
 
     if not check():
         raise ValueError("Post-processing started with incorrect program")
@@ -880,7 +874,7 @@ def _post_process_program(
         try:
             load_materialized_program(candidate_instrs, candidate_outputs)
             canonicalize_dag()
-            clear_dag(False)
+            clear_dag()
             processed_instrs, processed_outputs = materialize_program()
             valid = check()
         except ValueError:
@@ -1150,7 +1144,7 @@ def _post_process_program(
 
     def run_beam() -> Optional[Tuple[List[Tuple[Optional[int], int, int]], List[int]]]:
         canonicalize_dag()
-        clear_dag(False)
+        clear_dag()
         start_instrs, start_outputs = materialize_program()
         start_key = (tuple(start_instrs), tuple(start_outputs))
         best_instrs = start_instrs
