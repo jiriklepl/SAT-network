@@ -628,35 +628,53 @@ def _post_process_program(
     def fmt_source(idx: int) -> str:
         return _format_source(idx, num_inputs)
 
+    example_count = len(examples)
+    all_examples_mask = (1 << example_count) - 1
+    input_masks = [0] * num_inputs
+    expected_output_masks = [0] * num_outputs
+    expected_output_values = [0] * num_outputs
+
+    for example_idx, ex in enumerate(examples):
+        bit = 1 << example_idx
+        ins = ex["inputs"]
+        outs = ex["outputs"]
+
+        for input_idx in range(num_inputs):
+            if bool(ins[input_idx]):
+                input_masks[input_idx] |= bit
+
+        for out_idx in range(num_outputs):
+            if outs[out_idx] is None:
+                continue
+            expected_output_masks[out_idx] |= bit
+            if bool(outs[out_idx]):
+                expected_output_values[out_idx] |= bit
+
+    def evaluate_masks() -> Dict[int, int]:
+        values: Dict[int, int] = {0: all_examples_mask}
+        for input_idx, input_mask in enumerate(input_masks):
+            values[input_idx + 1] = input_mask
+
+        for idx in sorted(dag):
+            node = dag[idx]
+            if node.s1 not in values:
+                raise ValueError(f"Missing value for source {node.s1} of node {idx} in {dag} with outputs {outputs}")
+            if node.s2 not in values:
+                raise ValueError(f"Missing value for source {node.s2} of node {idx} in {dag} with outputs {outputs}")
+            values[idx] = _apply_operator(node.op, values[node.s1], values[node.s2], 0) & all_examples_mask
+
+        return values
+
     def check() -> bool:
-        for ex in examples:
-            ins = ex["inputs"]
-            outs = ex["outputs"]
+        values = evaluate_masks()
 
-            values: Dict[int, bool] = {i + 1: bool(v) for i, v in enumerate(ins)}
-            values[0] = True  # constant 1
-
-            for idx in sorted(dag):
-                node = dag[idx]
-                if node.s1 not in values:
-                    raise ValueError(f"Missing value for source {node.s1} of node {idx} in {dag} with outputs {outputs}")
-                if node.s2 not in values:
-                    raise ValueError(f"Missing value for source {node.s2} of node {idx} in {dag} with outputs {outputs}")
-                left = values[node.s1]
-                right = values[node.s2]
-                val = _apply_operator(node.op, left, right, False)
-                values[idx] = val
-
-            for out_idx in range(num_outputs):
-                sel_idx = outputs[out_idx]
-                if outs[out_idx] is None:
-                    continue
-                expected = bool(outs[out_idx])
-                if sel_idx not in values:
-                    raise ValueError(f"Missing value for output OUT{out_idx} selector {sel_idx}")
-                actual = values[sel_idx]
-                if expected != actual:
-                    return False
+        for out_idx in range(num_outputs):
+            sel_idx = outputs[out_idx]
+            if sel_idx not in values:
+                raise ValueError(f"Missing value for output OUT{out_idx} selector {sel_idx}")
+            care_mask = expected_output_masks[out_idx]
+            if (values[sel_idx] & care_mask) != (expected_output_values[out_idx] & care_mask):
+                return False
 
         return True
 
@@ -780,9 +798,27 @@ def _post_process_program(
             for idx, node in sorted(dag.items()):
                 if idx not in dag:
                     continue
+                current_masks = evaluate_masks()
+                rank_cache: Dict[int, Tuple[int, int]] = {}
+
+                def cached_node_rank(rank_idx: int) -> Tuple[int, int]:
+                    cached = rank_cache.get(rank_idx)
+                    if cached is not None:
+                        return cached
+                    rank_node = dag.get(rank_idx)
+                    if rank_node is None:
+                        rank = (0, -len(dag))
+                    else:
+                        s1_rank = cached_node_rank(rank_node.s1)
+                        s2_rank = cached_node_rank(rank_node.s2)
+                        rank = ((s1_rank[0] + s2_rank[0]) + 1, -len(rank_node.users))
+                    rank_cache[rank_idx] = rank
+                    return rank
+
                 s1_idx = node.s1
                 s2_idx = node.s2
                 old_op = node.op
+                old_score = (add_ranks(cached_node_rank(s2_idx), cached_node_rank(s1_idx)), _operator_sort_key(old_op))
 
                 possible_idxs = [x for x in list(range(num_inputs + 1)) + list(dag.keys()) if x < idx]
 
@@ -796,22 +832,30 @@ def _post_process_program(
                     for s2 in possible_idxs
                     if (
                         (s1 < s2 or (op == XOR and s1 == s2))
-                        and ((add_ranks(node_rank(s2), node_rank(s1)), _operator_sort_key(op)) < (add_ranks(node_rank(s2_idx), node_rank(s1_idx)), _operator_sort_key(old_op)))
+                        and ((add_ranks(cached_node_rank(s2), cached_node_rank(s1)), _operator_sort_key(op)) < old_score)
                     )
                 ]
-                product.sort(key=lambda x: (add_ranks(node_rank(x[2]), node_rank(x[1])), _operator_sort_key(x[0])))  # sort by (s2, s1, op rank)
+                product.sort(key=lambda x: (add_ranks(cached_node_rank(x[2]), cached_node_rank(x[1])), _operator_sort_key(x[0])))  # sort by (s2, s1, op rank)
 
                 for op, cidx1, cidx2 in product:
-                    node.op = op
-                    node.s1 = cidx1
-                    node.s2 = cidx2
-
-                    if not check():
+                    candidate_mask = _apply_operator(op, current_masks[cidx1], current_masks[cidx2], 0) & all_examples_mask
+                    if candidate_mask == current_masks[idx]:
+                        valid = True
+                    else:
+                        node.op = op
+                        node.s1 = cidx1
+                        node.s2 = cidx2
+                        valid = check()
                         node.op = old_op
                         node.s1 = s1_idx
                         node.s2 = s2_idx
+
+                    if not valid:
                         continue
 
+                    node.op = op
+                    node.s1 = cidx1
+                    node.s2 = cidx2
                     logger.info(
                         "Replacing instruction %s from %s(%s, %s) to %s(%s, %s)",
                         fmt_source(idx),
@@ -854,19 +898,19 @@ def _post_process_program(
                         break
 
                 # Try to use earlier equivalent nodes as outputs
+                output_masks = evaluate_masks()
                 for out_idx in range(num_outputs):
                     sel_idx = outputs[out_idx]
+                    care_mask = expected_output_masks[out_idx]
 
                     for cidx in list(range(num_inputs + 1)) + sorted(dag.keys()):
                         if cidx >= sel_idx:
                             continue
 
-                        outputs[out_idx] = cidx
-
-                        if not check():
-                            outputs[out_idx] = sel_idx
+                        if (output_masks[cidx] & care_mask) != (expected_output_values[out_idx] & care_mask):
                             continue
 
+                        outputs[out_idx] = cidx
                         logger.info("Replacing output OUT%d from %s to %s", out_idx, fmt_source(sel_idx), fmt_source(cidx))
                         updated = True
                         replacing = True
@@ -888,21 +932,8 @@ def _post_process_program(
         materialized_outputs = [new_idxs.get(sel_idx, sel_idx) for sel_idx in outputs]
         return materialized_instrs, materialized_outputs
 
-    def compute_signatures() -> Dict[int, Tuple[bool, ...]]:
-        source_values: Dict[int, List[bool]] = {0: [True] * len(examples)}
-        for input_idx in range(num_inputs):
-            source_values[input_idx + 1] = [bool(ex["inputs"][input_idx]) for ex in examples]
-
-        for idx in sorted(dag):
-            node = dag[idx]
-            left_values = source_values[node.s1]
-            right_values = source_values[node.s2]
-            source_values[idx] = [
-                bool(_apply_operator(node.op, left, right, False))
-                for left, right in zip(left_values, right_values)
-            ]
-
-        return {idx: tuple(values) for idx, values in source_values.items()}
+    def compute_signatures() -> Dict[int, int]:
+        return evaluate_masks()
 
     def redirect_source(old_idx: int, new_idx: int) -> None:
         for out_idx, sel_idx in enumerate(outputs):
@@ -928,7 +959,7 @@ def _post_process_program(
         base_instrs, _ = materialize_program()
         base_count = len(base_instrs)
         signatures = compute_signatures()
-        representative_by_signature: Dict[Tuple[bool, ...], int] = {}
+        representative_by_signature: Dict[int, int] = {}
         best_result: Optional[Tuple[int, int, List[Tuple[Optional[int], int, int]], List[int]]] = None
 
         for idx in list(range(num_inputs + 1)) + sorted(dag):
