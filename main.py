@@ -1392,15 +1392,6 @@ def _post_process_program(
         result: List[Candidate] = []
         result_keys: Dict[ProgramKey, int] = {}
 
-        def log_candidate(candidate: Candidate) -> None:
-            score, description, candidate_instrs, _candidate_outputs = candidate
-            logger.info(
-                "Considering post-process candidate %s score=%s length=%d",
-                description,
-                score[:len(score_metrics)],
-                len(candidate_instrs),
-            )
-
         def rebuild_result_keys() -> None:
             result_keys.clear()
             for idx, item in enumerate(result):
@@ -1417,20 +1408,17 @@ def _post_process_program(
                 result[existing_idx] = candidate
                 result.sort(key=lambda item: item[0])
                 rebuild_result_keys()
-                log_candidate(candidate)
                 return
 
             if candidate_limit <= 0:
                 result.append(candidate)
                 result_keys[key] = len(result) - 1
-                log_candidate(candidate)
                 return
 
             if len(result) < candidate_limit:
                 result.append(candidate)
                 result.sort(key=lambda item: item[0])
                 rebuild_result_keys()
-                log_candidate(candidate)
                 return
 
             if candidate[0] >= result[-1][0]:
@@ -1440,7 +1428,6 @@ def _post_process_program(
             result[-1] = candidate
             result.sort(key=lambda item: item[0])
             rebuild_result_keys()
-            log_candidate(candidate)
 
         for generator in (
             generate_afterburner_candidates,
@@ -1456,6 +1443,17 @@ def _post_process_program(
             generator(consider_candidate)
         result.sort(key=lambda item: item[0])
         return result
+
+    def log_beam_output_candidate(round_idx: int, beam_idx: int, candidate: Candidate) -> None:
+        score, description, candidate_instrs, _candidate_outputs = candidate
+        logger.info(
+            "Post-process beam round %d state %d output candidate %s score=%s length=%d",
+            round_idx,
+            beam_idx,
+            description,
+            score[:len(score_metrics)],
+            len(candidate_instrs),
+        )
 
     def run_beam() -> Optional[Tuple[Program, List[int]]]:
         canonicalize_dag()
@@ -1475,13 +1473,15 @@ def _post_process_program(
             round_idx += 1
             next_states: List[Tuple[Score, Program, List[int]]] = []
 
-            for state_instrs, state_outputs in beam:
+            for beam_idx, (state_instrs, state_outputs) in enumerate(beam):
                 load_materialized_program(state_instrs, state_outputs)
-                for score, _description, candidate_instrs, candidate_outputs in generate_beam_candidates(post_process_beam_candidates, seen):
+                for candidate in generate_beam_candidates(post_process_beam_candidates, seen):
+                    score, _description, candidate_instrs, candidate_outputs = candidate
                     key = program_key(candidate_instrs, candidate_outputs)
                     if key in seen:
                         continue
                     seen.add(key)
+                    log_beam_output_candidate(round_idx, beam_idx, candidate)
                     next_states.append((score, candidate_instrs, candidate_outputs))
 
             if not next_states:
