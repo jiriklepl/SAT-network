@@ -1110,6 +1110,13 @@ def _post_process_program(
                 node.s1, node.s2 = node.s2, node.s1
         rebuild_users()
 
+    active_rejection_counts: Optional[Dict[str, int]] = None
+
+    def record_rejection(reason: str) -> None:
+        if active_rejection_counts is None:
+            return
+        active_rejection_counts[reason] = active_rejection_counts.get(reason, 0) + 1
+
     def process_materialized_candidate(
         strategy: str,
         description: str,
@@ -1118,17 +1125,22 @@ def _post_process_program(
         candidate_outputs: List[int],
     ) -> Optional[Tuple[Score, str, Program, List[int]]]:
         snapshot = snapshot_dag()
+        finalization_failed = False
         try:
             load_materialized_program(candidate_instrs, candidate_outputs)
             canonicalize_dag()
             clear_dag()
             processed_instrs, processed_outputs = materialize_program()
             valid = check()
-        except ValueError:
+        except ValueError as exc:
+            record_rejection(f"{strategy}:invalid-finalization:{type(exc).__name__}")
+            finalization_failed = True
             valid = False
             processed_instrs, processed_outputs = candidate_instrs, candidate_outputs
         restore_snapshot(snapshot)
         if not valid:
+            if not finalization_failed:
+                record_rejection(f"{strategy}:incorrect")
             return None
         score = program_score(processed_instrs, processed_outputs)
         if score >= base_score:
@@ -1204,7 +1216,8 @@ def _post_process_program(
                 dag[idx].s2 = s2
                 try:
                     candidate_instrs, candidate_outputs = materialize_program()
-                except ValueError:
+                except ValueError as exc:
+                    record_rejection(f"replace:invalid-materialize:{type(exc).__name__}")
                     continue
                 finally:
                     restore_snapshot(snapshot)
@@ -1257,14 +1270,20 @@ def _post_process_program(
 
                 snapshot = snapshot_dag()
                 dag[idx].s1, dag[idx].s2 = inner_sources[0], inner_sources[1]
-                current_positions = topological_positions()
+                try:
+                    current_positions = topological_positions()
+                except ValueError as exc:
+                    record_rejection(f"adjust:cycle:{type(exc).__name__}")
+                    restore_snapshot(snapshot)
+                    continue
                 if source_topological_key(idx, current_positions) < source_topological_key(remaining_source, current_positions):
                     dag[user_idx].s1, dag[user_idx].s2 = idx, remaining_source
                 else:
                     dag[user_idx].s1, dag[user_idx].s2 = remaining_source, idx
                 try:
                     candidate_instrs, candidate_outputs = materialize_program()
-                except ValueError:
+                except ValueError as exc:
+                    record_rejection(f"adjust:invalid-materialize:{type(exc).__name__}")
                     restore_snapshot(snapshot)
                     continue
                 restore_snapshot(snapshot)
@@ -1310,7 +1329,8 @@ def _post_process_program(
                     dag[idx].s1, dag[idx].s2 = new_s1, new_s2
                     try:
                         candidate_instrs, candidate_outputs = materialize_program()
-                    except ValueError:
+                    except ValueError as exc:
+                        record_rejection(f"existing-regroup:invalid-materialize:{type(exc).__name__}")
                         restore_snapshot(snapshot)
                         continue
                     restore_snapshot(snapshot)
@@ -1344,7 +1364,8 @@ def _post_process_program(
                 redirect_source(user_idx, replacement)
                 try:
                     candidate_instrs, candidate_outputs = materialize_program()
-                except ValueError:
+                except ValueError as exc:
+                    record_rejection(f"single-use-bypass:invalid-materialize:{type(exc).__name__}")
                     restore_snapshot(snapshot)
                     continue
                 restore_snapshot(snapshot)
@@ -1378,7 +1399,8 @@ def _post_process_program(
                 dag[idx].s1, dag[idx].s2 = new_s1, new_s2
                 try:
                     candidate_instrs, candidate_outputs = materialize_program()
-                except ValueError:
+                except ValueError as exc:
+                    record_rejection(f"xor-common-cancel:invalid-materialize:{type(exc).__name__}")
                     restore_snapshot(snapshot)
                     continue
                 restore_snapshot(snapshot)
@@ -1416,7 +1438,8 @@ def _post_process_program(
                     dag[idx].s1, dag[idx].s2 = new_s1, new_s2
                     try:
                         candidate_instrs, candidate_outputs = materialize_program()
-                    except ValueError:
+                    except ValueError as exc:
+                        record_rejection(f"equiv-operand:invalid-materialize:{type(exc).__name__}")
                         restore_snapshot(snapshot)
                         continue
                     restore_snapshot(snapshot)
@@ -1526,7 +1549,8 @@ def _post_process_program(
                 for output_node, local_output in zip(window_outputs, local_output_selectors):
                     redirect_source(output_node, translate_local_source(local_output))
                 candidate_instrs, candidate_outputs = materialize_program()
-            except ValueError:
+            except ValueError as exc:
+                record_rejection(f"{window.strategy}:invalid-materialize:{type(exc).__name__}")
                 restore_snapshot(snapshot)
                 return None
             restore_snapshot(snapshot)
@@ -1682,7 +1706,8 @@ def _post_process_program(
             redirect_source(idx, replacement)
             try:
                 candidate_instrs, candidate_outputs = materialize_program()
-            except ValueError:
+            except ValueError as exc:
+                record_rejection(f"simplify:invalid-materialize:{type(exc).__name__}")
                 restore_snapshot(snapshot)
                 return
             restore_snapshot(snapshot)
@@ -1856,7 +1881,7 @@ def _post_process_program(
     post_process_interrupted = False
 
     def run_beam(phase_idx: int) -> Optional[Tuple[Program, List[int]]]:
-        nonlocal post_process_interrupted
+        nonlocal active_rejection_counts, post_process_interrupted
         canonicalize_dag()
         clear_dag()
         start_instrs, start_outputs = materialize_program()
@@ -1877,6 +1902,7 @@ def _post_process_program(
                 round_idx += 1
                 next_states = []
                 output_counts_by_strategy: Dict[str, int] = {}
+                active_rejection_counts = {}
 
                 for beam_idx, (state_instrs, state_outputs) in enumerate(beam):
                     load_materialized_program(state_instrs, state_outputs)
@@ -1890,6 +1916,14 @@ def _post_process_program(
                         strategy = description.split(":", 1)[0]
                         output_counts_by_strategy[strategy] = output_counts_by_strategy.get(strategy, 0) + 1
                         next_states.append((score, candidate_instrs, candidate_outputs))
+
+                if active_rejection_counts:
+                    logger.info(
+                        "Post-process beam round %d rejected candidate counts: %s",
+                        round_idx,
+                        dict(sorted(active_rejection_counts.items())),
+                    )
+                active_rejection_counts = None
 
                 if not next_states:
                     break
@@ -1906,6 +1940,7 @@ def _post_process_program(
                 if next_states[0][0] < best_score:
                     best_score, best_instrs, best_outputs = next_states[0]
         except KeyboardInterrupt:
+            active_rejection_counts = None
             post_process_interrupted = True
             if next_states:
                 next_states.sort(key=lambda item: item[0])
