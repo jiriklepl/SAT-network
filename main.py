@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import json
 import logging
 import itertools
+import math
 import random
 import sys
 import time
@@ -838,6 +839,35 @@ def _post_process_program(
         }
         return sum(costs.get(op, 1) for op, _s1, _s2 in candidate_instrs if op is not None)
 
+    def node_value_entropy(candidate_instrs: Program) -> float:
+        sample_count = len(candidate_instrs) * example_count
+        if sample_count == 0:
+            return 0.0
+
+        values: Dict[int, int] = {0: all_examples_mask}
+        for input_idx, input_mask in enumerate(input_masks):
+            values[input_idx + 1] = input_mask
+
+        true_count = 0
+        for instr_idx, (op, s1, s2) in enumerate(candidate_instrs):
+            idx = num_inputs + 1 + instr_idx
+            if op is None:
+                raise ValueError("Cannot score entropy for unknown operation")
+            if s1 not in values or s2 not in values:
+                raise ValueError(f"Cannot score entropy for non-topological program at {fmt_source(idx)}")
+            value = _apply_operator(op, values[s1], values[s2], 0) & all_examples_mask
+            values[idx] = value
+            true_count += value.bit_count()
+
+        false_count = sample_count - true_count
+        entropy = 0.0
+        for count in (false_count, true_count):
+            if count == 0:
+                continue
+            probability = count / sample_count
+            entropy -= probability * math.log2(probability)
+        return entropy
+
     def reverse_score_value(value: Any) -> Any:
         if isinstance(value, tuple):
             return tuple(reverse_score_value(item) for item in value)
@@ -871,6 +901,8 @@ def _post_process_program(
             elif metric == "sum-output-cone-size":
                 cone_sizes = output_cone_sizes(candidate_instrs, candidate_outputs)
                 value = sum(cone_sizes)
+            elif metric == "entropy":
+                value = node_value_entropy(candidate_instrs)
             else:
                 raise ValueError(f"Unsupported post-process score metric: {metric}")
             score_parts.append(reverse_score_value(value) if reverse_sort else value)
@@ -1590,7 +1622,7 @@ def main() -> None:
             "Comma-separated lexicographic post-process score metrics: "
             "program-length, output-depth, max-output-depth, sum-output-depth, "
             "total-node-depth, operator-cost, xor-count, output-cone-size, "
-            "max-output-cone-size, sum-output-cone-size. Prefix a metric with "
+            "max-output-cone-size, sum-output-cone-size, entropy. Prefix a metric with "
             "'-' to sort it descending."
         ),
     )
@@ -1650,6 +1682,7 @@ def main() -> None:
         "output-cone-size",
         "max-output-cone-size",
         "sum-output-cone-size",
+        "entropy",
     }
     if not post_process_score:
         raise SystemExit("--post-process-score must specify at least one metric")
