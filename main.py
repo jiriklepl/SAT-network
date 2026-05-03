@@ -1028,7 +1028,7 @@ def _post_process_program(
             ]
             random.shuffle(product)
 
-            patience = 2000
+            patience = 30
             for op, s1, s2 in product:
                 candidate_mask = _apply_operator(op, current_masks[s1], current_masks[s2], 0) & all_examples_mask
                 if candidate_mask != current_masks[idx]:
@@ -1057,7 +1057,7 @@ def _post_process_program(
 
                 patience -= 1
                 if patience <= 0:
-                    return
+                    break
 
     def generate_adjustment_candidates(consider_candidate: Callable[[Candidate], None]) -> None:
         base_instrs, base_outputs = materialize_program()
@@ -1472,20 +1472,29 @@ def _post_process_program(
                 break
             round_idx += 1
             next_states: List[Tuple[Score, Program, List[int]]] = []
+            output_counts_by_strategy: Dict[str, int] = {}
 
             for beam_idx, (state_instrs, state_outputs) in enumerate(beam):
                 load_materialized_program(state_instrs, state_outputs)
                 for candidate in generate_beam_candidates(post_process_beam_candidates, seen):
-                    score, _description, candidate_instrs, candidate_outputs = candidate
+                    score, description, candidate_instrs, candidate_outputs = candidate
                     key = program_key(candidate_instrs, candidate_outputs)
                     if key in seen:
                         continue
                     seen.add(key)
                     log_beam_output_candidate(round_idx, beam_idx, candidate)
+                    strategy = description.split(":", 1)[0]
+                    output_counts_by_strategy[strategy] = output_counts_by_strategy.get(strategy, 0) + 1
                     next_states.append((score, candidate_instrs, candidate_outputs))
 
             if not next_states:
                 break
+
+            logger.info(
+                "Post-process beam round %d output candidate counts by strategy: %s",
+                round_idx,
+                dict(sorted(output_counts_by_strategy.items())),
+            )
 
             next_states.sort(key=lambda item: item[0])
             beam = [(candidate_instrs, candidate_outputs) for _score, candidate_instrs, candidate_outputs in next_states[:post_process_beam_width]]
