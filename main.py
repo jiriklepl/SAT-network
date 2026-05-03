@@ -891,6 +891,39 @@ def _post_process_program(
         cache[source_idx] = result
         return result
 
+    def replacement_preserves_outputs(
+        modified_idx: int,
+        replacement_mask: int,
+        current_masks: Dict[int, int],
+        dependency_cache: Dict[int, bool],
+    ) -> bool:
+        memo: Dict[int, int] = {modified_idx: replacement_mask}
+        visiting: set[int] = set()
+
+        def hypothetical_value(source_idx: int) -> int:
+            memoized = memo.get(source_idx)
+            if memoized is not None:
+                return memoized
+            if source_idx not in dag:
+                return current_masks[source_idx]
+            if not depends_on(source_idx, modified_idx, dependency_cache):
+                return current_masks[source_idx]
+            if source_idx in visiting:
+                raise ValueError(f"Cycle detected while checking replacement for {fmt_source(modified_idx)}")
+
+            visiting.add(source_idx)
+            node = dag[source_idx]
+            value = _apply_operator(node.op, hypothetical_value(node.s1), hypothetical_value(node.s2), 0) & all_examples_mask
+            visiting.remove(source_idx)
+            memo[source_idx] = value
+            return value
+
+        for out_idx, sel_idx in enumerate(outputs):
+            care_mask = expected_output_masks[out_idx]
+            if (hypothetical_value(sel_idx) & care_mask) != (expected_output_values[out_idx] & care_mask):
+                return False
+        return True
+
     def snapshot_dag() -> Snapshot:
         return (
             {snap_idx: DAGNode(node.op, node.s1, node.s2) for snap_idx, node in dag.items()},
@@ -1012,7 +1045,6 @@ def _post_process_program(
         positions = topological_positions()
         for idx in topology_sorted_nodes(positions):
             node = dag[idx]
-            original_node = (node.op, node.s1, node.s2)
             dependency_cache: Dict[int, bool] = {}
             possible_idxs = [
                 x
@@ -1029,16 +1061,15 @@ def _post_process_program(
             random.shuffle(product)
 
             patience = 30
+            valid_replacement_mask_cache: Dict[int, bool] = {current_masks[idx]: True}
             for op, s1, s2 in product:
                 candidate_mask = _apply_operator(op, current_masks[s1], current_masks[s2], 0) & all_examples_mask
-                if candidate_mask != current_masks[idx]:
-                    node.op = op
-                    node.s1 = s1
-                    node.s2 = s2
-                    valid = check()
-                    node.op, node.s1, node.s2 = original_node
-                    if not valid:
-                        continue
+                valid_mask = valid_replacement_mask_cache.get(candidate_mask)
+                if valid_mask is None:
+                    valid_mask = replacement_preserves_outputs(idx, candidate_mask, current_masks, dependency_cache)
+                    valid_replacement_mask_cache[candidate_mask] = valid_mask
+                if not valid_mask:
+                    continue
 
                 snapshot = snapshot_dag()
                 dag[idx].op = op
