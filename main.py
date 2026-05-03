@@ -1565,78 +1565,54 @@ def _post_process_program(
         def total_fanout(idx: int) -> int:
             return len(dag[idx].users) + output_uses.get(idx, 0)
 
-        component_nodes: set[int] = set()
-        for idx in dag:
-            if total_fanout(idx) != 1:
-                continue
-            node = dag[idx]
-            if (node.s1 in dag and total_fanout(node.s1) == 1) or (node.s2 in dag and total_fanout(node.s2) == 1):
-                component_nodes.add(idx)
+        def is_rewriteable_inner_node(idx: int) -> bool:
+            return total_fanout(idx) == 1
 
-        parent: Dict[int, int] = {}
-
-        def find(idx: int) -> int:
-            parent.setdefault(idx, idx)
-            if parent[idx] != idx:
-                parent[idx] = find(parent[idx])
-            return parent[idx]
-
-        def union(left: int, right: int) -> None:
-            left_root = find(left)
-            right_root = find(right)
-            if left_root != right_root:
-                parent[right_root] = left_root
-
-        for idx in component_nodes:
-            find(idx)
-        for idx in component_nodes:
-            node = dag[idx]
-            for src in (node.s1, node.s2):
-                if src in component_nodes:
-                    union(idx, src)
-
-        components_by_root: Dict[int, List[int]] = {}
-        for idx in component_nodes:
-            components_by_root.setdefault(find(idx), []).append(idx)
-
-        def component_output(component: set[int]) -> Optional[int]:
-            exits = [
-                idx
-                for idx in component
-                if any(user not in component for user in dag[idx].users) or output_uses.get(idx, 0) > 0
+        def one_fanout_dependency_closure(root_idx: int) -> set[int]:
+            closure: set[int] = set()
+            stack = [
+                src
+                for src in (dag[root_idx].s1, dag[root_idx].s2)
+                if src in dag and is_rewriteable_inner_node(src)
             ]
-            if len(exits) != 1:
-                return None
-            return exits[0]
+            while stack:
+                idx = stack.pop()
+                if idx in closure:
+                    continue
+                closure.add(idx)
+                node = dag[idx]
+                for src in (node.s1, node.s2):
+                    if src in dag and is_rewriteable_inner_node(src):
+                        stack.append(src)
+            return closure
 
-        def closed_subcomponents(component: set[int], size: int) -> List[Tuple[int, ...]]:
+        def closed_rooted_subcomponents(root_idx: int, closure: set[int], size: int) -> List[Tuple[int, ...]]:
             result: set[Tuple[int, ...]] = set()
 
             def dependencies_inside(idx: int) -> List[int]:
                 node = dag[idx]
-                return [src for src in (node.s1, node.s2) if src in component]
+                return [src for src in (node.s1, node.s2) if src in closure]
 
-            for root_idx in component:
-                stack: List[Tuple[frozenset[int], Tuple[int, ...]]] = [(frozenset([root_idx]), tuple(dependencies_inside(root_idx)))]
-                while stack:
-                    selected, frontier = stack.pop()
-                    if len(selected) == size:
-                        result.add(canonical_window_nodes(selected))
-                        continue
-                    if len(selected) > size or not frontier:
-                        continue
-                    candidate_idx = frontier[0]
-                    rest_frontier = frontier[1:]
+            stack: List[Tuple[frozenset[int], Tuple[int, ...]]] = [(frozenset([root_idx]), tuple(dependencies_inside(root_idx)))]
+            while stack:
+                selected, frontier = stack.pop()
+                if len(selected) == size:
+                    result.add(canonical_window_nodes(selected))
+                    continue
+                if len(selected) > size or not frontier:
+                    continue
+                candidate_idx = frontier[0]
+                rest_frontier = frontier[1:]
 
-                    stack.append((selected, rest_frontier))
+                stack.append((selected, rest_frontier))
 
-                    new_selected = set(selected)
-                    new_selected.add(candidate_idx)
-                    new_frontier = list(rest_frontier)
-                    for dep_idx in dependencies_inside(candidate_idx):
-                        if dep_idx not in new_selected and dep_idx not in new_frontier:
-                            new_frontier.append(dep_idx)
-                    stack.append((frozenset(new_selected), tuple(new_frontier)))
+                new_selected = set(selected)
+                new_selected.add(candidate_idx)
+                new_frontier = list(rest_frontier)
+                for dep_idx in dependencies_inside(candidate_idx):
+                    if dep_idx not in new_selected and dep_idx not in new_frontier:
+                        new_frontier.append(dep_idx)
+                stack.append((frozenset(new_selected), tuple(new_frontier)))
 
             return sorted(result, key=lambda nodes: (source_topological_key(nodes[-1], positions), nodes))
 
@@ -1652,21 +1628,17 @@ def _post_process_program(
             seen_windows.add(key)
             windows.append(ResynthesisWindow("component-sat", nodes, (output_idx,)))
 
-        for component in components_by_root.values():
-            component_tuple = canonical_window_nodes(component)
-            component_set = set(component_tuple)
-            if len(component_tuple) < 2:
+        for root_idx in topology_sorted_nodes(positions):
+            closure = one_fanout_dependency_closure(root_idx)
+            if not closure:
                 continue
-            if len(component_tuple) <= post_process_resynthesis_maxnodes:
-                output_idx = component_output(component_set)
-                if output_idx is not None:
-                    add_window(component_tuple, output_idx)
+            full_window = canonical_window_nodes(set(closure) | {root_idx})
+            if len(full_window) <= post_process_resynthesis_maxnodes:
+                add_window(full_window, root_idx)
                 continue
 
-            for nodes in closed_subcomponents(component_set, post_process_resynthesis_maxnodes):
-                output_idx = component_output(set(nodes))
-                if output_idx is not None:
-                    add_window(nodes, output_idx)
+            for nodes in closed_rooted_subcomponents(root_idx, closure, post_process_resynthesis_maxnodes):
+                add_window(nodes, root_idx)
 
         random.shuffle(windows)
 
