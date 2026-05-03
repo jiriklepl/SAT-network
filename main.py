@@ -585,16 +585,24 @@ def _post_process_program(
     post_process_beam_width: int = 1,
     post_process_beam_rounds: int = 0,
     post_process_beam_candidates: int = 0,
-    post_process_score: Optional[List[str]] = None,
+    post_process_score: Optional[List[Union[str, List[str]]]] = None,
 ) -> Tuple[List[Tuple[Optional[int], int, int]], List[int]]:
     """Post-process the synthesized program"""
     logger = logging.getLogger(__name__)
     outputs = list(outputs)
-    score_metrics = post_process_score or ["program-length"]
-    score_metric_specs = [
-        (metric[1:], True) if metric.startswith("-") else (metric, False)
-        for metric in score_metrics
+    if not post_process_score:
+        score_phases = [["program-length"]]
+    elif all(isinstance(metric, str) for metric in post_process_score):
+        score_phases = [list(post_process_score)]
+    else:
+        score_phases = [list(phase) for phase in post_process_score if not isinstance(phase, str)]
+    if not score_phases or any(not phase for phase in score_phases):
+        raise ValueError("Post-process score must specify at least one metric per phase")
+    score_phase_specs = [
+        [(metric[1:], True) if metric.startswith("-") else (metric, False) for metric in phase]
+        for phase in score_phases
     ]
+    active_score_metric_specs = score_phase_specs[0]
 
     if len(outputs) != num_outputs:
         raise ValueError(f"Expected {num_outputs} output selectors, got {len(outputs)}")
@@ -897,7 +905,7 @@ def _post_process_program(
 
     def program_score(candidate_instrs: Program, candidate_outputs: List[int]) -> Score:
         score_parts: List[Any] = []
-        for metric, reverse_sort in score_metric_specs:
+        for metric, reverse_sort in active_score_metric_specs:
             if metric == "program-length":
                 value = len(candidate_instrs)
             elif metric == "output-depth":
@@ -1558,11 +1566,11 @@ def _post_process_program(
             round_idx,
             beam_idx,
             description,
-            score[:len(score_metric_specs)],
+            score[:len(active_score_metric_specs)],
             len(candidate_instrs),
         )
 
-    def run_beam() -> Optional[Tuple[Program, List[int]]]:
+    def run_beam(phase_idx: int) -> Optional[Tuple[Program, List[int]]]:
         canonicalize_dag()
         clear_dag()
         start_instrs, start_outputs = materialize_program()
@@ -1612,7 +1620,8 @@ def _post_process_program(
         load_materialized_program(start_instrs, start_outputs)
         if best_score < program_score(start_instrs, start_outputs):
             logger.info(
-                "Accepted post-process beam reducing program from %d to %d instructions",
+                "Accepted post-process beam phase %d reducing program from %d to %d instructions",
+                phase_idx,
                 len(start_instrs),
                 len(best_instrs),
             )
@@ -1620,9 +1629,17 @@ def _post_process_program(
 
         return None
 
-    beam_result = run_beam()
-    if beam_result is not None:
-        load_materialized_program(*beam_result)
+    for phase_idx, phase_metrics in enumerate(score_phases, start=1):
+        active_score_metric_specs = score_phase_specs[phase_idx - 1]
+        logger.info(
+            "Starting post-process beam phase %d/%d with score metrics %s",
+            phase_idx,
+            len(score_phases),
+            phase_metrics,
+        )
+        beam_result = run_beam(phase_idx)
+        if beam_result is not None:
+            load_materialized_program(*beam_result)
 
     instrs, outputs = materialize_program()
 
@@ -1660,7 +1677,8 @@ def main() -> None:
             "total-node-depth, total-tree-size, operator-cost, xor-count, output-cone-size, "
             "max-output-cone-size, sum-output-cone-size, fanout, max-fanout, "
             "sum-fanout, one-fanout-count, entropy. Prefix a metric with "
-            "'-' to sort it descending."
+            "'-' to sort it descending. Separate phases with ';' to continue "
+            "beam search with the next score after the previous phase finishes."
         ),
     )
 
@@ -1707,7 +1725,10 @@ def main() -> None:
         raise SystemExit("--post-process-beam-rounds must be non-negative")
     if args.post_process_beam_candidates < 0:
         raise SystemExit("--post-process-beam-candidates must be non-negative")
-    post_process_score = [metric.strip() for metric in args.post_process_score.split(",") if metric.strip()]
+    post_process_score = [
+        [metric.strip() for metric in phase.split(",") if metric.strip()]
+        for phase in args.post_process_score.split(";")
+    ]
     valid_post_process_score_metrics = {
         "program-length",
         "output-depth",
@@ -1728,12 +1749,15 @@ def main() -> None:
     }
     if not post_process_score:
         raise SystemExit("--post-process-score must specify at least one metric")
-    for metric in post_process_score:
-        metric_name = metric[1:] if metric.startswith("-") else metric
-        if not metric_name:
-            raise SystemExit("--post-process-score contains an empty metric")
-        if metric_name not in valid_post_process_score_metrics:
-            raise SystemExit(f"Unsupported --post-process-score metric: {metric}")
+    for phase in post_process_score:
+        if not phase:
+            raise SystemExit("--post-process-score contains an empty phase")
+        for metric in phase:
+            metric_name = metric[1:] if metric.startswith("-") else metric
+            if not metric_name:
+                raise SystemExit("--post-process-score contains an empty metric")
+            if metric_name not in valid_post_process_score_metrics:
+                raise SystemExit(f"Unsupported --post-process-score metric: {metric}")
 
     # print the chosen configuration
     logger.info("Using configuration: %s", vars(args))
