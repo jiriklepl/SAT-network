@@ -807,6 +807,15 @@ def _post_process_program(
             depths[idx] = max(depths[s1], depths[s2]) + 1
         return depths
 
+    def instruction_tree_sizes(candidate_instrs: Program) -> Dict[int, int]:
+        sizes: Dict[int, int] = {idx: 0 for idx in range(num_inputs + 1)}
+        for instr_idx, (_op, s1, s2) in enumerate(candidate_instrs):
+            idx = num_inputs + 1 + instr_idx
+            if s1 not in sizes or s2 not in sizes:
+                raise ValueError(f"Cannot score tree size for non-topological program at {fmt_source(idx)}")
+            sizes[idx] = sizes[s1] + sizes[s2] + 1
+        return sizes
+
     def output_depths(candidate_instrs: Program, candidate_outputs: List[int]) -> Tuple[int, ...]:
         depths = instruction_depths(candidate_instrs)
         return tuple(depths[sel_idx] for sel_idx in candidate_outputs)
@@ -830,6 +839,19 @@ def _post_process_program(
             collect_cone(sel_idx, cone)
             sizes.append(len(cone))
         return tuple(sizes)
+
+    def instruction_fanouts(candidate_instrs: Program, candidate_outputs: List[int]) -> Tuple[int, ...]:
+        first_instr_idx = num_inputs + 1
+        fanouts = {first_instr_idx + instr_idx: 0 for instr_idx in range(len(candidate_instrs))}
+        for _op, s1, s2 in candidate_instrs:
+            if s1 in fanouts:
+                fanouts[s1] += 1
+            if s2 in fanouts:
+                fanouts[s2] += 1
+        for sel_idx in candidate_outputs:
+            if sel_idx in fanouts:
+                fanouts[sel_idx] += 1
+        return tuple(fanouts[first_instr_idx + instr_idx] for instr_idx in range(len(candidate_instrs)))
 
     def operator_cost(candidate_instrs: Program) -> int:
         costs = {
@@ -889,6 +911,9 @@ def _post_process_program(
             elif metric == "total-node-depth":
                 depths_by_idx = instruction_depths(candidate_instrs)
                 value = sum(depths_by_idx[num_inputs + 1 + instr_idx] for instr_idx in range(len(candidate_instrs)))
+            elif metric == "total-tree-size":
+                tree_sizes_by_idx = instruction_tree_sizes(candidate_instrs)
+                value = sum(tree_sizes_by_idx[num_inputs + 1 + instr_idx] for instr_idx in range(len(candidate_instrs)))
             elif metric == "operator-cost":
                 value = operator_cost(candidate_instrs)
             elif metric == "xor-count":
@@ -901,6 +926,17 @@ def _post_process_program(
             elif metric == "sum-output-cone-size":
                 cone_sizes = output_cone_sizes(candidate_instrs, candidate_outputs)
                 value = sum(cone_sizes)
+            elif metric == "fanout":
+                value = instruction_fanouts(candidate_instrs, candidate_outputs)
+            elif metric == "max-fanout":
+                fanouts = instruction_fanouts(candidate_instrs, candidate_outputs)
+                value = max(fanouts, default=0)
+            elif metric == "sum-fanout":
+                fanouts = instruction_fanouts(candidate_instrs, candidate_outputs)
+                value = sum(fanouts)
+            elif metric == "one-fanout-count":
+                fanouts = instruction_fanouts(candidate_instrs, candidate_outputs)
+                value = sum(1 for fanout in fanouts if fanout == 1)
             elif metric == "entropy":
                 value = node_value_entropy(candidate_instrs)
             else:
@@ -1621,8 +1657,9 @@ def main() -> None:
         help=(
             "Comma-separated lexicographic post-process score metrics: "
             "program-length, output-depth, max-output-depth, sum-output-depth, "
-            "total-node-depth, operator-cost, xor-count, output-cone-size, "
-            "max-output-cone-size, sum-output-cone-size, entropy. Prefix a metric with "
+            "total-node-depth, total-tree-size, operator-cost, xor-count, output-cone-size, "
+            "max-output-cone-size, sum-output-cone-size, fanout, max-fanout, "
+            "sum-fanout, one-fanout-count, entropy. Prefix a metric with "
             "'-' to sort it descending."
         ),
     )
@@ -1677,11 +1714,16 @@ def main() -> None:
         "max-output-depth",
         "sum-output-depth",
         "total-node-depth",
+        "total-tree-size",
         "operator-cost",
         "xor-count",
         "output-cone-size",
         "max-output-cone-size",
         "sum-output-cone-size",
+        "fanout",
+        "max-fanout",
+        "sum-fanout",
+        "one-fanout-count",
         "entropy",
     }
     if not post_process_score:
