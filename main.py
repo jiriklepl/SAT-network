@@ -788,34 +788,85 @@ def _post_process_program(
 
     Score = Tuple[Any, ...]
 
-    def output_depths(candidate_instrs: List[Tuple[Optional[int], int, int]], candidate_outputs: List[int]) -> Tuple[int, ...]:
+    def instruction_depths(candidate_instrs: List[Tuple[Optional[int], int, int]]) -> Dict[int, int]:
         depths: Dict[int, int] = {idx: 0 for idx in range(num_inputs + 1)}
         for instr_idx, (_op, s1, s2) in enumerate(candidate_instrs):
             idx = num_inputs + 1 + instr_idx
             if s1 not in depths or s2 not in depths:
                 raise ValueError(f"Cannot score output depth for non-topological program at {fmt_source(idx)}")
             depths[idx] = max(depths[s1], depths[s2]) + 1
+        return depths
+
+    def output_depths(candidate_instrs: List[Tuple[Optional[int], int, int]], candidate_outputs: List[int]) -> Tuple[int, ...]:
+        depths = instruction_depths(candidate_instrs)
         return tuple(depths[sel_idx] for sel_idx in candidate_outputs)
 
-    def program_score(candidate_instrs: List[Tuple[Optional[int], int, int]], candidate_outputs: List[int], updates: int = 0) -> Score:
+    def output_cone_sizes(candidate_instrs: List[Tuple[Optional[int], int, int]], candidate_outputs: List[int]) -> Tuple[int, ...]:
+        sources_by_idx: Dict[int, Tuple[int, int]] = {}
+        for instr_idx, (_op, s1, s2) in enumerate(candidate_instrs):
+            sources_by_idx[num_inputs + 1 + instr_idx] = (s1, s2)
+
+        def collect_cone(idx: int, cone: set[int]) -> None:
+            sources = sources_by_idx.get(idx)
+            if sources is None or idx in cone:
+                return
+            cone.add(idx)
+            collect_cone(sources[0], cone)
+            collect_cone(sources[1], cone)
+
+        sizes = []
+        for sel_idx in candidate_outputs:
+            cone: set[int] = set()
+            collect_cone(sel_idx, cone)
+            sizes.append(len(cone))
+        return tuple(sizes)
+
+    def operator_cost(candidate_instrs: List[Tuple[Optional[int], int, int]]) -> int:
+        costs = {
+            OP_BY_LABEL["AND"].code: 1,
+            OP_BY_LABEL["OR"].code: 1,
+            OP_BY_LABEL["XOR"].code: 2,
+        }
+        return sum(costs.get(op, 1) for op, _s1, _s2 in candidate_instrs if op is not None)
+
+    def program_score(candidate_instrs: List[Tuple[Optional[int], int, int]], candidate_outputs: List[int]) -> Score:
         score_parts: List[Any] = []
         for metric in score_metrics:
             if metric == "program-length":
                 score_parts.append(len(candidate_instrs))
             elif metric == "output-depth":
-                score_parts.append(output_depths(candidate_instrs, candidate_outputs))
+                depths = output_depths(candidate_instrs, candidate_outputs)
+                score_parts.append(depths)
+            elif metric == "max-output-depth":
+                depths = output_depths(candidate_instrs, candidate_outputs)
+                score_parts.append(max(depths, default=0))
+            elif metric == "sum-output-depth":
+                depths = output_depths(candidate_instrs, candidate_outputs)
+                score_parts.append(sum(depths))
+            elif metric == "total-node-depth":
+                depths_by_idx = instruction_depths(candidate_instrs)
+                score_parts.append(sum(depths_by_idx[num_inputs + 1 + instr_idx] for instr_idx in range(len(candidate_instrs))))
+            elif metric == "operator-cost":
+                score_parts.append(operator_cost(candidate_instrs))
+            elif metric == "xor-count":
+                score_parts.append(sum(1 for op, _s1, _s2 in candidate_instrs if op == OP_BY_LABEL["XOR"].code))
+            elif metric == "output-cone-size":
+                cone_sizes = output_cone_sizes(candidate_instrs, candidate_outputs)
+                score_parts.append(cone_sizes)
+            elif metric == "max-output-cone-size":
+                cone_sizes = output_cone_sizes(candidate_instrs, candidate_outputs)
+                score_parts.append(max(cone_sizes, default=0))
+            elif metric == "sum-output-cone-size":
+                cone_sizes = output_cone_sizes(candidate_instrs, candidate_outputs)
+                score_parts.append(sum(cone_sizes))
             else:
                 raise ValueError(f"Unsupported post-process score metric: {metric}")
 
         score_parts.extend([
-            -updates,
             tuple(candidate_outputs),
             tuple(candidate_instrs),
         ])
         return tuple(score_parts)
-
-    def score_updates(score: Score) -> int:
-        return -score[len(score_metrics)]
 
     def compute_signatures() -> Dict[int, int]:
         return evaluate_masks()
@@ -865,7 +916,6 @@ def _post_process_program(
         base_score: Score,
         candidate_instrs: List[Tuple[Optional[int], int, int]],
         candidate_outputs: List[int],
-        parent_updates: int,
     ) -> Optional[Tuple[Score, str, List[Tuple[Optional[int], int, int]], List[int]]]:
         snapshot = (
             {snap_idx: DAGNode(snap_node.op, snap_node.s1, snap_node.s2) for snap_idx, snap_node in dag.items()},
@@ -883,20 +933,19 @@ def _post_process_program(
         restore_snapshot(snapshot)
         if not valid:
             return None
-        updates = parent_updates + 1
-        score = program_score(processed_instrs, processed_outputs, updates)
+        score = program_score(processed_instrs, processed_outputs)
         if score >= base_score:
             return None
         return (score, f"{strategy}:{description}", processed_instrs, processed_outputs)
 
     Candidate = Tuple[Score, str, List[Tuple[Optional[int], int, int]], List[int]]
 
-    def generate_afterburner_candidates(consider_candidate: Callable[[Candidate], None], parent_updates: int) -> None:
+    def generate_afterburner_candidates(consider_candidate: Callable[[Candidate], None]) -> None:
         if not enable_afterburner or not examples:
             return
 
         base_instrs, base_outputs = materialize_program()
-        base_score = program_score(base_instrs, base_outputs, parent_updates)
+        base_score = program_score(base_instrs, base_outputs)
         signatures = compute_signatures()
         representative_by_signature: Dict[int, int] = {}
 
@@ -920,13 +969,13 @@ def _post_process_program(
             candidate_instrs, candidate_outputs = materialize_program()
             restore_snapshot(snapshot)
 
-            candidate = process_materialized_candidate("afterburner", f"{fmt_source(idx)}->{fmt_source(representative)}", base_score, candidate_instrs, candidate_outputs, parent_updates)
+            candidate = process_materialized_candidate("afterburner", f"{fmt_source(idx)}->{fmt_source(representative)}", base_score, candidate_instrs, candidate_outputs )
             if candidate is not None:
                 consider_candidate(candidate)
 
-    def generate_replacement_candidates(consider_candidate: Callable[[Candidate], None], parent_updates: int) -> None:
+    def generate_replacement_candidates(consider_candidate: Callable[[Candidate], None]) -> None:
         base_instrs, base_outputs = materialize_program()
-        base_score = program_score(base_instrs, base_outputs, parent_updates)
+        base_score = program_score(base_instrs, base_outputs)
         current_masks = evaluate_masks()
 
         positions = topological_positions()
@@ -982,7 +1031,7 @@ def _post_process_program(
                 finally:
                     restore_snapshot(snapshot)
 
-                candidate = process_materialized_candidate("replace", f"{fmt_source(idx)}", base_score, candidate_instrs, candidate_outputs, parent_updates)
+                candidate = process_materialized_candidate("replace", f"{fmt_source(idx)}", base_score, candidate_instrs, candidate_outputs )
                 if candidate is not None:
                     consider_candidate(candidate)
 
@@ -990,9 +1039,9 @@ def _post_process_program(
                 if patience <= 0:
                     return
 
-    def generate_adjustment_candidates(consider_candidate: Callable[[Candidate], None], parent_updates: int) -> None:
+    def generate_adjustment_candidates(consider_candidate: Callable[[Candidate], None]) -> None:
         base_instrs, base_outputs = materialize_program()
-        base_score = program_score(base_instrs, base_outputs, parent_updates)
+        base_score = program_score(base_instrs, base_outputs)
 
         positions = topological_positions()
         for idx in sorted(dag, key=lambda node_idx: source_topological_key(node_idx, positions)):
@@ -1041,13 +1090,13 @@ def _post_process_program(
                     continue
                 restore_snapshot(snapshot)
 
-                candidate = process_materialized_candidate("adjust", f"{fmt_source(idx)}->{fmt_source(user_idx)}", base_score, candidate_instrs, candidate_outputs, parent_updates)
+                candidate = process_materialized_candidate("adjust", f"{fmt_source(idx)}->{fmt_source(user_idx)}", base_score, candidate_instrs, candidate_outputs )
                 if candidate is not None:
                     consider_candidate(candidate)
 
-    def generate_simplification_candidates(consider_candidate: Callable[[Candidate], None], parent_updates: int) -> None:
+    def generate_simplification_candidates(consider_candidate: Callable[[Candidate], None]) -> None:
         base_instrs, base_outputs = materialize_program()
-        base_score = program_score(base_instrs, base_outputs, parent_updates)
+        base_score = program_score(base_instrs, base_outputs)
         values = evaluate_masks()
         false_sources = [idx for idx, value in values.items() if value == 0]
         false_source = min(false_sources, key=lambda source_idx: source_topological_key(source_idx)) if false_sources else None
@@ -1074,7 +1123,7 @@ def _post_process_program(
                 return
             restore_snapshot(snapshot)
 
-            candidate = process_materialized_candidate("simplify", f"{fmt_source(idx)}:{reason}", base_score, candidate_instrs, candidate_outputs, parent_updates)
+            candidate = process_materialized_candidate("simplify", f"{fmt_source(idx)}:{reason}", base_score, candidate_instrs, candidate_outputs )
             if candidate is not None:
                 consider_candidate(candidate)
 
@@ -1145,9 +1194,9 @@ def _post_process_program(
                     if remaining is not None:
                         propose(idx, remaining, "cancel")
 
-    def generate_output_candidates(consider_candidate: Callable[[Candidate], None], parent_updates: int) -> None:
+    def generate_output_candidates(consider_candidate: Callable[[Candidate], None]) -> None:
         base_instrs, base_outputs = materialize_program()
-        base_score = program_score(base_instrs, base_outputs, parent_updates)
+        base_score = program_score(base_instrs, base_outputs)
         values = evaluate_masks()
         positions = topological_positions()
         sources_by_topology = list(range(num_inputs + 1)) + sorted(dag.keys(), key=lambda source_idx: source_topological_key(source_idx, positions))
@@ -1169,13 +1218,12 @@ def _post_process_program(
                 outputs[out_idx] = cidx
                 candidate_instrs, candidate_outputs = materialize_program()
                 restore_snapshot(snapshot)
-                candidate = process_materialized_candidate("output", f"OUT{out_idx}", base_score, candidate_instrs, candidate_outputs, parent_updates)
+                candidate = process_materialized_candidate("output", f"OUT{out_idx}", base_score, candidate_instrs, candidate_outputs )
                 if candidate is not None:
                     consider_candidate(candidate)
 
     def generate_beam_candidates(
         candidate_limit: int,
-        parent_updates: int,
         seen_programs: set[Tuple[Tuple[Tuple[Optional[int], int, int], ...], Tuple[int, ...]]],
     ) -> List[Candidate]:
         result: List[Candidate] = []
@@ -1184,11 +1232,10 @@ def _post_process_program(
         def log_candidate(candidate: Candidate) -> None:
             score, description, candidate_instrs, _candidate_outputs = candidate
             logger.info(
-                "Considering post-process candidate %s score=%s length=%d updates=%d",
+                "Considering post-process candidate %s score=%s length=%d",
                 description,
                 score[:-1],
                 len(candidate_instrs),
-                score_updates(score),
             )
 
         def rebuild_result_keys() -> None:
@@ -1239,7 +1286,7 @@ def _post_process_program(
             generate_simplification_candidates,
             generate_output_candidates,
         ):
-            generator(consider_candidate, parent_updates)
+            generator(consider_candidate)
         result.sort(key=lambda item: item[0])
         return result
 
@@ -1251,7 +1298,7 @@ def _post_process_program(
         best_instrs = start_instrs
         best_outputs = start_outputs
         best_score = program_score(best_instrs, best_outputs)
-        beam: List[Tuple[List[Tuple[Optional[int], int, int]], List[int], int]] = [(start_instrs, start_outputs, 0)]
+        beam: List[Tuple[List[Tuple[Optional[int], int, int]], List[int]]] = [(start_instrs, start_outputs)]
         seen = {start_key}
         round_idx = 0
 
@@ -1259,28 +1306,28 @@ def _post_process_program(
             if post_process_beam_rounds > 0 and round_idx >= post_process_beam_rounds:
                 break
             round_idx += 1
-            next_states: List[Tuple[Score, List[Tuple[Optional[int], int, int]], List[int], int]] = []
+            next_states: List[Tuple[Score, List[Tuple[Optional[int], int, int]], List[int]]] = []
 
-            for state_instrs, state_outputs, state_updates in beam:
+            for state_instrs, state_outputs in beam:
                 load_materialized_program(state_instrs, state_outputs)
-                for score, _description, candidate_instrs, candidate_outputs in generate_beam_candidates(post_process_beam_candidates, state_updates, seen):
+                for score, _description, candidate_instrs, candidate_outputs in generate_beam_candidates(post_process_beam_candidates, seen):
                     key = (tuple(candidate_instrs), tuple(candidate_outputs))
                     if key in seen:
                         continue
                     seen.add(key)
-                    next_states.append((score, candidate_instrs, candidate_outputs, score_updates(score)))
+                    next_states.append((score, candidate_instrs, candidate_outputs))
 
             if not next_states:
                 break
 
             next_states.sort(key=lambda item: item[0])
-            beam = [(candidate_instrs, candidate_outputs, candidate_updates) for _score, candidate_instrs, candidate_outputs, candidate_updates in next_states[:post_process_beam_width]]
+            beam = [(candidate_instrs, candidate_outputs) for _score, candidate_instrs, candidate_outputs in next_states[:post_process_beam_width]]
 
             if next_states[0][0] < best_score:
-                best_score, best_instrs, best_outputs, _best_updates = next_states[0]
+                best_score, best_instrs, best_outputs = next_states[0]
 
         load_materialized_program(start_instrs, start_outputs)
-        if best_score < program_score(start_instrs, start_outputs, 0):
+        if best_score < program_score(start_instrs, start_outputs):
             logger.info(
                 "Accepted post-process beam reducing program from %d to %d instructions",
                 len(start_instrs),
@@ -1323,7 +1370,17 @@ def main() -> None:
     parser.add_argument("--post-process-beam-width", type=int, default=1, help="Beam width for post-process neighbor exploration")
     parser.add_argument("--post-process-beam-rounds", type=int, default=0, help="Maximum post-process beam search rounds (0 means until no better candidates are found)")
     parser.add_argument("--post-process-beam-candidates", type=int, default=0, help="Maximum post-process neighbor candidates generated per beam state (0 means unlimited)")
-    parser.add_argument("--post-process-score", type=str, default="program-length", help="Comma-separated lexicographic post-process score metrics: program-length, output-depth")
+    parser.add_argument(
+        "--post-process-score",
+        type=str,
+        default="program-length",
+        help=(
+            "Comma-separated lexicographic post-process score metrics: "
+            "program-length, output-depth, max-output-depth, sum-output-depth, "
+            "total-node-depth, operator-cost, xor-count, output-cone-size, "
+            "max-output-cone-size, sum-output-cone-size"
+        ),
+    )
 
     parser.add_argument("--instructions", type=int, default=None, help="Override number of SSA instructions")
     parser.add_argument("--batch-size", type=int, default=None, help="Number of examples to add to each bit-vector-encoded batch (default: all examples)")
@@ -1369,7 +1426,18 @@ def main() -> None:
     if args.post_process_beam_candidates < 0:
         raise SystemExit("--post-process-beam-candidates must be non-negative")
     post_process_score = [metric.strip() for metric in args.post_process_score.split(",") if metric.strip()]
-    valid_post_process_score_metrics = {"program-length", "output-depth"}
+    valid_post_process_score_metrics = {
+        "program-length",
+        "output-depth",
+        "max-output-depth",
+        "sum-output-depth",
+        "total-node-depth",
+        "operator-cost",
+        "xor-count",
+        "output-cone-size",
+        "max-output-cone-size",
+        "sum-output-cone-size",
+    }
     if not post_process_score:
         raise SystemExit("--post-process-score must specify at least one metric")
     for metric in post_process_score:
