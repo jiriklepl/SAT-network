@@ -10,7 +10,7 @@ import random
 import sys
 import time
 from pathlib import Path
-from typing import Callable, Optional, TextIO, Tuple, List, Dict, Any, Literal, TypeVar, Union
+from typing import Callable, Iterable, Optional, TextIO, Tuple, List, Dict, Any, Literal, TypeVar, Union
 
 from z3 import (
     BitVec,
@@ -1251,6 +1251,9 @@ def _post_process_program(
                 seen_regroupings.add(grouping_key)
                 if inner_sources == original_inner_sources and remaining_source == original_remaining_source:
                     continue
+                dependency_cache: Dict[int, bool] = {}
+                if any(depends_on(source, idx, dependency_cache) for source in inner_sources):
+                    continue
 
                 snapshot = snapshot_dag()
                 dag[idx].s1, dag[idx].s2 = inner_sources[0], inner_sources[1]
@@ -1436,6 +1439,9 @@ def _post_process_program(
             def description(self) -> str:
                 return f"{fmt_source(self.nodes[0])}->{fmt_source(self.outputs[-1])}"
 
+        def canonical_window_nodes(nodes: Iterable[int]) -> Tuple[int, ...]:
+            return tuple(sorted(set(nodes), key=lambda idx: source_topological_key(idx, positions)))
+
         base_instrs, base_outputs = materialize_program()
         base_score = program_score(base_instrs, base_outputs)
         positions = topological_positions()
@@ -1532,52 +1538,113 @@ def _post_process_program(
             if sel_idx in dag:
                 output_uses[sel_idx] = output_uses.get(sel_idx, 0) + 1
 
-        def sole_fanout_instruction(idx: int) -> Optional[int]:
-            node = dag[idx]
-            if output_uses.get(idx, 0) != 0 or len(node.users) != 1:
-                return None
-            return next(iter(node.users))
+        def total_fanout(idx: int) -> int:
+            return len(dag[idx].users) + output_uses.get(idx, 0)
 
-        one_fanout_nodes = {
-            idx
-            for idx, node in dag.items()
-            if len(node.users) + output_uses.get(idx, 0) == 1
-        }
-        predecessor_by_node: Dict[int, int] = {}
-        for idx in one_fanout_nodes:
-            next_idx = sole_fanout_instruction(idx)
-            if next_idx in one_fanout_nodes:
-                predecessor_by_node[next_idx] = idx
-
-        maximal_chains: List[List[int]] = []
-        for start_idx in topology_sorted_nodes(positions):
-            if start_idx not in one_fanout_nodes or start_idx in predecessor_by_node:
+        component_nodes: set[int] = set()
+        for idx in dag:
+            if total_fanout(idx) != 1:
                 continue
-            chain = [start_idx]
-            current_idx = start_idx
-            seen_chain = {start_idx}
-            while True:
-                next_idx = sole_fanout_instruction(current_idx)
-                if next_idx is None or next_idx not in one_fanout_nodes or next_idx in seen_chain:
-                    break
-                chain.append(next_idx)
-                seen_chain.add(next_idx)
-                current_idx = next_idx
+            node = dag[idx]
+            if (node.s1 in dag and total_fanout(node.s1) == 1) or (node.s2 in dag and total_fanout(node.s2) == 1):
+                component_nodes.add(idx)
 
-            if len(chain) >= 2:
-                maximal_chains.append(chain)
+        parent: Dict[int, int] = {}
 
-        subchains: List[List[int]] = []
-        for chain in maximal_chains:
-            max_subchain_length = min(post_process_resynthesis_maxnodes, len(chain))
-            for subchain_length in range(max_subchain_length, 1, -1):
-                for start_pos in range(0, len(chain) - subchain_length + 1):
-                    subchains.append(chain[start_pos:start_pos + subchain_length])
+        def find(idx: int) -> int:
+            parent.setdefault(idx, idx)
+            if parent[idx] != idx:
+                parent[idx] = find(parent[idx])
+            return parent[idx]
 
-        windows = [
-            ResynthesisWindow("chain-sat", tuple(chain), (chain[-1],))
-            for chain in subchains
-        ]
+        def union(left: int, right: int) -> None:
+            left_root = find(left)
+            right_root = find(right)
+            if left_root != right_root:
+                parent[right_root] = left_root
+
+        for idx in component_nodes:
+            find(idx)
+        for idx in component_nodes:
+            node = dag[idx]
+            for src in (node.s1, node.s2):
+                if src in component_nodes:
+                    union(idx, src)
+
+        components_by_root: Dict[int, List[int]] = {}
+        for idx in component_nodes:
+            components_by_root.setdefault(find(idx), []).append(idx)
+
+        def component_output(component: set[int]) -> Optional[int]:
+            exits = [
+                idx
+                for idx in component
+                if any(user not in component for user in dag[idx].users) or output_uses.get(idx, 0) > 0
+            ]
+            if len(exits) != 1:
+                return None
+            return exits[0]
+
+        def closed_subcomponents(component: set[int], size: int) -> List[Tuple[int, ...]]:
+            result: set[Tuple[int, ...]] = set()
+
+            def dependencies_inside(idx: int) -> List[int]:
+                node = dag[idx]
+                return [src for src in (node.s1, node.s2) if src in component]
+
+            for root_idx in component:
+                stack: List[Tuple[frozenset[int], Tuple[int, ...]]] = [(frozenset([root_idx]), tuple(dependencies_inside(root_idx)))]
+                while stack:
+                    selected, frontier = stack.pop()
+                    if len(selected) == size:
+                        result.add(canonical_window_nodes(selected))
+                        continue
+                    if len(selected) > size or not frontier:
+                        continue
+                    candidate_idx = frontier[0]
+                    rest_frontier = frontier[1:]
+
+                    stack.append((selected, rest_frontier))
+
+                    new_selected = set(selected)
+                    new_selected.add(candidate_idx)
+                    new_frontier = list(rest_frontier)
+                    for dep_idx in dependencies_inside(candidate_idx):
+                        if dep_idx not in new_selected and dep_idx not in new_frontier:
+                            new_frontier.append(dep_idx)
+                    stack.append((frozenset(new_selected), tuple(new_frontier)))
+
+            return sorted(result, key=lambda nodes: (source_topological_key(nodes[-1], positions), nodes))
+
+        windows: List[ResynthesisWindow] = []
+        seen_windows: set[Tuple[Tuple[int, ...], Tuple[int, ...]]] = set()
+
+        def add_window(nodes: Tuple[int, ...], output_idx: int) -> None:
+            if len(nodes) < 2:
+                return
+            key = (nodes, (output_idx,))
+            if key in seen_windows:
+                return
+            seen_windows.add(key)
+            windows.append(ResynthesisWindow("component-sat", nodes, (output_idx,)))
+
+        for component in components_by_root.values():
+            component_tuple = canonical_window_nodes(component)
+            component_set = set(component_tuple)
+            if len(component_tuple) < 2:
+                continue
+            if len(component_tuple) <= post_process_resynthesis_maxnodes:
+                output_idx = component_output(component_set)
+                if output_idx is not None:
+                    add_window(component_tuple, output_idx)
+                continue
+
+            for nodes in closed_subcomponents(component_set, post_process_resynthesis_maxnodes):
+                output_idx = component_output(set(nodes))
+                if output_idx is not None:
+                    add_window(nodes, output_idx)
+
+        random.shuffle(windows)
 
         attempts_remaining = post_process_resynthesis_patience
         for window_idx, window in enumerate(windows):
@@ -1905,7 +1972,7 @@ def main() -> None:
     parser.add_argument("--post-process-beam-rounds", type=int, default=0, help="Maximum post-process beam search rounds (0 means until no better candidates are found)")
     parser.add_argument("--post-process-beam-candidates", type=int, default=0, help="Maximum post-process neighbor candidates generated per beam state (0 means unlimited)")
     parser.add_argument("--post-process-replace-patience", type=int, default=50, help="Replacement attempts accepted per modified node before moving to the next node (0 means unlimited)")
-    parser.add_argument("--post-process-resynthesis-maxnodes", type=int, default=5, help="Maximum one-fanout chain window length considered by local SAT resynthesis")
+    parser.add_argument("--post-process-resynthesis-maxnodes", type=int, default=5, help="Maximum one-fanout component window size considered by local SAT resynthesis")
     parser.add_argument("--post-process-resynthesis-patience", type=int, default=1, help="Maximum SAT calls made by local resynthesis per beam state (0 means unlimited)")
     parser.add_argument(
         "--post-process-score",
