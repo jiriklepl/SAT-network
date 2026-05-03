@@ -1473,11 +1473,11 @@ def _post_process_program(
         def try_resynthesize_window(
             window: ResynthesisWindow,
             tag: str,
-        ) -> Optional[Candidate]:
+        ) -> Tuple[Optional[Candidate], bool]:
             window_nodes = list(window.nodes)
             window_outputs = list(window.outputs)
             if len(window_nodes) < 2:
-                return None
+                return None, False
 
             window_set = set(window_nodes)
             external_sources = sorted(
@@ -1490,7 +1490,7 @@ def _post_process_program(
                 key=lambda src: source_topological_key(src, positions),
             )
             if not external_sources:
-                return None
+                return None, False
 
             local_length = len(window_nodes) - 1
             spec = ProgramSpec(
@@ -1508,7 +1508,7 @@ def _post_process_program(
 
             result = solver.check()
             if str(result) != "sat":
-                return None
+                return None, False
 
             model = solver.model()
 
@@ -1552,10 +1552,10 @@ def _post_process_program(
             except ValueError as exc:
                 record_rejection(f"{window.strategy}:invalid-materialize:{type(exc).__name__}")
                 restore_snapshot(snapshot)
-                return None
+                return None, True
             restore_snapshot(snapshot)
 
-            return process_materialized_candidate(window.strategy, window.description, base_score, candidate_instrs, candidate_outputs)
+            return process_materialized_candidate(window.strategy, window.description, base_score, candidate_instrs, candidate_outputs), True
 
         output_uses: Dict[int, int] = {}
         for sel_idx in outputs:
@@ -1670,17 +1670,17 @@ def _post_process_program(
 
         random.shuffle(windows)
 
-        attempts_remaining = post_process_resynthesis_patience
+        sat_results = 0
         for window_idx, window in enumerate(windows):
-            if post_process_resynthesis_patience > 0:
-                if attempts_remaining <= 0:
-                    break
-                attempts_remaining -= 1
+            if post_process_resynthesis_patience > 0 and sat_results >= post_process_resynthesis_patience:
+                break
 
-            candidate = try_resynthesize_window(
+            candidate, was_sat = try_resynthesize_window(
                 window,
                 f"resynth{window_idx}",
             )
+            if was_sat:
+                sat_results += 1
             if candidate is not None:
                 consider_candidate(candidate)
 
