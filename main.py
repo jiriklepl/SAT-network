@@ -947,6 +947,8 @@ def _post_process_program(
                 value = sum(1 for fanout in fanouts if fanout == 1)
             elif metric == "entropy":
                 value = node_value_entropy(candidate_instrs)
+            elif metric == "random":
+                value = random.random()
             else:
                 raise ValueError(f"Unsupported post-process score metric: {metric}")
             score_parts.append(reverse_score_value(value) if reverse_sort else value)
@@ -1676,7 +1678,7 @@ def main() -> None:
             "program-length, output-depth, max-output-depth, sum-output-depth, "
             "total-node-depth, total-tree-size, operator-cost, xor-count, output-cone-size, "
             "max-output-cone-size, sum-output-cone-size, fanout, max-fanout, "
-            "sum-fanout, one-fanout-count, entropy. Prefix a metric with "
+            "sum-fanout, one-fanout-count, entropy, random. Prefix a metric with "
             "'-' to sort it descending. Separate phases with ';' to continue "
             "beam search with the next score after the previous phase finishes."
         ),
@@ -1746,6 +1748,7 @@ def main() -> None:
         "sum-fanout",
         "one-fanout-count",
         "entropy",
+        "random",
     }
     if not post_process_score:
         raise SystemExit("--post-process-score must specify at least one metric")
