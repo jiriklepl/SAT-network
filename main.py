@@ -913,6 +913,19 @@ def _post_process_program(
             return True
         return source_topological_key(s1, positions) < source_topological_key(s2, positions)
 
+    def ordered_pair(s1: int, s2: int, positions: Dict[int, int]) -> Tuple[int, int]:
+        if source_topological_key(s1, positions) <= source_topological_key(s2, positions):
+            return s1, s2
+        return s2, s1
+
+    def existing_node_by_op_sources(positions: Dict[int, int]) -> Dict[Tuple[int, int, int], int]:
+        result: Dict[Tuple[int, int, int], int] = {}
+        for idx in topology_sorted_nodes(positions):
+            node = dag[idx]
+            s1, s2 = ordered_pair(node.s1, node.s2, positions)
+            result.setdefault((node.op, s1, s2), idx)
+        return result
+
     def redirect_source(old_idx: int, new_idx: int) -> None:
         for out_idx, sel_idx in enumerate(outputs):
             if sel_idx == old_idx:
@@ -1098,6 +1111,158 @@ def _post_process_program(
                 if candidate is not None:
                     consider_candidate(candidate)
 
+    def generate_existing_regroup_candidates(consider_candidate: Callable[[Candidate], None]) -> None:
+        base_instrs, base_outputs = materialize_program()
+        base_score = program_score(base_instrs, base_outputs)
+        positions = topological_positions()
+        existing_nodes = existing_node_by_op_sources(positions)
+
+        for idx in topology_sorted_nodes(positions):
+            node = dag[idx]
+            for child_idx, remaining_source in ((node.s1, node.s2), (node.s2, node.s1)):
+                child_node = dag.get(child_idx)
+                if child_node is None or child_node.op != node.op:
+                    continue
+
+                seen_regroupings: set[Tuple[int, int, int]] = set()
+                sources = [child_node.s1, child_node.s2, remaining_source]
+                for inner_a, inner_b, outer_source in itertools.permutations(sources, 3):
+                    inner_s1, inner_s2 = ordered_pair(inner_a, inner_b, positions)
+                    grouping_key = (inner_s1, inner_s2, outer_source)
+                    if grouping_key in seen_regroupings:
+                        continue
+                    seen_regroupings.add(grouping_key)
+
+                    existing_inner = existing_nodes.get((node.op, inner_s1, inner_s2))
+                    if existing_inner is None or existing_inner == child_idx:
+                        continue
+                    dependency_cache: Dict[int, bool] = {}
+                    if depends_on(existing_inner, idx, dependency_cache) or depends_on(outer_source, idx, dependency_cache):
+                        continue
+
+                    new_s1, new_s2 = ordered_pair(existing_inner, outer_source, positions)
+                    if (new_s1, new_s2) == ordered_pair(node.s1, node.s2, positions):
+                        continue
+
+                    snapshot = snapshot_dag()
+                    dag[idx].s1, dag[idx].s2 = new_s1, new_s2
+                    try:
+                        candidate_instrs, candidate_outputs = materialize_program()
+                    except ValueError:
+                        restore_snapshot(snapshot)
+                        continue
+                    restore_snapshot(snapshot)
+
+                    candidate = process_materialized_candidate("existing-regroup", f"{fmt_source(idx)}->{fmt_source(existing_inner)}", base_score, candidate_instrs, candidate_outputs)
+                    if candidate is not None:
+                        consider_candidate(candidate)
+
+    def generate_single_use_bypass_candidates(consider_candidate: Callable[[Candidate], None]) -> None:
+        base_instrs, base_outputs = materialize_program()
+        base_score = program_score(base_instrs, base_outputs)
+        values = evaluate_masks()
+        positions = topological_positions()
+        sources_by_topology = topology_sorted_sources(positions)
+
+        for idx in topology_sorted_nodes(positions):
+            node = dag[idx]
+            if len(node.users) != 1:
+                continue
+            user_idx = next(iter(node.users))
+            user_mask = values[user_idx]
+
+            for replacement in sources_by_topology:
+                if replacement == user_idx or values[replacement] != user_mask:
+                    continue
+                dependency_cache: Dict[int, bool] = {}
+                if depends_on(replacement, user_idx, dependency_cache):
+                    continue
+
+                snapshot = snapshot_dag()
+                redirect_source(user_idx, replacement)
+                try:
+                    candidate_instrs, candidate_outputs = materialize_program()
+                except ValueError:
+                    restore_snapshot(snapshot)
+                    continue
+                restore_snapshot(snapshot)
+
+                candidate = process_materialized_candidate("single-use-bypass", f"{fmt_source(user_idx)}->{fmt_source(replacement)}", base_score, candidate_instrs, candidate_outputs)
+                if candidate is not None:
+                    consider_candidate(candidate)
+
+    def generate_xor_common_cancellation_candidates(consider_candidate: Callable[[Candidate], None]) -> None:
+        base_instrs, base_outputs = materialize_program()
+        base_score = program_score(base_instrs, base_outputs)
+        positions = topological_positions()
+
+        for idx in topology_sorted_nodes(positions):
+            node = dag[idx]
+            if node.op != XOR:
+                continue
+            left_node = dag.get(node.s1)
+            right_node = dag.get(node.s2)
+            if left_node is None or right_node is None or left_node.op != XOR or right_node.op != XOR:
+                continue
+
+            for common_source in set((left_node.s1, left_node.s2)).intersection((right_node.s1, right_node.s2)):
+                left_remaining = left_node.s2 if left_node.s1 == common_source else left_node.s1
+                right_remaining = right_node.s2 if right_node.s1 == common_source else right_node.s1
+                new_s1, new_s2 = ordered_pair(left_remaining, right_remaining, positions)
+                if (new_s1, new_s2) == ordered_pair(node.s1, node.s2, positions):
+                    continue
+
+                snapshot = snapshot_dag()
+                dag[idx].s1, dag[idx].s2 = new_s1, new_s2
+                try:
+                    candidate_instrs, candidate_outputs = materialize_program()
+                except ValueError:
+                    restore_snapshot(snapshot)
+                    continue
+                restore_snapshot(snapshot)
+
+                candidate = process_materialized_candidate("xor-common-cancel", f"{fmt_source(idx)}:{fmt_source(common_source)}", base_score, candidate_instrs, candidate_outputs)
+                if candidate is not None:
+                    consider_candidate(candidate)
+
+    def generate_equivalent_operand_swap_candidates(consider_candidate: Callable[[Candidate], None]) -> None:
+        base_instrs, base_outputs = materialize_program()
+        base_score = program_score(base_instrs, base_outputs)
+        values = evaluate_masks()
+        positions = topological_positions()
+        sources_by_topology = topology_sorted_sources(positions)
+
+        for idx in topology_sorted_nodes(positions):
+            node = dag[idx]
+            original_sources = (node.s1, node.s2)
+            for operand_idx, old_source in enumerate(original_sources):
+                old_key = source_topological_key(old_source, positions)
+                for replacement in sources_by_topology:
+                    if replacement == old_source or values[replacement] != values[old_source]:
+                        continue
+                    if source_topological_key(replacement, positions) >= old_key:
+                        continue
+                    dependency_cache: Dict[int, bool] = {}
+                    if depends_on(replacement, idx, dependency_cache):
+                        continue
+
+                    new_sources = [node.s1, node.s2]
+                    new_sources[operand_idx] = replacement
+                    new_s1, new_s2 = ordered_pair(new_sources[0], new_sources[1], positions)
+
+                    snapshot = snapshot_dag()
+                    dag[idx].s1, dag[idx].s2 = new_s1, new_s2
+                    try:
+                        candidate_instrs, candidate_outputs = materialize_program()
+                    except ValueError:
+                        restore_snapshot(snapshot)
+                        continue
+                    restore_snapshot(snapshot)
+
+                    candidate = process_materialized_candidate("equiv-operand", f"{fmt_source(idx)}:{fmt_source(old_source)}->{fmt_source(replacement)}", base_score, candidate_instrs, candidate_outputs)
+                    if candidate is not None:
+                        consider_candidate(candidate)
+
     def generate_simplification_candidates(consider_candidate: Callable[[Candidate], None]) -> None:
         base_instrs, base_outputs = materialize_program()
         base_score = program_score(base_instrs, base_outputs)
@@ -1281,6 +1446,10 @@ def _post_process_program(
             generate_afterburner_candidates,
             generate_replacement_candidates,
             generate_adjustment_candidates,
+            generate_existing_regroup_candidates,
+            generate_single_use_bypass_candidates,
+            generate_xor_common_cancellation_candidates,
+            generate_equivalent_operand_swap_candidates,
             generate_simplification_candidates,
             generate_output_candidates,
         ):
