@@ -861,6 +861,36 @@ def _post_process_program(
                 fanouts[sel_idx] += 1
         return tuple(fanouts[first_instr_idx + instr_idx] for instr_idx in range(len(candidate_instrs)))
 
+    def independent_instruction_pairs(candidate_instrs: Program) -> int:
+        sources_by_idx: Dict[int, Tuple[int, int]] = {}
+        for instr_idx, (_op, s1, s2) in enumerate(candidate_instrs):
+            sources_by_idx[num_inputs + 1 + instr_idx] = (s1, s2)
+
+        dependency_cache: Dict[Tuple[int, int], bool] = {}
+
+        def candidate_depends_on(source_idx: int, target_idx: int) -> bool:
+            cached = dependency_cache.get((source_idx, target_idx))
+            if cached is not None:
+                return cached
+            if source_idx == target_idx:
+                dependency_cache[(source_idx, target_idx)] = True
+                return True
+            sources = sources_by_idx.get(source_idx)
+            if sources is None:
+                dependency_cache[(source_idx, target_idx)] = False
+                return False
+            result = candidate_depends_on(sources[0], target_idx) or candidate_depends_on(sources[1], target_idx)
+            dependency_cache[(source_idx, target_idx)] = result
+            return result
+
+        instr_idxs = [num_inputs + 1 + instr_idx for instr_idx in range(len(candidate_instrs))]
+        count = 0
+        for left_pos, left_idx in enumerate(instr_idxs):
+            for right_idx in instr_idxs[left_pos + 1:]:
+                if not candidate_depends_on(left_idx, right_idx) and not candidate_depends_on(right_idx, left_idx):
+                    count += 1
+        return count
+
     def operator_cost(candidate_instrs: Program) -> int:
         costs = {
             OP_BY_LABEL["AND"].code: 1,
@@ -945,6 +975,8 @@ def _post_process_program(
             elif metric == "one-fanout-count":
                 fanouts = instruction_fanouts(candidate_instrs, candidate_outputs)
                 value = sum(1 for fanout in fanouts if fanout == 1)
+            elif metric == "independent-pairs":
+                value = independent_instruction_pairs(candidate_instrs)
             elif metric == "entropy":
                 value = node_value_entropy(candidate_instrs)
             elif metric == "random":
@@ -1678,9 +1710,10 @@ def main() -> None:
             "program-length, output-depth, max-output-depth, sum-output-depth, "
             "total-node-depth, total-tree-size, operator-cost, xor-count, output-cone-size, "
             "max-output-cone-size, sum-output-cone-size, fanout, max-fanout, "
-            "sum-fanout, one-fanout-count, entropy, random. Prefix a metric with "
-            "'-' to sort it descending. Separate phases with ';' to continue "
-            "beam search with the next score after the previous phase finishes."
+            "sum-fanout, one-fanout-count, independent-pairs, entropy, random. "
+            "Prefix a metric with '-' to sort it descending. Separate phases "
+            "with ';' to continue beam search with the next score after the "
+            "previous phase finishes."
         ),
     )
 
@@ -1747,6 +1780,7 @@ def main() -> None:
         "max-fanout",
         "sum-fanout",
         "one-fanout-count",
+        "independent-pairs",
         "entropy",
         "random",
     }
