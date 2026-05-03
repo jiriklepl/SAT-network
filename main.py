@@ -585,7 +585,9 @@ def _post_process_program(
     post_process_beam_width: int = 1,
     post_process_beam_rounds: int = 0,
     post_process_beam_candidates: int = 0,
-    post_process_replace_patience: int = 30,
+    post_process_replace_patience: int = 50,
+    post_process_resynthesis_maxnodes: int = 6,
+    post_process_resynthesis_patience: int = 10,
     post_process_score: Optional[List[Union[str, List[str]]]] = None,
 ) -> Tuple[List[Tuple[Optional[int], int, int]], List[int]]:
     """Post-process the synthesized program"""
@@ -593,6 +595,10 @@ def _post_process_program(
     outputs = list(outputs)
     if post_process_replace_patience < 0:
         raise ValueError("post_process_replace_patience must be non-negative")
+    if post_process_resynthesis_maxnodes < 2:
+        raise ValueError("post_process_resynthesis_maxnodes must be at least 2")
+    if post_process_resynthesis_patience < 0:
+        raise ValueError("post_process_resynthesis_patience must be non-negative")
     if not post_process_score:
         score_phases = [["program-length"]]
     elif all(isinstance(metric, str) for metric in post_process_score):
@@ -1416,6 +1422,177 @@ def _post_process_program(
                     if candidate is not None:
                         consider_candidate(candidate)
 
+    def generate_local_resynthesis_candidates(consider_candidate: Callable[[Candidate], None]) -> None:
+        if example_count == 0:
+            return
+
+        @dataclass(frozen=True)
+        class ResynthesisWindow:
+            strategy: str
+            nodes: Tuple[int, ...]
+            outputs: Tuple[int, ...]
+
+            @property
+            def description(self) -> str:
+                return f"{fmt_source(self.nodes[0])}->{fmt_source(self.outputs[-1])}"
+
+        base_instrs, base_outputs = materialize_program()
+        base_score = program_score(base_instrs, base_outputs)
+        positions = topological_positions()
+        values = evaluate_masks()
+
+        def try_resynthesize_window(
+            window: ResynthesisWindow,
+            tag: str,
+        ) -> Optional[Candidate]:
+            window_nodes = list(window.nodes)
+            window_outputs = list(window.outputs)
+            if len(window_nodes) < 2:
+                return None
+
+            window_set = set(window_nodes)
+            external_sources = sorted(
+                {
+                    src
+                    for idx in window_nodes
+                    for src in (dag[idx].s1, dag[idx].s2)
+                    if src not in window_set
+                },
+                key=lambda src: source_topological_key(src, positions),
+            )
+            if not external_sources:
+                return None
+
+            local_length = len(window_nodes) - 1
+            spec = ProgramSpec(
+                num_inputs=len(external_sources),
+                num_outputs=len(window_outputs),
+                program_length=local_length,
+            )
+            solver = _make_solver("simple-tactic")
+            solver.add(*_build_program(spec, EncodingOptions()))
+            local_input_masks = [values[src] for src in external_sources]
+            constraints, local_outputs = _build_test(example_count, local_input_masks, tag=tag, spec=spec, options=EncodingOptions())
+            solver.add(*constraints)
+            for out_idx, output_node in enumerate(window_outputs):
+                solver.add(local_outputs[out_idx] == BitVecVal(values[output_node], example_count))
+
+            result = solver.check()
+            if str(result) != "sat":
+                return None
+
+            model = solver.model()
+
+            def eval_bv_as_long(name: str, var: BitVecRef) -> int:
+                value = model.eval(var, model_completion=True)
+                if not isinstance(value, BitVecNumRef):
+                    raise ValueError(f"Model did not assign {name}: {value}")
+                return value.as_long()
+
+            local_instrs: Program = []
+            for instr_idx in range(local_length):
+                op = eval_bv_as_long(f"OP_{instr_idx}", BitVec(f"OP_{instr_idx}", OP_BITS))
+                s1 = eval_bv_as_long(f"S1_{instr_idx}", BitVec(f"S1_{instr_idx}", spec.idx_bits))
+                s2 = eval_bv_as_long(f"S2_{instr_idx}", BitVec(f"S2_{instr_idx}", spec.idx_bits))
+                local_instrs.append((op, s1, s2))
+
+            local_output_selectors = [
+                eval_bv_as_long(f"OUT_{out_idx}_idx", BitVec(f"OUT_{out_idx}_idx", spec.idx_bits))
+                for out_idx in range(len(window_outputs))
+            ]
+            fresh_base_idx = max(dag.keys(), default=num_inputs) + 1
+            fresh_idxs = [fresh_base_idx + instr_idx for instr_idx in range(local_length)]
+
+            def translate_local_source(source_idx: int) -> int:
+                if source_idx == 0:
+                    return 0
+                if 1 <= source_idx <= len(external_sources):
+                    return external_sources[source_idx - 1]
+                local_instr_idx = source_idx - len(external_sources) - 1
+                if not 0 <= local_instr_idx < len(fresh_idxs):
+                    raise ValueError(f"Local synthesized source out of range: {source_idx}")
+                return fresh_idxs[local_instr_idx]
+
+            snapshot = snapshot_dag()
+            try:
+                for local_idx, (op, s1, s2) in enumerate(local_instrs):
+                    dag[fresh_idxs[local_idx]] = DAGNode(op, translate_local_source(s1), translate_local_source(s2))
+                for output_node, local_output in zip(window_outputs, local_output_selectors):
+                    redirect_source(output_node, translate_local_source(local_output))
+                candidate_instrs, candidate_outputs = materialize_program()
+            except ValueError:
+                restore_snapshot(snapshot)
+                return None
+            restore_snapshot(snapshot)
+
+            return process_materialized_candidate(window.strategy, window.description, base_score, candidate_instrs, candidate_outputs)
+
+        output_uses: Dict[int, int] = {}
+        for sel_idx in outputs:
+            if sel_idx in dag:
+                output_uses[sel_idx] = output_uses.get(sel_idx, 0) + 1
+
+        def sole_fanout_instruction(idx: int) -> Optional[int]:
+            node = dag[idx]
+            if output_uses.get(idx, 0) != 0 or len(node.users) != 1:
+                return None
+            return next(iter(node.users))
+
+        one_fanout_nodes = {
+            idx
+            for idx, node in dag.items()
+            if len(node.users) + output_uses.get(idx, 0) == 1
+        }
+        predecessor_by_node: Dict[int, int] = {}
+        for idx in one_fanout_nodes:
+            next_idx = sole_fanout_instruction(idx)
+            if next_idx in one_fanout_nodes:
+                predecessor_by_node[next_idx] = idx
+
+        maximal_chains: List[List[int]] = []
+        for start_idx in topology_sorted_nodes(positions):
+            if start_idx not in one_fanout_nodes or start_idx in predecessor_by_node:
+                continue
+            chain = [start_idx]
+            current_idx = start_idx
+            seen_chain = {start_idx}
+            while True:
+                next_idx = sole_fanout_instruction(current_idx)
+                if next_idx is None or next_idx not in one_fanout_nodes or next_idx in seen_chain:
+                    break
+                chain.append(next_idx)
+                seen_chain.add(next_idx)
+                current_idx = next_idx
+
+            if len(chain) >= 2:
+                maximal_chains.append(chain)
+
+        subchains: List[List[int]] = []
+        for chain in maximal_chains:
+            max_subchain_length = min(post_process_resynthesis_maxnodes, len(chain))
+            for subchain_length in range(max_subchain_length, 1, -1):
+                for start_pos in range(0, len(chain) - subchain_length + 1):
+                    subchains.append(chain[start_pos:start_pos + subchain_length])
+
+        windows = [
+            ResynthesisWindow("chain-sat", tuple(chain), (chain[-1],))
+            for chain in subchains
+        ]
+
+        attempts_remaining = post_process_resynthesis_patience
+        for window_idx, window in enumerate(windows):
+            if post_process_resynthesis_patience > 0:
+                if attempts_remaining <= 0:
+                    break
+                attempts_remaining -= 1
+
+            candidate = try_resynthesize_window(
+                window,
+                f"resynth{window_idx}",
+            )
+            if candidate is not None:
+                consider_candidate(candidate)
+
     def generate_simplification_candidates(consider_candidate: Callable[[Candidate], None]) -> None:
         base_instrs, base_outputs = materialize_program()
         base_score = program_score(base_instrs, base_outputs)
@@ -1590,6 +1767,7 @@ def _post_process_program(
             generate_single_use_bypass_candidates,
             generate_xor_common_cancellation_candidates,
             generate_equivalent_operand_swap_candidates,
+            generate_local_resynthesis_candidates,
             generate_simplification_candidates,
             generate_output_candidates,
         ):
@@ -1727,6 +1905,8 @@ def main() -> None:
     parser.add_argument("--post-process-beam-rounds", type=int, default=0, help="Maximum post-process beam search rounds (0 means until no better candidates are found)")
     parser.add_argument("--post-process-beam-candidates", type=int, default=0, help="Maximum post-process neighbor candidates generated per beam state (0 means unlimited)")
     parser.add_argument("--post-process-replace-patience", type=int, default=50, help="Replacement attempts accepted per modified node before moving to the next node (0 means unlimited)")
+    parser.add_argument("--post-process-resynthesis-maxnodes", type=int, default=5, help="Maximum one-fanout chain window length considered by local SAT resynthesis")
+    parser.add_argument("--post-process-resynthesis-patience", type=int, default=1, help="Maximum SAT calls made by local resynthesis per beam state (0 means unlimited)")
     parser.add_argument(
         "--post-process-score",
         type=str,
@@ -1788,6 +1968,10 @@ def main() -> None:
         raise SystemExit("--post-process-beam-candidates must be non-negative")
     if args.post_process_replace_patience < 0:
         raise SystemExit("--post-process-replace-patience must be non-negative")
+    if args.post_process_resynthesis_maxnodes < 2:
+        raise SystemExit("--post-process-resynthesis-maxnodes must be at least 2")
+    if args.post_process_resynthesis_patience < 0:
+        raise SystemExit("--post-process-resynthesis-patience must be non-negative")
     post_process_score = [
         [metric.strip() for metric in phase.split(",") if metric.strip()]
         for phase in args.post_process_score.split(";")
@@ -2002,6 +2186,8 @@ def main() -> None:
                 post_process_beam_rounds=args.post_process_beam_rounds,
                 post_process_beam_candidates=args.post_process_beam_candidates,
                 post_process_replace_patience=args.post_process_replace_patience,
+                post_process_resynthesis_maxnodes=args.post_process_resynthesis_maxnodes,
+                post_process_resynthesis_patience=args.post_process_resynthesis_patience,
                 post_process_score=post_process_score,
             )
 
