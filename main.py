@@ -1045,6 +1045,106 @@ def _post_process_program(
                 if candidate is not None:
                     consider_candidate(candidate)
 
+    def generate_simplification_candidates(consider_candidate: Callable[[Candidate], None], parent_updates: int) -> None:
+        base_instrs, base_outputs = materialize_program()
+        base_score = program_score(base_instrs, base_outputs, parent_updates)
+        values = evaluate_masks()
+        false_sources = [idx for idx, value in values.items() if value == 0]
+        false_source = min(false_sources, key=lambda source_idx: source_topological_key(source_idx)) if false_sources else None
+
+        def other_source(node: DAGNode, source: int) -> Optional[int]:
+            if node.s1 == source:
+                return node.s2
+            if node.s2 == source:
+                return node.s1
+            return None
+
+        def propose(idx: int, replacement: Optional[int], reason: str) -> None:
+            if replacement is None or replacement == idx:
+                return
+            snapshot = (
+                {snap_idx: DAGNode(snap_node.op, snap_node.s1, snap_node.s2) for snap_idx, snap_node in dag.items()},
+                list(outputs),
+            )
+            redirect_source(idx, replacement)
+            try:
+                candidate_instrs, candidate_outputs = materialize_program()
+            except ValueError:
+                restore_snapshot(snapshot)
+                return
+            restore_snapshot(snapshot)
+
+            candidate = process_materialized_candidate("simplify", f"{fmt_source(idx)}:{reason}", base_score, candidate_instrs, candidate_outputs, parent_updates)
+            if candidate is not None:
+                consider_candidate(candidate)
+
+        positions = topological_positions()
+        for idx in sorted(dag, key=lambda node_idx: source_topological_key(node_idx, positions)):
+            node = dag[idx]
+            s1 = node.s1
+            s2 = node.s2
+
+            if node.op == OP_BY_LABEL["AND"].code:
+                if s1 == s2:
+                    propose(idx, s1, "idempotent")
+                if s1 == 0:
+                    propose(idx, s2, "identity")
+                if s2 == 0:
+                    propose(idx, s1, "identity")
+                if s1 == false_source or s2 == false_source:
+                    propose(idx, false_source, "annihilator")
+
+                s1_node = dag.get(s1)
+                s2_node = dag.get(s2)
+                if s1_node is not None and s1_node.op == OP_BY_LABEL["OR"].code:
+                    absorbed = other_source(s1_node, s2)
+                    if absorbed is not None:
+                        propose(idx, s2, "absorption")
+                if s2_node is not None and s2_node.op == OP_BY_LABEL["OR"].code:
+                    absorbed = other_source(s2_node, s1)
+                    if absorbed is not None:
+                        propose(idx, s1, "absorption")
+
+            elif node.op == OP_BY_LABEL["OR"].code:
+                if s1 == s2:
+                    propose(idx, s1, "idempotent")
+                if s1 == false_source:
+                    propose(idx, s2, "identity")
+                if s2 == false_source:
+                    propose(idx, s1, "identity")
+                if s1 == 0 or s2 == 0:
+                    propose(idx, 0, "annihilator")
+
+                s1_node = dag.get(s1)
+                s2_node = dag.get(s2)
+                if s1_node is not None and s1_node.op == OP_BY_LABEL["AND"].code:
+                    absorbed = other_source(s1_node, s2)
+                    if absorbed is not None:
+                        propose(idx, s2, "absorption")
+                if s2_node is not None and s2_node.op == OP_BY_LABEL["AND"].code:
+                    absorbed = other_source(s2_node, s1)
+                    if absorbed is not None:
+                        propose(idx, s1, "absorption")
+
+            elif node.op == XOR:
+                if s1 == s2:
+                    propose(idx, false_source, "self-cancel")
+                if s1 == false_source:
+                    propose(idx, s2, "identity")
+                if s2 == false_source:
+                    propose(idx, s1, "identity")
+
+                s1_node = dag.get(s1)
+                s2_node = dag.get(s2)
+                if s1_node is not None and s1_node.op == XOR:
+                    remaining = other_source(s1_node, s2)
+                    if remaining is not None:
+                        propose(idx, remaining, "cancel")
+                if s2_node is not None and s2_node.op == XOR:
+                    remaining = other_source(s2_node, s1)
+                    if remaining is not None:
+                        propose(idx, remaining, "cancel")
+
     def generate_output_candidates(consider_candidate: Callable[[Candidate], None], parent_updates: int) -> None:
         base_instrs, base_outputs = materialize_program()
         base_score = program_score(base_instrs, base_outputs, parent_updates)
@@ -1136,6 +1236,7 @@ def _post_process_program(
             generate_afterburner_candidates,
             generate_replacement_candidates,
             generate_adjustment_candidates,
+            generate_simplification_candidates,
             generate_output_candidates,
         ):
             generator(consider_candidate, parent_updates)
