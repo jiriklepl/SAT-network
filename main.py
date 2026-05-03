@@ -585,11 +585,14 @@ def _post_process_program(
     post_process_beam_width: int = 1,
     post_process_beam_rounds: int = 0,
     post_process_beam_candidates: int = 0,
+    post_process_replace_patience: int = 30,
     post_process_score: Optional[List[Union[str, List[str]]]] = None,
 ) -> Tuple[List[Tuple[Optional[int], int, int]], List[int]]:
     """Post-process the synthesized program"""
     logger = logging.getLogger(__name__)
     outputs = list(outputs)
+    if post_process_replace_patience < 0:
+        raise ValueError("post_process_replace_patience must be non-negative")
     if not post_process_score:
         score_phases = [["program-length"]]
     elif all(isinstance(metric, str) for metric in post_process_score):
@@ -1178,7 +1181,7 @@ def _post_process_program(
             ]
             random.shuffle(product)
 
-            patience = 30
+            patience = post_process_replace_patience
             valid_replacement_mask_cache: Dict[int, bool] = {current_masks[idx]: True}
             for op, s1, s2 in product:
                 candidate_mask = _apply_operator(op, current_masks[s1], current_masks[s2], 0) & all_examples_mask
@@ -1204,8 +1207,9 @@ def _post_process_program(
                 if candidate is not None:
                     consider_candidate(candidate)
 
-                patience -= 1
-                if patience <= 0:
+                if post_process_replace_patience > 0:
+                    patience -= 1
+                if post_process_replace_patience > 0 and patience <= 0:
                     break
 
     def generate_adjustment_candidates(consider_candidate: Callable[[Candidate], None]) -> None:
@@ -1604,7 +1608,10 @@ def _post_process_program(
             len(candidate_instrs),
         )
 
+    post_process_interrupted = False
+
     def run_beam(phase_idx: int) -> Optional[Tuple[Program, List[int]]]:
+        nonlocal post_process_interrupted
         canonicalize_dag()
         clear_dag()
         start_instrs, start_outputs = materialize_program()
@@ -1612,47 +1619,60 @@ def _post_process_program(
         best_instrs = start_instrs
         best_outputs = start_outputs
         best_score = program_score(best_instrs, best_outputs)
+        start_score = best_score
         beam: List[Tuple[Program, List[int]]] = [(start_instrs, start_outputs)]
         seen = {start_key}
         round_idx = 0
+        next_states: List[Tuple[Score, Program, List[int]]] = []
 
-        while True:
-            if post_process_beam_rounds > 0 and round_idx >= post_process_beam_rounds:
-                break
-            round_idx += 1
-            next_states: List[Tuple[Score, Program, List[int]]] = []
-            output_counts_by_strategy: Dict[str, int] = {}
+        try:
+            while True:
+                if post_process_beam_rounds > 0 and round_idx >= post_process_beam_rounds:
+                    break
+                round_idx += 1
+                next_states = []
+                output_counts_by_strategy: Dict[str, int] = {}
 
-            for beam_idx, (state_instrs, state_outputs) in enumerate(beam):
-                load_materialized_program(state_instrs, state_outputs)
-                for candidate in generate_beam_candidates(post_process_beam_candidates, seen):
-                    score, description, candidate_instrs, candidate_outputs = candidate
-                    key = program_key(candidate_instrs, candidate_outputs)
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    log_beam_output_candidate(round_idx, beam_idx, candidate)
-                    strategy = description.split(":", 1)[0]
-                    output_counts_by_strategy[strategy] = output_counts_by_strategy.get(strategy, 0) + 1
-                    next_states.append((score, candidate_instrs, candidate_outputs))
+                for beam_idx, (state_instrs, state_outputs) in enumerate(beam):
+                    load_materialized_program(state_instrs, state_outputs)
+                    for candidate in generate_beam_candidates(post_process_beam_candidates, seen):
+                        score, description, candidate_instrs, candidate_outputs = candidate
+                        key = program_key(candidate_instrs, candidate_outputs)
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        log_beam_output_candidate(round_idx, beam_idx, candidate)
+                        strategy = description.split(":", 1)[0]
+                        output_counts_by_strategy[strategy] = output_counts_by_strategy.get(strategy, 0) + 1
+                        next_states.append((score, candidate_instrs, candidate_outputs))
 
-            if not next_states:
-                break
+                if not next_states:
+                    break
 
-            logger.info(
-                "Post-process beam round %d output candidate counts by strategy: %s",
-                round_idx,
-                dict(sorted(output_counts_by_strategy.items())),
+                logger.info(
+                    "Post-process beam round %d output candidate counts by strategy: %s",
+                    round_idx,
+                    dict(sorted(output_counts_by_strategy.items())),
+                )
+
+                next_states.sort(key=lambda item: item[0])
+                beam = [(candidate_instrs, candidate_outputs) for _score, candidate_instrs, candidate_outputs in next_states[:post_process_beam_width]]
+
+                if next_states[0][0] < best_score:
+                    best_score, best_instrs, best_outputs = next_states[0]
+        except KeyboardInterrupt:
+            post_process_interrupted = True
+            if next_states:
+                next_states.sort(key=lambda item: item[0])
+                if next_states[0][0] < best_score:
+                    best_score, best_instrs, best_outputs = next_states[0]
+            logger.warning(
+                "Post-processing interrupted during beam phase %d; returning best candidate found so far",
+                phase_idx,
             )
 
-            next_states.sort(key=lambda item: item[0])
-            beam = [(candidate_instrs, candidate_outputs) for _score, candidate_instrs, candidate_outputs in next_states[:post_process_beam_width]]
-
-            if next_states[0][0] < best_score:
-                best_score, best_instrs, best_outputs = next_states[0]
-
         load_materialized_program(start_instrs, start_outputs)
-        if best_score < program_score(start_instrs, start_outputs):
+        if best_score < start_score:
             logger.info(
                 "Accepted post-process beam phase %d reducing program from %d to %d instructions",
                 phase_idx,
@@ -1660,6 +1680,9 @@ def _post_process_program(
                 len(best_instrs),
             )
             return best_instrs, best_outputs
+
+        if post_process_interrupted:
+            return start_instrs, start_outputs
 
         return None
 
@@ -1674,6 +1697,8 @@ def _post_process_program(
         beam_result = run_beam(phase_idx)
         if beam_result is not None:
             load_materialized_program(*beam_result)
+        if post_process_interrupted:
+            break
 
     instrs, outputs = materialize_program()
 
@@ -1701,6 +1726,7 @@ def main() -> None:
     parser.add_argument("--post-process-beam-width", type=int, default=1, help="Beam width for post-process neighbor exploration")
     parser.add_argument("--post-process-beam-rounds", type=int, default=0, help="Maximum post-process beam search rounds (0 means until no better candidates are found)")
     parser.add_argument("--post-process-beam-candidates", type=int, default=0, help="Maximum post-process neighbor candidates generated per beam state (0 means unlimited)")
+    parser.add_argument("--post-process-replace-patience", type=int, default=50, help="Replacement attempts accepted per modified node before moving to the next node (0 means unlimited)")
     parser.add_argument(
         "--post-process-score",
         type=str,
@@ -1760,6 +1786,8 @@ def main() -> None:
         raise SystemExit("--post-process-beam-rounds must be non-negative")
     if args.post_process_beam_candidates < 0:
         raise SystemExit("--post-process-beam-candidates must be non-negative")
+    if args.post_process_replace_patience < 0:
+        raise SystemExit("--post-process-replace-patience must be non-negative")
     post_process_score = [
         [metric.strip() for metric in phase.split(",") if metric.strip()]
         for phase in args.post_process_score.split(";")
@@ -1853,55 +1881,77 @@ def main() -> None:
 
     start = time.time()
     result = None
-    for batch_idx, offset in enumerate(range(0, len(examples), batch_size)):
-        batch = examples[offset: offset + batch_size]
-        width, input_vals, output_vals, output_masks = _pack_examples_to_bitvectors(batch, spec.num_inputs, spec.num_outputs)
-        constraints, outputs = _build_test(width, input_vals, tag=f"b{batch_idx}", spec=spec, options=options)
-        s.add(*constraints)
-        for j in range(spec.num_outputs):
-            if output_masks[j] != 0:
-                s.add((outputs[j] | output_masks[j]) == (BitVecVal(output_vals[j], width) | output_masks[j]))
-            else:
-                s.add(outputs[j] == BitVecVal(output_vals[j], width))
+    interrupted_during_generation = False
+    try:
+        for batch_idx, offset in enumerate(range(0, len(examples), batch_size)):
+            batch = examples[offset: offset + batch_size]
+            width, input_vals, output_vals, output_masks = _pack_examples_to_bitvectors(batch, spec.num_inputs, spec.num_outputs)
+            constraints, outputs = _build_test(width, input_vals, tag=f"b{batch_idx}", spec=spec, options=options)
+            s.add(*constraints)
+            for j in range(spec.num_outputs):
+                if output_masks[j] != 0:
+                    s.add((outputs[j] | output_masks[j]) == (BitVecVal(output_vals[j], width) | output_masks[j]))
+                else:
+                    s.add(outputs[j] == BitVecVal(output_vals[j], width))
 
-        logger.info("Solver has %d assertions after batch %d", len(s.assertions()), batch_idx + 1)
+            logger.info("Solver has %d assertions after batch %d", len(s.assertions()), batch_idx + 1)
 
-        if not args.make_smt2 and not args.make_dimacs and not args.do_all:
-            result = s.check()
+            if not args.make_smt2 and not args.make_dimacs and not args.do_all:
+                result = s.check()
 
-            if str(result) != 'sat':
-                break
+                if str(result) != 'sat':
+                    break
 
-            progress = min(offset + batch_size, len(examples))
-            logger.info("Processed %d/%d examples", progress, len(examples))
-
-    if args.make_smt2:
-        print(s.to_smt2())
-        return
-
-    if args.make_dimacs:
-        goal = Goal()
-
-        for c in s.assertions():
-            goal.add(c)
-
-        cnf_result = Then(
-            Tactic('simplify'),
-            Tactic('propagate-values'),
-            Tactic('bit-blast'),
-            Tactic('tseitin-cnf'),
-        )(goal)
-
-        assert len(cnf_result) == 1
-
-        cnf_goal = cnf_result[0]
-        print(cnf_goal.dimacs())
-        return
-
-    if args.do_all:
-        result = s.check()
+                progress = min(offset + batch_size, len(examples))
+                logger.info("Processed %d/%d examples", progress, len(examples))
+    except KeyboardInterrupt:
+        interrupted_during_generation = True
 
     elapsed = time.time() - start
+
+    if interrupted_during_generation:
+        logger.info("UNKNOWN result: interrupted during program generation in %.3f seconds", elapsed)
+        print("# UNKNOWN: interrupted during program generation; result is not conclusive")
+        exit(1)
+
+    if args.make_smt2:
+        try:
+            print(s.to_smt2())
+            return
+        except KeyboardInterrupt:
+            logger.info("UNKNOWN result: interrupted during SMT-LIB export in %.3f seconds", time.time() - start)
+            print("# UNKNOWN: interrupted during SMT-LIB export; result is not conclusive")
+            exit(1)
+
+    if args.make_dimacs:
+        try:
+            goal = Goal()
+
+            for c in s.assertions():
+                goal.add(c)
+
+            cnf_result = Then(
+                Tactic('simplify'),
+                Tactic('propagate-values'),
+                Tactic('bit-blast'),
+                Tactic('tseitin-cnf'),
+            )(goal)
+
+            assert len(cnf_result) == 1
+
+            cnf_goal = cnf_result[0]
+            print(cnf_goal.dimacs())
+            return
+        except KeyboardInterrupt:
+            logger.info("UNKNOWN result: interrupted during DIMACS export in %.3f seconds", time.time() - start)
+            print("c UNKNOWN: interrupted during DIMACS export; result is not conclusive")
+            exit(1)
+
+    if args.do_all:
+        try:
+            result = s.check()
+        except KeyboardInterrupt:
+            interrupted_during_generation = True
 
     if str(result) == 'sat':
         logger.info("SAT in %.3f seconds", elapsed)
@@ -1951,6 +2001,7 @@ def main() -> None:
                 post_process_beam_width=args.post_process_beam_width,
                 post_process_beam_rounds=args.post_process_beam_rounds,
                 post_process_beam_candidates=args.post_process_beam_candidates,
+                post_process_replace_patience=args.post_process_replace_patience,
                 post_process_score=post_process_score,
             )
 
