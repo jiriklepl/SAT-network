@@ -590,6 +590,10 @@ def _post_process_program(
     logger = logging.getLogger(__name__)
     outputs = list(outputs)
     score_metrics = post_process_score or ["program-length"]
+    score_metric_specs = [
+        (metric[1:], True) if metric.startswith("-") else (metric, False)
+        for metric in score_metrics
+    ]
 
     if len(outputs) != num_outputs:
         raise ValueError(f"Expected {num_outputs} output selectors, got {len(outputs)}")
@@ -834,38 +838,42 @@ def _post_process_program(
         }
         return sum(costs.get(op, 1) for op, _s1, _s2 in candidate_instrs if op is not None)
 
+    def reverse_score_value(value: Any) -> Any:
+        if isinstance(value, tuple):
+            return tuple(reverse_score_value(item) for item in value)
+        return -value
+
     def program_score(candidate_instrs: Program, candidate_outputs: List[int]) -> Score:
         score_parts: List[Any] = []
-        for metric in score_metrics:
+        for metric, reverse_sort in score_metric_specs:
             if metric == "program-length":
-                score_parts.append(len(candidate_instrs))
+                value = len(candidate_instrs)
             elif metric == "output-depth":
-                depths = output_depths(candidate_instrs, candidate_outputs)
-                score_parts.append(depths)
+                value = output_depths(candidate_instrs, candidate_outputs)
             elif metric == "max-output-depth":
                 depths = output_depths(candidate_instrs, candidate_outputs)
-                score_parts.append(max(depths, default=0))
+                value = max(depths, default=0)
             elif metric == "sum-output-depth":
                 depths = output_depths(candidate_instrs, candidate_outputs)
-                score_parts.append(sum(depths))
+                value = sum(depths)
             elif metric == "total-node-depth":
                 depths_by_idx = instruction_depths(candidate_instrs)
-                score_parts.append(sum(depths_by_idx[num_inputs + 1 + instr_idx] for instr_idx in range(len(candidate_instrs))))
+                value = sum(depths_by_idx[num_inputs + 1 + instr_idx] for instr_idx in range(len(candidate_instrs)))
             elif metric == "operator-cost":
-                score_parts.append(operator_cost(candidate_instrs))
+                value = operator_cost(candidate_instrs)
             elif metric == "xor-count":
-                score_parts.append(sum(1 for op, _s1, _s2 in candidate_instrs if op == OP_BY_LABEL["XOR"].code))
+                value = sum(1 for op, _s1, _s2 in candidate_instrs if op == OP_BY_LABEL["XOR"].code)
             elif metric == "output-cone-size":
-                cone_sizes = output_cone_sizes(candidate_instrs, candidate_outputs)
-                score_parts.append(cone_sizes)
+                value = output_cone_sizes(candidate_instrs, candidate_outputs)
             elif metric == "max-output-cone-size":
                 cone_sizes = output_cone_sizes(candidate_instrs, candidate_outputs)
-                score_parts.append(max(cone_sizes, default=0))
+                value = max(cone_sizes, default=0)
             elif metric == "sum-output-cone-size":
                 cone_sizes = output_cone_sizes(candidate_instrs, candidate_outputs)
-                score_parts.append(sum(cone_sizes))
+                value = sum(cone_sizes)
             else:
                 raise ValueError(f"Unsupported post-process score metric: {metric}")
+            score_parts.append(reverse_score_value(value) if reverse_sort else value)
 
         score_parts.extend([
             tuple(candidate_outputs),
@@ -1482,7 +1490,7 @@ def _post_process_program(
             round_idx,
             beam_idx,
             description,
-            score[:len(score_metrics)],
+            score[:len(score_metric_specs)],
             len(candidate_instrs),
         )
 
@@ -1582,7 +1590,8 @@ def main() -> None:
             "Comma-separated lexicographic post-process score metrics: "
             "program-length, output-depth, max-output-depth, sum-output-depth, "
             "total-node-depth, operator-cost, xor-count, output-cone-size, "
-            "max-output-cone-size, sum-output-cone-size"
+            "max-output-cone-size, sum-output-cone-size. Prefix a metric with "
+            "'-' to sort it descending."
         ),
     )
 
@@ -1645,7 +1654,10 @@ def main() -> None:
     if not post_process_score:
         raise SystemExit("--post-process-score must specify at least one metric")
     for metric in post_process_score:
-        if metric not in valid_post_process_score_metrics:
+        metric_name = metric[1:] if metric.startswith("-") else metric
+        if not metric_name:
+            raise SystemExit("--post-process-score contains an empty metric")
+        if metric_name not in valid_post_process_score_metrics:
             raise SystemExit(f"Unsupported --post-process-score metric: {metric}")
 
     # print the chosen configuration
