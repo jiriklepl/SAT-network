@@ -604,6 +604,11 @@ def _post_process_program(
         def __repr__(self) -> str:
             return f"({self.op}, {self.s1}, {self.s2})"
 
+    Instruction = Tuple[Optional[int], int, int]
+    Program = List[Instruction]
+    ProgramKey = Tuple[Tuple[Instruction, ...], Tuple[int, ...]]
+    Snapshot = Tuple[Dict[int, DAGNode], List[int]]
+
     dag: Dict[int, DAGNode] = {}
 
     for i, (op, s1, s2) in enumerate(instrs):
@@ -630,6 +635,7 @@ def _post_process_program(
             dag[s2].users.add(idx)
 
     XOR = OP_BY_LABEL['XOR'].code
+    logic_operator_codes = [operator.code for operator in LOGIC_OPERATORS]
 
     def fmt_source(idx: int) -> str:
         return _format_source(idx, num_inputs)
@@ -761,14 +767,13 @@ def _post_process_program(
     if not check():
         raise ValueError("Post-processing started with incorrect program")
 
-
-    def materialize_program() -> Tuple[List[Tuple[Optional[int], int, int]], List[int]]:
+    def materialize_program() -> Tuple[Program, List[int]]:
         ordered_idxs = topological_dag_order()
         new_idxs = {}
         for new_idx, old_idx in enumerate(ordered_idxs):
             new_idxs[old_idx] = new_idx + (num_inputs + 1)
 
-        materialized_instrs: List[Tuple[Optional[int], int, int]] = []
+        materialized_instrs: Program = []
         for idx in ordered_idxs:
             node = dag[idx]
             materialized_instrs.append((node.op, new_idxs.get(node.s1, node.s1), new_idxs.get(node.s2, node.s2)))
@@ -776,7 +781,7 @@ def _post_process_program(
         materialized_outputs = [new_idxs.get(sel_idx, sel_idx) for sel_idx in outputs]
         return materialized_instrs, materialized_outputs
 
-    def load_materialized_program(materialized_instrs: List[Tuple[Optional[int], int, int]], materialized_outputs: List[int]) -> None:
+    def load_materialized_program(materialized_instrs: Program, materialized_outputs: List[int]) -> None:
         nonlocal dag, outputs
         outputs = list(materialized_outputs)
         dag = {}
@@ -788,7 +793,7 @@ def _post_process_program(
 
     Score = Tuple[Any, ...]
 
-    def instruction_depths(candidate_instrs: List[Tuple[Optional[int], int, int]]) -> Dict[int, int]:
+    def instruction_depths(candidate_instrs: Program) -> Dict[int, int]:
         depths: Dict[int, int] = {idx: 0 for idx in range(num_inputs + 1)}
         for instr_idx, (_op, s1, s2) in enumerate(candidate_instrs):
             idx = num_inputs + 1 + instr_idx
@@ -797,11 +802,11 @@ def _post_process_program(
             depths[idx] = max(depths[s1], depths[s2]) + 1
         return depths
 
-    def output_depths(candidate_instrs: List[Tuple[Optional[int], int, int]], candidate_outputs: List[int]) -> Tuple[int, ...]:
+    def output_depths(candidate_instrs: Program, candidate_outputs: List[int]) -> Tuple[int, ...]:
         depths = instruction_depths(candidate_instrs)
         return tuple(depths[sel_idx] for sel_idx in candidate_outputs)
 
-    def output_cone_sizes(candidate_instrs: List[Tuple[Optional[int], int, int]], candidate_outputs: List[int]) -> Tuple[int, ...]:
+    def output_cone_sizes(candidate_instrs: Program, candidate_outputs: List[int]) -> Tuple[int, ...]:
         sources_by_idx: Dict[int, Tuple[int, int]] = {}
         for instr_idx, (_op, s1, s2) in enumerate(candidate_instrs):
             sources_by_idx[num_inputs + 1 + instr_idx] = (s1, s2)
@@ -821,7 +826,7 @@ def _post_process_program(
             sizes.append(len(cone))
         return tuple(sizes)
 
-    def operator_cost(candidate_instrs: List[Tuple[Optional[int], int, int]]) -> int:
+    def operator_cost(candidate_instrs: Program) -> int:
         costs = {
             OP_BY_LABEL["AND"].code: 1,
             OP_BY_LABEL["OR"].code: 1,
@@ -829,7 +834,7 @@ def _post_process_program(
         }
         return sum(costs.get(op, 1) for op, _s1, _s2 in candidate_instrs if op is not None)
 
-    def program_score(candidate_instrs: List[Tuple[Optional[int], int, int]], candidate_outputs: List[int]) -> Score:
+    def program_score(candidate_instrs: Program, candidate_outputs: List[int]) -> Score:
         score_parts: List[Any] = []
         for metric in score_metrics:
             if metric == "program-length":
@@ -886,6 +891,28 @@ def _post_process_program(
         cache[source_idx] = result
         return result
 
+    def snapshot_dag() -> Snapshot:
+        return (
+            {snap_idx: DAGNode(node.op, node.s1, node.s2) for snap_idx, node in dag.items()},
+            list(outputs),
+        )
+
+    def program_key(candidate_instrs: Program, candidate_outputs: List[int]) -> ProgramKey:
+        return (tuple(candidate_instrs), tuple(candidate_outputs))
+
+    def topology_sorted_nodes(positions: Optional[Dict[int, int]] = None) -> List[int]:
+        if positions is None:
+            positions = topological_positions()
+        return sorted(dag, key=lambda source_idx: source_topological_key(source_idx, positions))
+
+    def topology_sorted_sources(positions: Optional[Dict[int, int]] = None) -> List[int]:
+        return list(range(num_inputs + 1)) + topology_sorted_nodes(positions)
+
+    def is_ordered_operand_pair(op: int, s1: int, s2: int, positions: Dict[int, int]) -> bool:
+        if op == XOR and s1 == s2:
+            return True
+        return source_topological_key(s1, positions) < source_topological_key(s2, positions)
+
     def redirect_source(old_idx: int, new_idx: int) -> None:
         for out_idx, sel_idx in enumerate(outputs):
             if sel_idx == old_idx:
@@ -897,7 +924,7 @@ def _post_process_program(
             if node.s2 == old_idx:
                 node.s2 = new_idx
 
-    def restore_snapshot(snapshot: Tuple[Dict[int, DAGNode], List[int]]) -> None:
+    def restore_snapshot(snapshot: Snapshot) -> None:
         nonlocal dag, outputs
         dag = snapshot[0]
         outputs = snapshot[1]
@@ -914,13 +941,10 @@ def _post_process_program(
         strategy: str,
         description: str,
         base_score: Score,
-        candidate_instrs: List[Tuple[Optional[int], int, int]],
+        candidate_instrs: Program,
         candidate_outputs: List[int],
-    ) -> Optional[Tuple[Score, str, List[Tuple[Optional[int], int, int]], List[int]]]:
-        snapshot = (
-            {snap_idx: DAGNode(snap_node.op, snap_node.s1, snap_node.s2) for snap_idx, snap_node in dag.items()},
-            list(outputs),
-        )
+    ) -> Optional[Tuple[Score, str, Program, List[int]]]:
+        snapshot = snapshot_dag()
         try:
             load_materialized_program(candidate_instrs, candidate_outputs)
             canonicalize_dag()
@@ -938,7 +962,7 @@ def _post_process_program(
             return None
         return (score, f"{strategy}:{description}", processed_instrs, processed_outputs)
 
-    Candidate = Tuple[Score, str, List[Tuple[Optional[int], int, int]], List[int]]
+    Candidate = Tuple[Score, str, Program, List[int]]
 
     def generate_afterburner_candidates(consider_candidate: Callable[[Candidate], None]) -> None:
         if not enable_afterburner or not examples:
@@ -949,10 +973,7 @@ def _post_process_program(
         signatures = compute_signatures()
         representative_by_signature: Dict[int, int] = {}
 
-        positions = topological_positions()
-        sources_by_topology = list(range(num_inputs + 1)) + sorted(dag, key=lambda source_idx: source_topological_key(source_idx, positions))
-
-        for idx in sources_by_topology:
+        for idx in topology_sorted_sources():
             signature = signatures[idx]
             representative = representative_by_signature.get(signature)
             if representative is None:
@@ -961,15 +982,12 @@ def _post_process_program(
             if idx not in dag:
                 continue
 
-            snapshot = (
-                {snap_idx: DAGNode(node.op, node.s1, node.s2) for snap_idx, node in dag.items()},
-                list(outputs),
-            )
+            snapshot = snapshot_dag()
             redirect_source(idx, representative)
             candidate_instrs, candidate_outputs = materialize_program()
             restore_snapshot(snapshot)
 
-            candidate = process_materialized_candidate("afterburner", f"{fmt_source(idx)}->{fmt_source(representative)}", base_score, candidate_instrs, candidate_outputs )
+            candidate = process_materialized_candidate("afterburner", f"{fmt_source(idx)}->{fmt_source(representative)}", base_score, candidate_instrs, candidate_outputs)
             if candidate is not None:
                 consider_candidate(candidate)
 
@@ -979,13 +997,9 @@ def _post_process_program(
         current_masks = evaluate_masks()
 
         positions = topological_positions()
-        for idx in sorted(dag, key=lambda node_idx: source_topological_key(node_idx, positions)):
+        for idx in topology_sorted_nodes(positions):
             node = dag[idx]
-            if idx not in dag:
-                continue
-            old_op = node.op
-            old_s1 = node.s1
-            old_s2 = node.s2
+            original_node = (node.op, node.s1, node.s2)
             dependency_cache: Dict[int, bool] = {}
             possible_idxs = [
                 x
@@ -994,15 +1008,13 @@ def _post_process_program(
             ]
             product = [
                 (op, s1, s2)
-                for op in [operator.code for operator in LOGIC_OPERATORS]
+                for op in logic_operator_codes
                 for s1 in possible_idxs
                 for s2 in possible_idxs
-                if (
-                    (source_topological_key(s1, positions) < source_topological_key(s2, positions) or (op == XOR and s1 == s2))
-                )
+                if is_ordered_operand_pair(op, s1, s2, positions)
             ]
             random.shuffle(product)
-            
+
             patience = 2000
             for op, s1, s2 in product:
                 candidate_mask = _apply_operator(op, current_masks[s1], current_masks[s2], 0) & all_examples_mask
@@ -1011,16 +1023,11 @@ def _post_process_program(
                     node.s1 = s1
                     node.s2 = s2
                     valid = check()
-                    node.op = old_op
-                    node.s1 = old_s1
-                    node.s2 = old_s2
+                    node.op, node.s1, node.s2 = original_node
                     if not valid:
                         continue
 
-                snapshot = (
-                    {snap_idx: DAGNode(snap_node.op, snap_node.s1, snap_node.s2) for snap_idx, snap_node in dag.items()},
-                    list(outputs),
-                )
+                snapshot = snapshot_dag()
                 dag[idx].op = op
                 dag[idx].s1 = s1
                 dag[idx].s2 = s2
@@ -1031,7 +1038,7 @@ def _post_process_program(
                 finally:
                     restore_snapshot(snapshot)
 
-                candidate = process_materialized_candidate("replace", f"{fmt_source(idx)}", base_score, candidate_instrs, candidate_outputs )
+                candidate = process_materialized_candidate("replace", f"{fmt_source(idx)}", base_score, candidate_instrs, candidate_outputs)
                 if candidate is not None:
                     consider_candidate(candidate)
 
@@ -1044,7 +1051,7 @@ def _post_process_program(
         base_score = program_score(base_instrs, base_outputs)
 
         positions = topological_positions()
-        for idx in sorted(dag, key=lambda node_idx: source_topological_key(node_idx, positions)):
+        for idx in topology_sorted_nodes(positions):
             node = dag[idx]
             if len(node.users) != 1 or idx in outputs:
                 continue
@@ -1073,10 +1080,7 @@ def _post_process_program(
                 if inner_sources == original_inner_sources and remaining_source == original_remaining_source:
                     continue
 
-                snapshot = (
-                    {snap_idx: DAGNode(snap_node.op, snap_node.s1, snap_node.s2) for snap_idx, snap_node in dag.items()},
-                    list(outputs),
-                )
+                snapshot = snapshot_dag()
                 dag[idx].s1, dag[idx].s2 = inner_sources[0], inner_sources[1]
                 current_positions = topological_positions()
                 if source_topological_key(idx, current_positions) < source_topological_key(remaining_source, current_positions):
@@ -1090,7 +1094,7 @@ def _post_process_program(
                     continue
                 restore_snapshot(snapshot)
 
-                candidate = process_materialized_candidate("adjust", f"{fmt_source(idx)}->{fmt_source(user_idx)}", base_score, candidate_instrs, candidate_outputs )
+                candidate = process_materialized_candidate("adjust", f"{fmt_source(idx)}->{fmt_source(user_idx)}", base_score, candidate_instrs, candidate_outputs)
                 if candidate is not None:
                     consider_candidate(candidate)
 
@@ -1098,8 +1102,9 @@ def _post_process_program(
         base_instrs, base_outputs = materialize_program()
         base_score = program_score(base_instrs, base_outputs)
         values = evaluate_masks()
+        positions = topological_positions()
         false_sources = [idx for idx, value in values.items() if value == 0]
-        false_source = min(false_sources, key=lambda source_idx: source_topological_key(source_idx)) if false_sources else None
+        false_source = min(false_sources, key=lambda source_idx: source_topological_key(source_idx, positions)) if false_sources else None
 
         def other_source(node: DAGNode, source: int) -> Optional[int]:
             if node.s1 == source:
@@ -1111,10 +1116,7 @@ def _post_process_program(
         def propose(idx: int, replacement: Optional[int], reason: str) -> None:
             if replacement is None or replacement == idx:
                 return
-            snapshot = (
-                {snap_idx: DAGNode(snap_node.op, snap_node.s1, snap_node.s2) for snap_idx, snap_node in dag.items()},
-                list(outputs),
-            )
+            snapshot = snapshot_dag()
             redirect_source(idx, replacement)
             try:
                 candidate_instrs, candidate_outputs = materialize_program()
@@ -1123,12 +1125,11 @@ def _post_process_program(
                 return
             restore_snapshot(snapshot)
 
-            candidate = process_materialized_candidate("simplify", f"{fmt_source(idx)}:{reason}", base_score, candidate_instrs, candidate_outputs )
+            candidate = process_materialized_candidate("simplify", f"{fmt_source(idx)}:{reason}", base_score, candidate_instrs, candidate_outputs)
             if candidate is not None:
                 consider_candidate(candidate)
 
-        positions = topological_positions()
-        for idx in sorted(dag, key=lambda node_idx: source_topological_key(node_idx, positions)):
+        for idx in topology_sorted_nodes(positions):
             node = dag[idx]
             s1 = node.s1
             s2 = node.s2
@@ -1199,7 +1200,7 @@ def _post_process_program(
         base_score = program_score(base_instrs, base_outputs)
         values = evaluate_masks()
         positions = topological_positions()
-        sources_by_topology = list(range(num_inputs + 1)) + sorted(dag.keys(), key=lambda source_idx: source_topological_key(source_idx, positions))
+        sources_by_topology = topology_sorted_sources(positions)
 
         for out_idx in range(num_outputs):
             sel_idx = outputs[out_idx]
@@ -1211,40 +1212,37 @@ def _post_process_program(
                     continue
                 candidate_outputs = list(outputs)
                 candidate_outputs[out_idx] = cidx
-                snapshot = (
-                    {snap_idx: DAGNode(snap_node.op, snap_node.s1, snap_node.s2) for snap_idx, snap_node in dag.items()},
-                    list(outputs),
-                )
+                snapshot = snapshot_dag()
                 outputs[out_idx] = cidx
                 candidate_instrs, candidate_outputs = materialize_program()
                 restore_snapshot(snapshot)
-                candidate = process_materialized_candidate("output", f"OUT{out_idx}", base_score, candidate_instrs, candidate_outputs )
+                candidate = process_materialized_candidate("output", f"OUT{out_idx}", base_score, candidate_instrs, candidate_outputs)
                 if candidate is not None:
                     consider_candidate(candidate)
 
     def generate_beam_candidates(
         candidate_limit: int,
-        seen_programs: set[Tuple[Tuple[Tuple[Optional[int], int, int], ...], Tuple[int, ...]]],
+        seen_programs: set[ProgramKey],
     ) -> List[Candidate]:
         result: List[Candidate] = []
-        result_keys: Dict[Tuple[Tuple[Tuple[Optional[int], int, int], ...], Tuple[int, ...]], int] = {}
+        result_keys: Dict[ProgramKey, int] = {}
 
         def log_candidate(candidate: Candidate) -> None:
             score, description, candidate_instrs, _candidate_outputs = candidate
             logger.info(
                 "Considering post-process candidate %s score=%s length=%d",
                 description,
-                score[:-1],
+                score[:len(score_metrics)],
                 len(candidate_instrs),
             )
 
         def rebuild_result_keys() -> None:
             result_keys.clear()
             for idx, item in enumerate(result):
-                result_keys[(tuple(item[2]), tuple(item[3]))] = idx
+                result_keys[program_key(item[2], item[3])] = idx
 
         def consider_candidate(candidate: Candidate) -> None:
-            key = (tuple(candidate[2]), tuple(candidate[3]))
+            key = program_key(candidate[2], candidate[3])
             if key in seen_programs:
                 return
             existing_idx = result_keys.get(key)
@@ -1273,7 +1271,7 @@ def _post_process_program(
             if candidate[0] >= result[-1][0]:
                 return
 
-            del result_keys[(tuple(result[-1][2]), tuple(result[-1][3]))]
+            del result_keys[program_key(result[-1][2], result[-1][3])]
             result[-1] = candidate
             result.sort(key=lambda item: item[0])
             rebuild_result_keys()
@@ -1290,15 +1288,15 @@ def _post_process_program(
         result.sort(key=lambda item: item[0])
         return result
 
-    def run_beam() -> Optional[Tuple[List[Tuple[Optional[int], int, int]], List[int]]]:
+    def run_beam() -> Optional[Tuple[Program, List[int]]]:
         canonicalize_dag()
         clear_dag()
         start_instrs, start_outputs = materialize_program()
-        start_key = (tuple(start_instrs), tuple(start_outputs))
+        start_key = program_key(start_instrs, start_outputs)
         best_instrs = start_instrs
         best_outputs = start_outputs
         best_score = program_score(best_instrs, best_outputs)
-        beam: List[Tuple[List[Tuple[Optional[int], int, int]], List[int]]] = [(start_instrs, start_outputs)]
+        beam: List[Tuple[Program, List[int]]] = [(start_instrs, start_outputs)]
         seen = {start_key}
         round_idx = 0
 
@@ -1306,12 +1304,12 @@ def _post_process_program(
             if post_process_beam_rounds > 0 and round_idx >= post_process_beam_rounds:
                 break
             round_idx += 1
-            next_states: List[Tuple[Score, List[Tuple[Optional[int], int, int]], List[int]]] = []
+            next_states: List[Tuple[Score, Program, List[int]]] = []
 
             for state_instrs, state_outputs in beam:
                 load_materialized_program(state_instrs, state_outputs)
                 for score, _description, candidate_instrs, candidate_outputs in generate_beam_candidates(post_process_beam_candidates, seen):
-                    key = (tuple(candidate_instrs), tuple(candidate_outputs))
+                    key = program_key(candidate_instrs, candidate_outputs)
                     if key in seen:
                         continue
                     seen.add(key)
@@ -1337,12 +1335,9 @@ def _post_process_program(
 
         return None
 
-    def try_afterburner() -> Optional[Tuple[List[Tuple[Optional[int], int, int]], List[int]]]:
-        return run_beam()
-
-    afterburner_result = try_afterburner()
-    if afterburner_result is not None:
-        load_materialized_program(afterburner_result[0], afterburner_result[1])
+    beam_result = run_beam()
+    if beam_result is not None:
+        load_materialized_program(*beam_result)
 
     instrs, outputs = materialize_program()
 
