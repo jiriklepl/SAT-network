@@ -201,24 +201,58 @@ class MainEncodingTests(unittest.TestCase):
         for ex in examples:
             self.assertEqual(_eval_assumption_lines(lines, ex["inputs"], 1), ex["outputs"])
 
-    def test_build_assumptions_auto_uses_compact_life_circuit(self) -> None:
+    def test_build_assumptions_circuit_uses_life_compressed_circuit(self) -> None:
         examples, num_inputs, num_outputs = get_plugin("life-compressed")(get_plugin_config("life-compressed"))
         lines, required_instructions = build_assumption_lines(
             examples,
             num_inputs,
             num_outputs,
             dataset_name="life-compressed",
-            strategy="auto",
+            strategy="circuit",
         )
 
         spec = ProgramSpec(num_inputs=num_inputs, num_outputs=num_outputs, program_length=required_instructions)
         constraints = _build_assumptions_from_file(io.StringIO("\n".join(lines)), spec)
 
-        self.assertEqual(required_instructions, 14)
-        self.assertEqual(lines[-1], "OUT0: T13")
+        self.assertLess(required_instructions, 100)
         self.assertGreater(len(constraints), 0)
         for ex in examples:
             self.assertEqual(_eval_assumption_lines(lines, ex["inputs"], num_outputs), ex["outputs"])
+
+    def test_build_assumptions_rejects_removed_auto_strategy(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Unknown assumption strategy"):
+            build_assumption_lines([], 0, 0, strategy="auto")
+
+    def test_build_assumptions_circuit_matches_cellular_automata_plugins(self) -> None:
+        for name in [
+            "gol",
+            "life",
+            "life-compressed",
+            "maze",
+            "maze-compressed",
+            "brian",
+            "brian-compressed",
+            "fire",
+            "fire-compressed",
+            "wire",
+            "wire-compressed",
+            "excitable",
+            "excitable-compressed",
+            "cyclic",
+            "cyclic-compressed",
+        ]:
+            with self.subTest(name=name):
+                examples, num_inputs, num_outputs = get_plugin(name)(get_plugin_config(name))
+                lines, required_instructions = build_assumption_lines(
+                    examples,
+                    num_inputs,
+                    num_outputs,
+                    dataset_name=name,
+                    strategy="circuit",
+                )
+                self.assertGreater(required_instructions, 0)
+                for ex in examples:
+                    self.assertEqual(_eval_assumption_lines(lines, ex["inputs"], num_outputs), ex["outputs"])
 
     def test_cellular_automata_plugins_are_registered(self) -> None:
         plugins = available_plugins()

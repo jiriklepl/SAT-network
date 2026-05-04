@@ -51,4 +51,4 @@ python3 main.py --solver z3
 ```
 
 `build_assumptions.py` emits a complete program in the `--assume` file format accepted by `main.py`.
-The default `auto` strategy uses a compact hand-built circuit for `gol`/`life-compressed` and falls back to an exact DNF construction for other datasets. If the header reports `required-instructions`, pass that value to `main.py` with `--instructions` when it differs from the dataset default.
+The default `circuit` strategy uses generated gate networks for supported cellular automata datasets and falls back to exact DNF for other datasets. Use `--strategy dnf` to force the truth-table construction. If the header reports `required-instructions`, pass that value to `main.py` with `--instructions` when it differs from the dataset default.
