@@ -58,6 +58,8 @@ OP_BY_LABEL = {op.label: op for op in LOGIC_OPERATORS}
 OP_RANK_BY_CODE = {op.code: op.canonical_rank for op in LOGIC_OPERATORS}
 OP_BITS = max(1, max(op.code for op in LOGIC_OPERATORS).bit_length())
 OP_RANK_BITS = max(1, max(op.canonical_rank for op in LOGIC_OPERATORS).bit_length())
+OP_CODE_BV_BY_CODE = {op.code: BitVecVal(op.code, OP_BITS) for op in LOGIC_OPERATORS}
+OP_RANK_BV_BY_CODE = {op.code: BitVecVal(op.canonical_rank, OP_RANK_BITS) for op in LOGIC_OPERATORS}
 
 
 def _op_label(op_code: int) -> str:
@@ -73,7 +75,7 @@ def _apply_operator(op_code: int, left: Any, right: Any, default: Any) -> Any:
 
 
 def _operator_constraint(op: BitVecRef) -> BoolRef:
-    return Or(*(op == BitVecVal(operator.code, OP_BITS) for operator in LOGIC_OPERATORS))
+    return Or(*(op == OP_CODE_BV_BY_CODE[operator.code] for operator in LOGIC_OPERATORS))
 
 
 def _operator_expr(op: BitVecRef, left: Any, right: Any) -> Any:
@@ -82,7 +84,7 @@ def _operator_expr(op: BitVecRef, left: Any, right: Any) -> Any:
 
     expr = LOGIC_OPERATORS[-1].apply(left, right)
     for operator in reversed(LOGIC_OPERATORS[:-1]):
-        expr = If(op == BitVecVal(operator.code, OP_BITS), operator.apply(left, right), expr)
+        expr = If(op == OP_CODE_BV_BY_CODE[operator.code], operator.apply(left, right), expr)
     return expr
 
 
@@ -90,11 +92,11 @@ def _operator_rank_expr(op: BitVecRef) -> BitVecRef:
     if not LOGIC_OPERATORS:
         raise ValueError("At least one logic operator must be defined")
 
-    expr = BitVecVal(LOGIC_OPERATORS[-1].canonical_rank, OP_RANK_BITS)
+    expr = OP_RANK_BV_BY_CODE[LOGIC_OPERATORS[-1].code]
     for operator in reversed(LOGIC_OPERATORS[:-1]):
         expr = If(
-            op == BitVecVal(operator.code, OP_BITS),
-            BitVecVal(operator.canonical_rank, OP_RANK_BITS),
+            op == OP_CODE_BV_BY_CODE[operator.code],
+            OP_RANK_BV_BY_CODE[operator.code],
             expr,
         )
     return expr
@@ -137,23 +139,30 @@ def _bitvec_values(count: int, bits: int) -> List[BitVecNumRef]:
     return [BitVecVal(idx, bits) for idx in range(count)]
 
 
-def _select_bv(values: List[T], idx_var: Union[BitVecNumRef, BitVecRef], bits: int, balanced: bool = False) -> T:
+def _select_bv(
+    values: List[T],
+    idx_var: Union[BitVecNumRef, BitVecRef],
+    bits: int,
+    balanced: bool = False,
+    idx_values: Optional[List[BitVecNumRef]] = None,
+) -> T:
     if not values or len(values) == 0:
         raise ValueError("values must be a non-empty list")
     if isinstance(idx_var, BitVecNumRef):
         idx = idx_var.as_long()
         if 0 <= idx < len(values):
             return values[idx]
+    if idx_values is None or len(idx_values) < len(values):
+        idx_values = _bitvec_values(len(values), bits)
 
     if not balanced:
         result: T = values[0]
         for idx, value in enumerate(values):
             if idx == 0:
                 continue
-            result = If(idx_var == BitVecVal(idx, bits), value, result)
+            result = If(idx_var == idx_values[idx], value, result)
         return result
 
-    idx_values = _bitvec_values(len(values), bits)
     def build_select(lo: int, hi: int, default: T) -> T:
         if lo >= hi:
             return default
@@ -184,8 +193,9 @@ def _build_program(spec: ProgramSpec, options: EncodingOptions) -> List[BoolRef]
     ops = [BitVec(f"OP_{instr}", OP_BITS) for instr in range(spec.program_length)]
     src1s = [BitVec(f"S1_{instr}", spec.idx_bits) for instr in range(spec.program_length)]
     src2s = [BitVec(f"S2_{instr}", spec.idx_bits) for instr in range(spec.program_length)]
+    idx_values = _bitvec_values(spec.total_sources, spec.idx_bits)
     xor_operator = OP_BY_LABEL.get('XOR')
-    xor_code = BitVecVal(xor_operator.code, OP_BITS) if xor_operator is not None else None
+    xor_code = OP_CODE_BV_BY_CODE[xor_operator.code] if xor_operator is not None else None
 
     for instr in range(spec.program_length):
         idx = spec.num_inputs + 1 + instr  # inputs + const1 + previous temps
@@ -353,6 +363,7 @@ def _build_test(
     ops = [BitVec(f"OP_{instr}", OP_BITS) for instr in range(spec.program_length)]
     src1s = [BitVec(f"S1_{instr}", spec.idx_bits) for instr in range(spec.program_length)]
     src2s = [BitVec(f"S2_{instr}", spec.idx_bits) for instr in range(spec.program_length)]
+    idx_values = _bitvec_values(spec.total_sources, spec.idx_bits)
 
     for instr in range(spec.program_length):
         op = ops[instr]
@@ -371,8 +382,8 @@ def _build_test(
                 constraints.append(Implies(src1_idx, left_expr == value))
                 constraints.append(Implies(src2_idx, right_expr == value))
         else:
-            left_expr = _select_bv(values, src1, spec.idx_bits, balanced=options.balanced_select)
-            right_expr = _select_bv(values, src2, spec.idx_bits, balanced=options.balanced_select)
+            left_expr = _select_bv(values, src1, spec.idx_bits, balanced=options.balanced_select, idx_values=idx_values)
+            right_expr = _select_bv(values, src2, spec.idx_bits, balanced=options.balanced_select, idx_values=idx_values)
 
         gate_expr = _operator_expr(op, left_expr, right_expr)
 
@@ -389,7 +400,7 @@ def _build_test(
                 constraints.append(Implies(selector_idx, out_expr == value))
             outputs.append(out_expr)
         else:
-            outputs.append(_select_bv(values, selector, spec.idx_bits, balanced=options.balanced_select))
+            outputs.append(_select_bv(values, selector, spec.idx_bits, balanced=options.balanced_select, idx_values=idx_values))
 
     return constraints, outputs
 
