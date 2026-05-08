@@ -30,6 +30,7 @@ from z3 import (
     BitVecRef,
     Goal,
     BitVecNumRef,
+    ModelRef,
 )
 
 from dataset_plugins import Example, IOList, get_plugin, get_plugin_config, available_plugins
@@ -316,6 +317,7 @@ def _build_test(
     """
     if spec.program_length < 0:
         raise ValueError("program_length must be non-negative")
+    _ensure_int_string_digit_limit(width, logging.getLogger(__name__))
 
     constraints: List[Union[BoolRef, Literal[False]]] = []
 
@@ -487,6 +489,62 @@ def _make_solver(solver_choice: str) -> Solver:
         return ctx_simplify_tactic.solver()
 
     raise ValueError(f"Unsupported solver choice: {solver_choice}")
+
+
+def _add_example_constraints(
+    solver: Solver,
+    examples: List[Example],
+    tag: str,
+    spec: ProgramSpec,
+    options: EncodingOptions,
+    logger: logging.Logger,
+) -> None:
+    width, input_vals, output_vals, output_masks = _pack_examples_to_bitvectors(examples, spec.num_inputs, spec.num_outputs)
+    _ensure_int_string_digit_limit(width, logger)
+    constraints, outputs = _build_test(width, input_vals, tag=tag, spec=spec, options=options)
+    solver.add(*constraints)
+    for j in range(spec.num_outputs):
+        if output_masks[j] != 0:
+            solver.add((outputs[j] | output_masks[j]) == (BitVecVal(output_vals[j], width) | output_masks[j]))
+        else:
+            solver.add(outputs[j] == BitVecVal(output_vals[j], width))
+
+
+def _extract_program_from_model(
+    model: ModelRef,
+    spec: ProgramSpec,
+) -> Tuple[List[Tuple[Optional[int], int, int]], List[int]]:
+    instrs: List[Tuple[Optional[int], int, int]] = []
+
+    def eval_bv_as_long(name: str, ref: BitVecRef) -> int:
+        value = model.evaluate(ref, model_completion=True)
+        if not isinstance(value, BitVecNumRef):
+            raise RuntimeError(f"Model did not provide a concrete value for {name}: {value}")
+        return value.as_long()
+
+    for instr in range(spec.program_length):
+        op_ref = BitVec(f"OP_{instr}", OP_BITS)
+        s1_ref = BitVec(f"S1_{instr}", spec.idx_bits)
+        s2_ref = BitVec(f"S2_{instr}", spec.idx_bits)
+        op_val = eval_bv_as_long(f"OP_{instr}", op_ref)
+        s1_val = eval_bv_as_long(f"S1_{instr}", s1_ref)
+        s2_val = eval_bv_as_long(f"S2_{instr}", s2_ref)
+        operator = OP_BY_CODE.get(op_val)
+
+        if operator is not None:
+            instrs.append((op_val, s1_val, s2_val))
+        else:
+            instrs.append((None, s1_val, s2_val))
+
+    outputs: List[int] = []
+    for out_idx in range(spec.num_outputs):
+        selector = BitVec(f"OUT_{out_idx}_idx", spec.idx_bits)
+        outputs.append(eval_bv_as_long(f"OUT_{out_idx}_idx", selector))
+
+    if len(outputs) != spec.num_outputs:
+        raise RuntimeError(f"Model provided {len(outputs)} outputs, expected {spec.num_outputs}")
+
+    return instrs, outputs
 
 
 def _export_blif(examples: List[Example], num_inputs: int, num_outputs: int) -> None:
@@ -2030,6 +2088,9 @@ def main() -> None:
 
     parser.add_argument("--instructions", type=int, default=None, help="Override number of SSA instructions")
     parser.add_argument("--batch-size", type=int, default=None, help="Number of examples to add to each bit-vector-encoded batch (default: all examples)")
+    parser.add_argument("--cegis", action="store_true", help="Use a counterexample-guided loop instead of adding all examples up front")
+    parser.add_argument("--cegis-initial-size", type=int, default=64, help="Initial number of examples for --cegis")
+    parser.add_argument("--cegis-counterexamples", type=int, default=1, help="Maximum counterexamples to add per CEGIS iteration")
 
     parser.add_argument("--make-smt2", action="store_true", help="Output the problem in SMT-LIB2 format and exit")
     parser.add_argument("--make-dimacs", action="store_true", help="Output the problem in DIMACS CNF format and exit (uses bit-blasting followed by Tseitin transformation)")
@@ -2077,6 +2138,14 @@ def main() -> None:
         raise SystemExit("--post-process-resynthesis-maxnodes must be at least 2")
     if args.post_process_resynthesis_patience < 0:
         raise SystemExit("--post-process-resynthesis-patience must be non-negative")
+    if args.cegis_initial_size <= 0:
+        raise SystemExit("--cegis-initial-size must be positive")
+    if args.cegis_counterexamples <= 0:
+        raise SystemExit("--cegis-counterexamples must be positive")
+    if args.cegis and args.do_all:
+        raise SystemExit("--cegis and --do-all are mutually exclusive")
+    if args.cegis and (args.make_smt2 or args.make_dimacs):
+        raise SystemExit("--cegis cannot be combined with --make-smt2 or --make-dimacs")
     post_process_score = [
         [metric.strip() for metric in phase.split(",") if metric.strip()]
         for phase in args.post_process_score.split(";")
@@ -2142,7 +2211,10 @@ def main() -> None:
     batch_size = args.batch_size if args.batch_size else len(examples)
     if batch_size <= 0:
         raise SystemExit("Batch size must be positive")
-    _ensure_int_string_digit_limit(min(batch_size, len(examples)), logger)
+    max_packed_examples = min(batch_size, len(examples))
+    if args.cegis:
+        max_packed_examples = min(max(args.cegis_initial_size, args.cegis_counterexamples), len(examples))
+    _ensure_int_string_digit_limit(max_packed_examples, logger)
 
     if args.make_blif:
         _export_blif(examples, spec.num_inputs, spec.num_outputs)
@@ -2172,28 +2244,77 @@ def main() -> None:
     start = time.time()
     result = None
     interrupted_during_generation = False
+    instrs: Optional[List[Tuple[Optional[int], int, int]]] = None
+    outputs: Optional[List[int]] = None
     try:
-        for batch_idx, offset in enumerate(range(0, len(examples), batch_size)):
-            batch = examples[offset: offset + batch_size]
-            width, input_vals, output_vals, output_masks = _pack_examples_to_bitvectors(batch, spec.num_inputs, spec.num_outputs)
-            constraints, outputs = _build_test(width, input_vals, tag=f"b{batch_idx}", spec=spec, options=options)
-            s.add(*constraints)
-            for j in range(spec.num_outputs):
-                if output_masks[j] != 0:
-                    s.add((outputs[j] | output_masks[j]) == (BitVecVal(output_vals[j], width) | output_masks[j]))
-                else:
-                    s.add(outputs[j] == BitVecVal(output_vals[j], width))
+        if args.cegis:
+            active_indices = set(range(min(args.cegis_initial_size, len(examples))))
+            initial_examples = [examples[idx] for idx in sorted(active_indices)]
+            _add_example_constraints(s, initial_examples, "cegis0", spec, options, logger)
+            logger.info(
+                "CEGIS initialized with %d/%d examples and %d solver assertions",
+                len(active_indices),
+                len(examples),
+                len(s.assertions()),
+            )
 
-            logger.info("Solver has %d assertions after batch %d", len(s.assertions()), batch_idx + 1)
-
-            if not args.make_smt2 and not args.make_dimacs and not args.do_all:
+            iteration = 0
+            while True:
                 result = s.check()
-
                 if str(result) != 'sat':
                     break
 
-                progress = min(offset + batch_size, len(examples))
-                logger.info("Processed %d/%d examples", progress, len(examples))
+                instrs, outputs = _extract_program_from_model(s.model(), spec)
+                mismatches = _verify_program(instrs, outputs, examples, spec.num_outputs)
+                if not mismatches:
+                    logger.info(
+                        "CEGIS converged after %d iterations with %d/%d constrained examples",
+                        iteration,
+                        len(active_indices),
+                        len(examples),
+                    )
+                    break
+
+                new_indices: List[int] = []
+                for idx, _ins, _expected, _actual in mismatches:
+                    if idx not in active_indices:
+                        new_indices.append(idx)
+                    if len(new_indices) >= args.cegis_counterexamples:
+                        break
+
+                if not new_indices:
+                    logger.error("CEGIS candidate failed on already constrained examples")
+                    result = None
+                    break
+
+                iteration += 1
+                for idx in new_indices:
+                    active_indices.add(idx)
+                counterexamples = [examples[idx] for idx in new_indices]
+                _add_example_constraints(s, counterexamples, f"cegis{iteration}", spec, options, logger)
+                logger.info(
+                    "CEGIS iteration %d added %d counterexample(s); %d/%d examples constrained; solver has %d assertions",
+                    iteration,
+                    len(new_indices),
+                    len(active_indices),
+                    len(examples),
+                    len(s.assertions()),
+                )
+        else:
+            for batch_idx, offset in enumerate(range(0, len(examples), batch_size)):
+                batch = examples[offset: offset + batch_size]
+                _add_example_constraints(s, batch, f"b{batch_idx}", spec, options, logger)
+
+                logger.info("Solver has %d assertions after batch %d", len(s.assertions()), batch_idx + 1)
+
+                if not args.make_smt2 and not args.make_dimacs and not args.do_all:
+                    result = s.check()
+
+                    if str(result) != 'sat':
+                        break
+
+                    progress = min(offset + batch_size, len(examples))
+                    logger.info("Processed %d/%d examples", progress, len(examples))
     except KeyboardInterrupt:
         interrupted_during_generation = True
 
@@ -2247,37 +2368,8 @@ def main() -> None:
         logger.info("SAT in %.3f seconds", elapsed)
 
         # Pretty-print a compact architecture summary: per-instruction (op, src indices)
-        m = s.model()
-
-        instrs: List[Tuple[Optional[int], int, int]] = []
-
-        def eval_bv_as_long(name: str, ref: BitVecRef) -> int:
-            value = m.evaluate(ref, model_completion=True)
-            if not isinstance(value, BitVecNumRef):
-                raise RuntimeError(f"Model did not provide a concrete value for {name}: {value}")
-            return value.as_long()
-
-        for instr in range(spec.program_length):
-            op_ref = BitVec(f"OP_{instr}", OP_BITS)
-            s1_ref = BitVec(f"S1_{instr}", spec.idx_bits)
-            s2_ref = BitVec(f"S2_{instr}", spec.idx_bits)
-            op_val = eval_bv_as_long(f"OP_{instr}", op_ref)
-            s1_val = eval_bv_as_long(f"S1_{instr}", s1_ref)
-            s2_val = eval_bv_as_long(f"S2_{instr}", s2_ref)
-            operator = OP_BY_CODE.get(op_val)
-
-            if operator is not None:
-                instrs.append((op_val, s1_val, s2_val))
-            else:
-                instrs.append((None, s1_val, s2_val))
-
-        outputs: List[int] = []
-        for out_idx in range(spec.num_outputs):
-            selector = BitVec(f"OUT_{out_idx}_idx", spec.idx_bits)
-            outputs.append(eval_bv_as_long(f"OUT_{out_idx}_idx", selector))
-
-        if len(outputs) != spec.num_outputs:
-            raise RuntimeError(f"Model provided {len(outputs)} outputs, expected {spec.num_outputs}")
+        if instrs is None or outputs is None:
+            instrs, outputs = _extract_program_from_model(s.model(), spec)
 
         # Post-process the synthesized program
         if args.post_process:

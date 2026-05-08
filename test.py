@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
 
 import io
+import json
+import sys
+import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
+
+from z3 import BitVecVal
 
 from main import (
     OP_BY_LABEL,
     EncodingOptions,
     ProgramSpec,
+    _add_example_constraints,
     _build_assumptions_from_file,
     _build_dataset_from_config,
     _build_program,
@@ -16,6 +22,7 @@ from main import (
     _decimal_digits_for_bitvector_width,
     _emit_program,
     _ensure_int_string_digit_limit,
+    main,
     _operator_sort_key,
     _post_process_program,
 )
@@ -89,6 +96,74 @@ class MainEncodingTests(unittest.TestCase):
 
         set_limit.assert_not_called()
         logger.warning.assert_not_called()
+
+    def test_add_example_constraints_checks_actual_batch_width(self) -> None:
+        solver = mock.Mock()
+        logger = mock.Mock()
+        spec = ProgramSpec(num_inputs=1, num_outputs=1, program_length=0)
+
+        with mock.patch("main._pack_examples_to_bitvectors", return_value=(15000, [0], [0], [0])), \
+             mock.patch("main._ensure_int_string_digit_limit") as ensure_limit, \
+             mock.patch("main._build_test", return_value=([], [BitVecVal(0, 15000)])):
+            _add_example_constraints(
+                solver,
+                [{"inputs": [False], "outputs": [False]}],
+                "cegis1",
+                spec,
+                EncodingOptions(),
+                logger,
+            )
+
+        ensure_limit.assert_called_once_with(15000, logger)
+
+    def test_build_test_checks_actual_width(self) -> None:
+        spec = ProgramSpec(num_inputs=1, num_outputs=1, program_length=0)
+
+        with mock.patch("main._ensure_int_string_digit_limit") as ensure_limit:
+            _build_test(15000, [0], "wide", spec, EncodingOptions())
+
+        self.assertEqual(ensure_limit.call_args.args[0], 15000)
+
+    def test_main_cegis_synthesizes_from_counterexamples(self) -> None:
+        config = {
+            "num_inputs": 2,
+            "num_outputs": 1,
+            "instructions": 1,
+            "examples": [
+                {"inputs": [False, False], "outputs": [False]},
+                {"inputs": [False, True], "outputs": [True]},
+                {"inputs": [True, False], "outputs": [True]},
+                {"inputs": [True, True], "outputs": [False]},
+            ],
+        }
+
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json") as file:
+            json.dump(config, file)
+            file.flush()
+
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            argv = [
+                "main.py",
+                "--config",
+                file.name,
+                "--instructions",
+                "1",
+                "--solver",
+                "z3",
+                "--cegis",
+                "--cegis-initial-size",
+                "1",
+                "--cegis-counterexamples",
+                "1",
+                "--no-shuffle",
+            ]
+            with mock.patch.object(sys, "argv", argv), redirect_stdout(stdout), redirect_stderr(stderr):
+                main()
+
+        self.assertIn("OUT0:", stdout.getvalue())
+        self.assertIn("CEGIS iteration", stderr.getvalue())
+        self.assertIn("All examples matched successfully", stderr.getvalue())
 
     def test_explicit_examples_preserve_output_dont_cares(self) -> None:
         examples, num_inputs, num_outputs, instructions = _build_dataset_from_config({
