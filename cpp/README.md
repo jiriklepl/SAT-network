@@ -14,8 +14,8 @@ cmake -S . -B build
 cmake --build build -j
 ```
 
-CMake finds the system Z3 installation and fetches `nlohmann/json` and
-`cxxopts` with `FetchContent`. Boost.Multiprecision is header-only.
+CMake finds the system Z3 installation and fetches `nlohmann/json`, `cxxopts`,
+and Catch2 with `FetchContent`. Boost.Multiprecision is header-only.
 
 ## Layout
 
@@ -26,6 +26,7 @@ CMake finds the system Z3 installation and fetches `nlohmann/json` and
 - `program.*`: program/data model, operator table, text emission, and packed verifier.
 - `encoding.*`: Z3 structure/example encoding, solver construction, and model extraction.
 - `solver.*`: solver orchestration, CEGIS, batching, timing, and verification result packaging.
+- `tests/`: modular Catch2 unit tests for core modules.
 
 ## Run
 
@@ -49,8 +50,10 @@ OUT0: T0
 ctest --test-dir build --output-on-failure
 ```
 
-The Python integration tests can also be run directly:
+CTest runs both the C++ unit test executable and the Python integration tests.
+They can also be run directly:
 
 ```bash
+build/cpp_unit_tests
 SAT_SYNTH_CPP=build/sat_synth_cpp python3 -m unittest test_cpp_solver
 ```

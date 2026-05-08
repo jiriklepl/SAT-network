@@ -1,0 +1,65 @@
+#include "datasets.hpp"
+#include "solver.hpp"
+
+#include <catch2/catch_test_macros.hpp>
+
+namespace {
+
+Config xor_config(int instructions) {
+    Config cfg;
+    cfg.num_inputs = 2;
+    cfg.num_outputs = 1;
+    cfg.instructions = instructions;
+    cfg.examples = {
+        {{false, false}, {false}},
+        {{false, true}, {true}},
+        {{true, false}, {true}},
+        {{true, true}, {false}},
+    };
+    return cfg;
+}
+
+}  // namespace
+
+TEST_CASE("solver reports SAT for CEGIS and batched solving") {
+    SolveOptions cegis;
+    cegis.cegis = true;
+    cegis.cegis_initial_size = 1;
+    cegis.cegis_counterexamples = 1;
+    SolveResult cegis_result = solve_config(xor_config(1), cegis);
+    REQUIRE(cegis_result.status == SolveStatus::Sat);
+    REQUIRE(cegis_result.program.has_value());
+    REQUIRE(cegis_result.mismatch_count == 0);
+    REQUIRE(cegis_result.elapsed_seconds >= 0.0);
+
+    SolveOptions batched;
+    batched.batch_size = 2;
+    SolveResult batched_result = solve_config(xor_config(1), batched);
+    REQUIRE(batched_result.status == SolveStatus::Sat);
+    REQUIRE(batched_result.program.has_value());
+    REQUIRE(batched_result.mismatch_count == 0);
+}
+
+TEST_CASE("solver reports UNSAT without a program") {
+    SolveResult unsat = solve_config(xor_config(0), SolveOptions{});
+    REQUIRE(unsat.status == SolveStatus::Unsat);
+    REQUIRE_FALSE(unsat.program.has_value());
+    REQUIRE(unsat.mismatch_count == 0);
+}
+
+TEST_CASE("solver propagates unsupported solver errors") {
+    SolveOptions options;
+    options.solver = "missing-solver";
+    REQUIRE_THROWS(solve_config(xor_config(1), options));
+}
+
+TEST_CASE("solver supports alternate encoding flags") {
+    SolveOptions options;
+    options.encoding.encode_boolean = true;
+    options.encoding.balanced_select = true;
+    options.encoding.force_useful = true;
+    SolveResult result = solve_config(xor_config(1), options);
+    REQUIRE(result.status == SolveStatus::Sat);
+    REQUIRE(result.program.has_value());
+    REQUIRE(result.mismatch_count == 0);
+}

@@ -2,12 +2,7 @@
 
 ## Near Term
 
-- Add focused tests for the new `solver.*` module and `SolveResult` behavior.
-- Add focused C++ unit-style tests for:
-  - `program.*` packed verification and source formatting
-  - `config.*` explicit config parsing and dataset dumping
-  - `datasets.*` generated dataset parity
-  - `cli.*` option parsing and validation
+- Continue expanding Catch2 edge-case coverage as new C++ modules and features are added.
 - Add CI coverage for CMake configure/build and `test_cpp_solver.py`.
 - Decide the supported compiler baseline and document it.
 
