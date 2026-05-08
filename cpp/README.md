@@ -25,6 +25,7 @@ CMake finds the system Z3 installation and fetches `nlohmann/json` and
 - `datasets.*`: C++ built-in dataset generators.
 - `program.*`: program/data model, operator table, text emission, and packed verifier.
 - `encoding.*`: Z3 structure/example encoding, solver construction, and model extraction.
+- `solver.*`: solver orchestration, CEGIS, batching, timing, and verification result packaging.
 
 ## Run
 

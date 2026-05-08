@@ -37,6 +37,7 @@ add_executable(sat_synth_cpp
   cpp/encoding.cpp
   cpp/program.cpp
   cpp/sat_synth_cpp.cpp
+  cpp/solver.cpp
 )
 target_include_directories(sat_synth_cpp PRIVATE ${Z3_INCLUDE_DIR})
 target_link_libraries(sat_synth_cpp PRIVATE ${Z3_LIBRARY} cxxopts::cxxopts nlohmann_json::nlohmann_json)

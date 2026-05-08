@@ -2,8 +2,7 @@
 
 ## Near Term
 
-- Add a `solver.*` module so `sat_synth_cpp.cpp` only handles CLI orchestration.
-- Introduce a structured `SolveResult` with status, program, elapsed time, and diagnostics.
+- Add focused tests for the new `solver.*` module and `SolveResult` behavior.
 - Add focused C++ unit-style tests for:
   - `program.*` packed verification and source formatting
   - `config.*` explicit config parsing and dataset dumping
