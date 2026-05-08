@@ -677,6 +677,7 @@ def _post_process_program(
     post_process_replace_patience: int = 50,
     post_process_resynthesis_maxnodes: int = 6,
     post_process_resynthesis_patience: int = 10,
+    post_process_generator_timeout: float = 0.0,
     post_process_score: Optional[List[Union[str, List[str]]]] = None,
 ) -> Tuple[List[Tuple[Optional[int], int, int]], List[int]]:
     """Post-process the synthesized program"""
@@ -688,6 +689,8 @@ def _post_process_program(
         raise ValueError("post_process_resynthesis_maxnodes must be at least 2")
     if post_process_resynthesis_patience < 0:
         raise ValueError("post_process_resynthesis_patience must be non-negative")
+    if post_process_generator_timeout < 0:
+        raise ValueError("post_process_generator_timeout must be non-negative")
     if not post_process_score:
         score_phases = [["program-length"]]
     elif all(isinstance(metric, str) for metric in post_process_score):
@@ -1200,11 +1203,39 @@ def _post_process_program(
         rebuild_users()
 
     active_rejection_counts: Optional[Dict[str, int]] = None
+    active_generator_name: Optional[str] = None
+    active_generator_start: Optional[float] = None
+
+    class GeneratorTimedOut(Exception):
+        pass
 
     def record_rejection(reason: str) -> None:
         if active_rejection_counts is None:
             return
         active_rejection_counts[reason] = active_rejection_counts.get(reason, 0) + 1
+
+    def current_generator_runtime() -> float:
+        if active_generator_start is None:
+            return 0.0
+        return time.monotonic() - active_generator_start
+
+    def check_generator_timeout() -> None:
+        if post_process_generator_timeout <= 0:
+            return
+        if active_generator_start is None:
+            return
+        if current_generator_runtime() >= post_process_generator_timeout:
+            raise GeneratorTimedOut
+
+    def remaining_generator_timeout_ms() -> Optional[int]:
+        if post_process_generator_timeout <= 0:
+            return None
+        if active_generator_start is None:
+            return None
+        remaining = post_process_generator_timeout - current_generator_runtime()
+        if remaining <= 0:
+            raise GeneratorTimedOut
+        return max(1, int(remaining * 1000))
 
     def process_materialized_candidate(
         strategy: str,
@@ -1248,6 +1279,7 @@ def _post_process_program(
         representative_by_signature: Dict[int, int] = {}
 
         for idx in topology_sorted_sources():
+            check_generator_timeout()
             signature = signatures[idx]
             representative = representative_by_signature.get(signature)
             if representative is None:
@@ -1272,6 +1304,7 @@ def _post_process_program(
 
         positions = topological_positions()
         for idx in topology_sorted_nodes(positions):
+            check_generator_timeout()
             node = dag[idx]
             dependency_cache: Dict[int, bool] = {}
             possible_idxs = [
@@ -1291,6 +1324,7 @@ def _post_process_program(
             patience = post_process_replace_patience
             valid_replacement_mask_cache: Dict[int, bool] = {current_masks[idx]: True}
             for op, s1, s2 in product:
+                check_generator_timeout()
                 candidate_mask = _apply_operator(op, current_masks[s1], current_masks[s2], 0) & all_examples_mask
                 valid_mask = valid_replacement_mask_cache.get(candidate_mask)
                 if valid_mask is None:
@@ -1326,6 +1360,7 @@ def _post_process_program(
 
         positions = topological_positions()
         for idx in topology_sorted_nodes(positions):
+            check_generator_timeout()
             node = dag[idx]
             if len(node.users) != 1 or idx in outputs:
                 continue
@@ -1346,6 +1381,7 @@ def _post_process_program(
             seen_regroupings: set[Tuple[int, int, int]] = set()
 
             for inner_a, inner_b, remaining_source in itertools.permutations([node.s1, node.s2, user_other_source], 3):
+                check_generator_timeout()
                 inner_sources = ordered_sources([inner_a, inner_b])
                 grouping_key = (inner_sources[0], inner_sources[1], remaining_source)
                 if grouping_key in seen_regroupings:
@@ -1388,6 +1424,7 @@ def _post_process_program(
         existing_nodes = existing_node_by_op_sources(positions)
 
         for idx in topology_sorted_nodes(positions):
+            check_generator_timeout()
             node = dag[idx]
             for child_idx, remaining_source in ((node.s1, node.s2), (node.s2, node.s1)):
                 child_node = dag.get(child_idx)
@@ -1397,6 +1434,7 @@ def _post_process_program(
                 seen_regroupings: set[Tuple[int, int, int]] = set()
                 sources = [child_node.s1, child_node.s2, remaining_source]
                 for inner_a, inner_b, outer_source in itertools.permutations(sources, 3):
+                    check_generator_timeout()
                     inner_s1, inner_s2 = ordered_pair(inner_a, inner_b, positions)
                     grouping_key = (inner_s1, inner_s2, outer_source)
                     if grouping_key in seen_regroupings:
@@ -1436,6 +1474,7 @@ def _post_process_program(
         sources_by_topology = topology_sorted_sources(positions)
 
         for idx in topology_sorted_nodes(positions):
+            check_generator_timeout()
             node = dag[idx]
             if len(node.users) != 1:
                 continue
@@ -1443,6 +1482,7 @@ def _post_process_program(
             user_mask = values[user_idx]
 
             for replacement in sources_by_topology:
+                check_generator_timeout()
                 if replacement == user_idx or values[replacement] != user_mask:
                     continue
                 dependency_cache: Dict[int, bool] = {}
@@ -1469,6 +1509,7 @@ def _post_process_program(
         positions = topological_positions()
 
         for idx in topology_sorted_nodes(positions):
+            check_generator_timeout()
             node = dag[idx]
             if node.op != XOR:
                 continue
@@ -1478,6 +1519,7 @@ def _post_process_program(
                 continue
 
             for common_source in set((left_node.s1, left_node.s2)).intersection((right_node.s1, right_node.s2)):
+                check_generator_timeout()
                 left_remaining = left_node.s2 if left_node.s1 == common_source else left_node.s1
                 right_remaining = right_node.s2 if right_node.s1 == common_source else right_node.s1
                 new_s1, new_s2 = ordered_pair(left_remaining, right_remaining, positions)
@@ -1506,11 +1548,13 @@ def _post_process_program(
         sources_by_topology = topology_sorted_sources(positions)
 
         for idx in topology_sorted_nodes(positions):
+            check_generator_timeout()
             node = dag[idx]
             original_sources = (node.s1, node.s2)
             for operand_idx, old_source in enumerate(original_sources):
                 old_key = source_topological_key(old_source, positions)
                 for replacement in sources_by_topology:
+                    check_generator_timeout()
                     if replacement == old_source or values[replacement] != values[old_source]:
                         continue
                     if source_topological_key(replacement, positions) >= old_key:
@@ -1595,7 +1639,11 @@ def _post_process_program(
             for out_idx, output_node in enumerate(window_outputs):
                 solver.add(local_outputs[out_idx] == BitVecVal(values[output_node], example_count))
 
+            timeout_ms = remaining_generator_timeout_ms()
+            if timeout_ms is not None:
+                solver.set("timeout", timeout_ms)
             result = solver.check()
+            check_generator_timeout()
             if str(result) != "sat":
                 return None, False
 
@@ -1671,8 +1719,10 @@ def _post_process_program(
                 if src in dag
             }
             while pending:
+                check_generator_timeout()
                 added = False
                 for idx in sorted(list(pending), key=lambda node_idx: source_topological_key(node_idx, positions)):
+                    check_generator_timeout()
                     if not outputs_limited_to_selected(idx, selected):
                         continue
                     pending.remove(idx)
@@ -1711,6 +1761,7 @@ def _post_process_program(
             stack: List[frozenset[int]] = [frozenset([root_idx])]
             seen_selected: set[frozenset[int]] = set()
             while stack:
+                check_generator_timeout()
                 selected = stack.pop()
                 if selected in seen_selected:
                     continue
@@ -1743,6 +1794,7 @@ def _post_process_program(
             windows.append(ResynthesisWindow("component-sat", nodes, window_outputs))
 
         for root_idx in topology_sorted_nodes(positions):
+            check_generator_timeout()
             closure = closed_dependency_closure(root_idx)
             if not closure:
                 continue
@@ -1758,6 +1810,7 @@ def _post_process_program(
 
         sat_results = 0
         for window_idx, window in enumerate(windows):
+            check_generator_timeout()
             if post_process_resynthesis_patience > 0 and sat_results >= post_process_resynthesis_patience:
                 break
 
@@ -1803,6 +1856,7 @@ def _post_process_program(
                 consider_candidate(candidate)
 
         for idx in topology_sorted_nodes(positions):
+            check_generator_timeout()
             node = dag[idx]
             s1 = node.s1
             s2 = node.s2
@@ -1876,9 +1930,11 @@ def _post_process_program(
         sources_by_topology = topology_sorted_sources(positions)
 
         for out_idx in range(num_outputs):
+            check_generator_timeout()
             sel_idx = outputs[out_idx]
             care_mask = expected_output_masks[out_idx]
             for cidx in sources_by_topology:
+                check_generator_timeout()
                 if source_topological_key(cidx, positions) >= source_topological_key(sel_idx, positions):
                     continue
                 if (values[cidx] & care_mask) != (expected_output_values[out_idx] & care_mask):
@@ -1897,6 +1953,7 @@ def _post_process_program(
         candidate_limit: int,
         seen_programs: set[ProgramKey],
     ) -> List[Candidate]:
+        nonlocal active_generator_name, active_generator_start
         result: List[Candidate] = []
         result_keys: Dict[ProgramKey, int] = {}
 
@@ -1937,7 +1994,7 @@ def _post_process_program(
             result.sort(key=lambda item: item[0])
             rebuild_result_keys()
 
-        for generator in (
+        generators = (
             generate_afterburner_candidates,
             generate_replacement_candidates,
             generate_adjustment_candidates,
@@ -1948,8 +2005,21 @@ def _post_process_program(
             generate_local_resynthesis_candidates,
             generate_simplification_candidates,
             generate_output_candidates,
-        ):
-            generator(consider_candidate)
+        )
+        for generator in generators:
+            active_generator_name = generator.__name__.removeprefix("generate_").removesuffix("_candidates")
+            active_generator_start = time.monotonic()
+            try:
+                generator(consider_candidate)
+            except GeneratorTimedOut:
+                logger.info(
+                    "Post-process generator %s timed out after %.3f seconds",
+                    active_generator_name,
+                    current_generator_runtime(),
+                )
+            finally:
+                active_generator_name = None
+                active_generator_start = None
         result.sort(key=lambda item: item[0])
         return result
 
@@ -2095,6 +2165,7 @@ def main() -> None:
     parser.add_argument("--post-process-replace-patience", type=int, default=50, help="Replacement attempts accepted per modified node before moving to the next node (0 means unlimited)")
     parser.add_argument("--post-process-resynthesis-maxnodes", type=int, default=5, help="Maximum one-fanout component window size considered by local SAT resynthesis")
     parser.add_argument("--post-process-resynthesis-patience", type=int, default=1, help="Maximum SAT calls made by local resynthesis per beam state (0 means unlimited)")
+    parser.add_argument("--generator-timeout", type=float, default=0.0, help="Maximum seconds spent in each post-process candidate generator (0 means unlimited)")
     parser.add_argument(
         "--post-process-score",
         type=str,
@@ -2163,6 +2234,8 @@ def main() -> None:
         raise SystemExit("--post-process-resynthesis-maxnodes must be at least 2")
     if args.post_process_resynthesis_patience < 0:
         raise SystemExit("--post-process-resynthesis-patience must be non-negative")
+    if args.generator_timeout < 0:
+        raise SystemExit("--generator-timeout must be non-negative")
     if args.cegis_initial_size <= 0:
         raise SystemExit("--cegis-initial-size must be positive")
     if args.cegis_counterexamples <= 0:
@@ -2411,6 +2484,7 @@ def main() -> None:
                 post_process_replace_patience=args.post_process_replace_patience,
                 post_process_resynthesis_maxnodes=args.post_process_resynthesis_maxnodes,
                 post_process_resynthesis_patience=args.post_process_resynthesis_patience,
+                post_process_generator_timeout=args.generator_timeout,
                 post_process_score=post_process_score,
             )
 
