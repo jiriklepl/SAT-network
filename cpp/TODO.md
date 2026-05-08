@@ -8,11 +8,8 @@
 
 ## Dataset Parity
 
-- Add exact Python-vs-C++ dataset comparison coverage for every supported default dataset.
-- Decide how to handle state-space `max_examples` sampling:
-  - either reproduce Python's sampling exactly, or
-  - keep it unsupported and document the difference clearly.
-- Add compact fixture configs for expensive full state-space datasets.
+- Optionally implement Python-compatible `max_examples` sampling later.
+- Add more compact fixture configs when new parametric datasets are introduced.
 - Keep `--dump-dataset` stable enough for fixture-based regression tests.
 
 ## Solver Feature Parity

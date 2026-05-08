@@ -19,6 +19,15 @@ Clang 17 or newer, and system Z3 headers/library. CMake finds Z3 and fetches
 `nlohmann/json`, `cxxopts`, and Catch2 with `FetchContent`.
 Boost.Multiprecision is header-only.
 
+## Dataset Support
+
+C++ built-in dataset generation is intended to match Python plugin output
+exactly for deterministic configs, including row order and don't-care outputs.
+Full state-space generation is supported when `max_examples` is absent or is at
+least the full state-space size. Sampled state-space configs with
+`max_examples` smaller than the full state space are intentionally unsupported
+for now because the C++ generator does not reproduce Python's RNG sampling.
+
 ## Layout
 
 - `sat_synth_cpp.cpp`: executable orchestration, CEGIS loop, and batch solving loop.
