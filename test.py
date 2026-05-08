@@ -3,6 +3,7 @@
 import io
 import unittest
 from contextlib import redirect_stdout
+from unittest import mock
 
 from main import (
     OP_BY_LABEL,
@@ -12,7 +13,9 @@ from main import (
     _build_dataset_from_config,
     _build_program,
     _build_test,
+    _decimal_digits_for_bitvector_width,
     _emit_program,
+    _ensure_int_string_digit_limit,
     _operator_sort_key,
     _post_process_program,
 )
@@ -63,6 +66,30 @@ def _eval_assumption_lines(lines: list[str], inputs: list[bool], num_outputs: in
 
 
 class MainEncodingTests(unittest.TestCase):
+    def test_int_string_digit_limit_raised_for_wide_example_vectors(self) -> None:
+        logger = mock.Mock()
+        set_limit = mock.Mock()
+        width = 15000
+        required_digits = _decimal_digits_for_bitvector_width(width)
+
+        with mock.patch("main.sys.get_int_max_str_digits", return_value=4300), \
+             mock.patch("main.sys.set_int_max_str_digits", set_limit):
+            _ensure_int_string_digit_limit(width, logger)
+
+        set_limit.assert_called_once_with(required_digits)
+        logger.warning.assert_called_once()
+
+    def test_int_string_digit_limit_unchanged_under_default_limit(self) -> None:
+        logger = mock.Mock()
+        set_limit = mock.Mock()
+
+        with mock.patch("main.sys.get_int_max_str_digits", return_value=4300), \
+             mock.patch("main.sys.set_int_max_str_digits", set_limit):
+            _ensure_int_string_digit_limit(1024, logger)
+
+        set_limit.assert_not_called()
+        logger.warning.assert_not_called()
+
     def test_explicit_examples_preserve_output_dont_cares(self) -> None:
         examples, num_inputs, num_outputs, instructions = _build_dataset_from_config({
             "num_inputs": 1,

@@ -391,6 +391,37 @@ def _pack_examples_to_bitvectors(examples: List[Example], num_inputs: int, num_o
     return width, input_vals, output_vals, output_masks
 
 
+def _decimal_digits_for_bitvector_width(width: int) -> int:
+    if width <= 0:
+        return 1
+    return max(1, math.floor(width * math.log10(2)) + 1)
+
+
+def _ensure_int_string_digit_limit(width: int, logger: logging.Logger) -> None:
+    """Raise Python's int-to-string digit limit when packed examples need it."""
+    get_limit = getattr(sys, "get_int_max_str_digits", None)
+    set_limit = getattr(sys, "set_int_max_str_digits", None)
+    if get_limit is None or set_limit is None:
+        return
+
+    current_limit = get_limit()
+    if current_limit == 0:
+        return
+
+    required_digits = _decimal_digits_for_bitvector_width(width)
+    default_limit = getattr(sys.int_info, "default_max_str_digits", 4300)
+    if required_digits <= default_limit or required_digits <= current_limit:
+        return
+
+    set_limit(required_digits)
+    logger.warning(
+        "Raised Python int string conversion digit limit from %d to %d for %d packed examples",
+        current_limit,
+        required_digits,
+        width,
+    )
+
+
 def _load_config(config_path: Path) -> Dict[str, Any]:
     with config_path.open("r", encoding="utf-8") as f:
         return json.load(f)
@@ -2111,6 +2142,7 @@ def main() -> None:
     batch_size = args.batch_size if args.batch_size else len(examples)
     if batch_size <= 0:
         raise SystemExit("Batch size must be positive")
+    _ensure_int_string_digit_limit(min(batch_size, len(examples)), logger)
 
     if args.make_blif:
         _export_blif(examples, spec.num_inputs, spec.num_outputs)
