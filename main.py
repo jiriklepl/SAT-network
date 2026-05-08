@@ -127,20 +127,43 @@ class EncodingOptions:
     encode_boolean: bool = False
     force_ordered: bool = False
     force_useful: bool = False
+    balanced_select: bool = False
 
 
 T = TypeVar('T')
-def _select_bv(values: List[T], idx_var: Union[BitVecNumRef, BitVecRef], bits: int) -> T:
+
+
+def _bitvec_values(count: int, bits: int) -> List[BitVecNumRef]:
+    return [BitVecVal(idx, bits) for idx in range(count)]
+
+
+def _select_bv(values: List[T], idx_var: Union[BitVecNumRef, BitVecRef], bits: int, balanced: bool = False) -> T:
     if not values or len(values) == 0:
         raise ValueError("values must be a non-empty list")
+    if isinstance(idx_var, BitVecNumRef):
+        idx = idx_var.as_long()
+        if 0 <= idx < len(values):
+            return values[idx]
 
-    result : T = values[0]
-    for idx, value in enumerate(values):
-        if idx == 0:
-            continue
-        result = If(idx_var == BitVecVal(idx, bits), value, result)
+    if not balanced:
+        result: T = values[0]
+        for idx, value in enumerate(values):
+            if idx == 0:
+                continue
+            result = If(idx_var == BitVecVal(idx, bits), value, result)
+        return result
 
-    return result
+    idx_values = _bitvec_values(len(values), bits)
+    def build_select(lo: int, hi: int, default: T) -> T:
+        if lo >= hi:
+            return default
+        if hi - lo == 1:
+            return If(idx_var == idx_values[lo], values[lo], default)
+        mid = (lo + hi) // 2
+        right = build_select(mid, hi, default)
+        return build_select(lo, mid, right)
+
+    return build_select(1, len(values), values[0])
 
 
 def _build_program(spec: ProgramSpec, options: EncodingOptions) -> List[BoolRef]:
@@ -156,22 +179,29 @@ def _build_program(spec: ProgramSpec, options: EncodingOptions) -> List[BoolRef]
         raise ValueError("program_length must be non-negative")
 
     constraints: List[BoolRef] = []
+    idx_values = _bitvec_values(spec.total_sources, spec.idx_bits)
+    output_selectors = [BitVec(f"OUT_{out_idx}_idx", spec.idx_bits) for out_idx in range(spec.num_outputs)]
+    ops = [BitVec(f"OP_{instr}", OP_BITS) for instr in range(spec.program_length)]
+    src1s = [BitVec(f"S1_{instr}", spec.idx_bits) for instr in range(spec.program_length)]
+    src2s = [BitVec(f"S2_{instr}", spec.idx_bits) for instr in range(spec.program_length)]
+    xor_operator = OP_BY_LABEL.get('XOR')
+    xor_code = BitVecVal(xor_operator.code, OP_BITS) if xor_operator is not None else None
 
     for instr in range(spec.program_length):
         idx = spec.num_inputs + 1 + instr  # inputs + const1 + previous temps
         max_idx = idx - 1
-        max_idx_bv = BitVecVal(max_idx, spec.idx_bits)
+        max_idx_bv = idx_values[max_idx]
 
-        op = BitVec(f"OP_{instr}", OP_BITS)
-        src1 = BitVec(f"S1_{instr}", spec.idx_bits)
-        src2 = BitVec(f"S2_{instr}", spec.idx_bits)
+        op = ops[instr]
+        src1 = src1s[instr]
+        src2 = src2s[instr]
 
         # Force uniqueness of (op, src1, src2) tuples
         if options.force_ordered:
             if instr > 0:
-                pre_op = BitVec(f"OP_{instr-1}", OP_BITS)
-                pre_src1 = BitVec(f"S1_{instr-1}", spec.idx_bits)
-                pre_src2 = BitVec(f"S2_{instr-1}", spec.idx_bits)
+                pre_op = ops[instr - 1]
+                pre_src1 = src1s[instr - 1]
+                pre_src2 = src2s[instr - 1]
                 pre_rank = _operator_rank_expr(pre_op)
                 rank = _operator_rank_expr(op)
 
@@ -181,14 +211,12 @@ def _build_program(spec: ProgramSpec, options: EncodingOptions) -> List[BoolRef]
 
         # Force usefulness of each instruction
         if options.force_useful:
-            srcs = [BitVec(f"OUT_{out_idx}_idx", spec.idx_bits) == BitVecVal(idx, spec.idx_bits) for out_idx in range(spec.num_outputs)]
+            idx_bv = idx_values[idx]
+            srcs = [selector == idx_bv for selector in output_selectors]
 
             for next_instr in range(instr + 1, spec.program_length):
-                next_src1 = BitVec(f"S1_{next_instr}", spec.idx_bits)
-                next_src2 = BitVec(f"S2_{next_instr}", spec.idx_bits)
-
-                srcs.append(next_src1 == BitVecVal(idx, spec.idx_bits))
-                srcs.append(next_src2 == BitVecVal(idx, spec.idx_bits))
+                srcs.append(src1s[next_instr] == idx_bv)
+                srcs.append(src2s[next_instr] == idx_bv)
 
             constraints.append(Or(*srcs))
 
@@ -197,26 +225,24 @@ def _build_program(spec: ProgramSpec, options: EncodingOptions) -> List[BoolRef]
             for idx in range(max_idx + 1):
                 src1_idx = Bool(f"S1_{instr}_eq_{idx}")
                 src2_idx = Bool(f"S2_{instr}_eq_{idx}")
-                constraints.append(src1_idx == (src1 == BitVecVal(idx, spec.idx_bits)))
-                constraints.append(src2_idx == (src2 == BitVecVal(idx, spec.idx_bits)))
+                constraints.append(src1_idx == (src1 == idx_values[idx]))
+                constraints.append(src2_idx == (src2 == idx_values[idx]))
 
         constraints.append(_operator_constraint(op))
         constraints.append(ULE(src1, max_idx_bv))
         constraints.append(ULE(src2, max_idx_bv))
-        xor_operator = OP_BY_LABEL.get('XOR')
-        if xor_operator is None:
+        if xor_code is None:
             constraints.append(ULT(src1, src2))
         else:
-            constraints.append(Or(ULT(src1, src2), And(op == BitVecVal(xor_operator.code, OP_BITS), src1 == src2)))
+            constraints.append(Or(ULT(src1, src2), And(op == xor_code, src1 == src2)))
 
-    max_total_idx = BitVecVal(spec.total_sources - 1, spec.idx_bits)
-    for out_idx in range(spec.num_outputs):
-        selector = BitVec(f"OUT_{out_idx}_idx", spec.idx_bits)
+    max_total_idx = idx_values[spec.total_sources - 1]
+    for out_idx, selector in enumerate(output_selectors):
         constraints.append(ULE(selector, max_total_idx))
         if options.encode_boolean:
             for idx in range(spec.total_sources):
                 selector_idx = Bool(f"OUT_{out_idx}_eq_{idx}")
-                constraints.append(selector_idx == (selector == BitVecVal(idx, spec.idx_bits)))
+                constraints.append(selector_idx == (selector == idx_values[idx]))
 
     return constraints
 
@@ -322,13 +348,16 @@ def _build_test(
     constraints: List[Union[BoolRef, Literal[False]]] = []
 
     # Seed values with the batch input truth tables
-    values: List[Union[BitVecNumRef, BitVecRef]] = [BitVecVal(input_vals[j], width) for j in range(spec.num_inputs)]
-    values = [~BitVecVal(0, width)] + values  # constant 1
+    values: List[Union[BitVecNumRef, BitVecRef]] = [~BitVecVal(0, width)]
+    values.extend(BitVecVal(input_val, width) for input_val in input_vals)
+    ops = [BitVec(f"OP_{instr}", OP_BITS) for instr in range(spec.program_length)]
+    src1s = [BitVec(f"S1_{instr}", spec.idx_bits) for instr in range(spec.program_length)]
+    src2s = [BitVec(f"S2_{instr}", spec.idx_bits) for instr in range(spec.program_length)]
 
     for instr in range(spec.program_length):
-        op = BitVec(f"OP_{instr}", OP_BITS)
-        src1 = BitVec(f"S1_{instr}", spec.idx_bits)
-        src2 = BitVec(f"S2_{instr}", spec.idx_bits)
+        op = ops[instr]
+        src1 = src1s[instr]
+        src2 = src2s[instr]
         val = BitVec(f"VAL_{tag}_{instr}", width)
 
         if options.encode_boolean:
@@ -342,8 +371,8 @@ def _build_test(
                 constraints.append(Implies(src1_idx, left_expr == value))
                 constraints.append(Implies(src2_idx, right_expr == value))
         else:
-            left_expr = _select_bv(values, src1, spec.idx_bits)
-            right_expr = _select_bv(values, src2, spec.idx_bits)
+            left_expr = _select_bv(values, src1, spec.idx_bits, balanced=options.balanced_select)
+            right_expr = _select_bv(values, src2, spec.idx_bits, balanced=options.balanced_select)
 
         gate_expr = _operator_expr(op, left_expr, right_expr)
 
@@ -360,7 +389,7 @@ def _build_test(
                 constraints.append(Implies(selector_idx, out_expr == value))
             outputs.append(out_expr)
         else:
-            outputs.append(_select_bv(values, selector, spec.idx_bits))
+            outputs.append(_select_bv(values, selector, spec.idx_bits, balanced=options.balanced_select))
 
     return constraints, outputs
 
@@ -2195,6 +2224,7 @@ def main() -> None:
     parser.add_argument("--solver", type=str, choices=["z3", "simple-tactic", "ctx-simplify-tactic"], default="simple-tactic", help="Choose the Z3 solver or tactic to use")
 
     parser.add_argument("--encode-boolean", action="store_true", help="Enable boolean encoding")
+    parser.add_argument("--balanced-select", action="store_true", help="Use balanced ITE trees for bit-vector source/output selectors")
     parser.add_argument("--force-ordered", action="store_true", help="Enable constraint on ordered instructions")
     parser.add_argument("--force-useful", action="store_true", help="Enable constraint on useful instructions")
 
@@ -2213,6 +2243,7 @@ def main() -> None:
         encode_boolean=args.encode_boolean,
         force_ordered=args.force_ordered,
         force_useful=args.force_useful,
+        balanced_select=args.balanced_select,
     )
 
     if args.quiet:
