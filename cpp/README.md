@@ -10,12 +10,14 @@ post-processing, assumption files, BLIF output, SMT-LIB export, or DIMACS export
 ## Build
 
 ```bash
-cmake -S . -B build
-cmake --build build -j
+cmake --preset debug
+cmake --build --preset debug -j
 ```
 
-CMake finds the system Z3 installation and fetches `nlohmann/json`, `cxxopts`,
-and Catch2 with `FetchContent`. Boost.Multiprecision is header-only.
+The supported baseline is C++20, CMake 3.20 or newer, GCC 13 or newer or
+Clang 17 or newer, and system Z3 headers/library. CMake finds Z3 and fetches
+`nlohmann/json`, `cxxopts`, and Catch2 with `FetchContent`.
+Boost.Multiprecision is header-only.
 
 ## Layout
 
@@ -47,13 +49,13 @@ OUT0: T0
 ## Test
 
 ```bash
-ctest --test-dir build --output-on-failure
+ctest --test-dir build/debug --output-on-failure
 ```
 
 CTest runs both the C++ unit test executable and the Python integration tests.
 They can also be run directly:
 
 ```bash
-build/cpp_unit_tests
-SAT_SYNTH_CPP=build/sat_synth_cpp python3 -m unittest test_cpp_solver
+build/debug/cpp_unit_tests
+SAT_SYNTH_CPP=build/debug/sat_synth_cpp python3 -m unittest test_cpp_solver
 ```

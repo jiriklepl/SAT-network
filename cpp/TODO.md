@@ -3,8 +3,8 @@
 ## Near Term
 
 - Continue expanding Catch2 edge-case coverage as new C++ modules and features are added.
-- Add CI coverage for CMake configure/build and `test_cpp_solver.py`.
-- Decide the supported compiler baseline and document it.
+- Maintain GitHub Actions coverage as C++ dependencies and test targets change.
+- Add macOS CI once the Linux C++ baseline is stable.
 
 ## Dataset Parity
 
@@ -49,7 +49,7 @@
 
 ## Developer UX
 
-- Add CMake presets for debug, release, and sanitizer builds.
+- Add sanitizer CMake presets.
 - Add dependency setup notes for common Linux/macOS environments.
 - Add formatting/linting guidance if the C++ surface keeps growing.
 - Keep `cpp/README.md` current as module boundaries change.
