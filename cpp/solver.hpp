@@ -34,3 +34,4 @@ struct SolveResult {
 
 SolveResult solve_config(const Config &cfg, const SolveOptions &options);
 std::string make_smt2(const Config &cfg, const SolveOptions &options);
+std::string make_dimacs(const Config &cfg, const SolveOptions &options);

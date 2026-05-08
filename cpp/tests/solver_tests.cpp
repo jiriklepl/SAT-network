@@ -96,3 +96,11 @@ TEST_CASE("solver exports SMT2 with structure, assumptions, and examples") {
     REQUIRE(smt2.find("b1") != std::string::npos);
     REQUIRE(smt2.find("assert") != std::string::npos);
 }
+
+TEST_CASE("solver exports DIMACS CNF") {
+    SolveOptions options;
+    options.batch_size = 2;
+    std::string dimacs = make_dimacs(xor_config(1), options);
+    REQUIRE(dimacs.find("p cnf ") != std::string::npos);
+    REQUIRE(dimacs.find("c ") != std::string::npos);
+}

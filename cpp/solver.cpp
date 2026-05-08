@@ -143,3 +143,22 @@ std::string make_smt2(const Config &cfg, const SolveOptions &options) {
     add_all_example_constraints(ctx, solver, cfg, spec, options.encoding, options);
     return solver.to_smt2();
 }
+
+std::string make_dimacs(const Config &cfg, const SolveOptions &options) {
+    ProgramSpec spec{cfg.num_inputs, cfg.num_outputs, cfg.instructions};
+    z3::context ctx;
+    z3::solver solver = make_solver(ctx, options.solver);
+    add_exprs(solver, build_program(ctx, spec, options.encoding));
+    add_exprs(solver, build_assumption_constraints(ctx, spec, options.assumptions));
+    add_all_example_constraints(ctx, solver, cfg, spec, options.encoding, options);
+
+    z3::goal goal(ctx);
+    goal.add(solver.assertions());
+    z3::tactic tactic = z3::tactic(ctx, "simplify") & z3::tactic(ctx, "propagate-values") &
+                        z3::tactic(ctx, "bit-blast") & z3::tactic(ctx, "tseitin-cnf");
+    z3::apply_result result = tactic(goal);
+    if (result.size() != 1) {
+        throw std::runtime_error("DIMACS conversion produced multiple subgoals");
+    }
+    return result[0].dimacs();
+}

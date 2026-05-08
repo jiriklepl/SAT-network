@@ -1,6 +1,7 @@
 #include "program.hpp"
 
 #include <algorithm>
+#include <ostream>
 #include <stdexcept>
 
 using boost::multiprecision::cpp_int;
@@ -65,6 +66,16 @@ const char *op_label(int code) {
         }
     }
     return "?";
+}
+
+const std::vector<const char *> &op_blif_rows(int code) {
+    static const std::vector<const char *> and_rows = {"11 1"};
+    static const std::vector<const char *> xor_rows = {"10 1", "01 1"};
+    static const std::vector<const char *> or_rows = {"10 1", "01 1", "11 1"};
+    if (code == 0) return and_rows;
+    if (code == 1) return xor_rows;
+    if (code == 2) return or_rows;
+    throw std::runtime_error("Unsupported operation in BLIF output");
 }
 
 bool known_op(int code) {
@@ -166,4 +177,77 @@ void emit_program(std::ostream &out, const Program &program, int num_inputs) {
     for (std::size_t out_idx = 0; out_idx < program.outputs.size(); ++out_idx) {
         out << "OUT" << out_idx << ": " << format_source(program.outputs[out_idx], num_inputs) << "\n";
     }
+}
+
+void emit_program_blif(std::ostream &out, const Program &program, int num_inputs) {
+    out << ".model spec\n";
+    out << ".inputs";
+    for (int input_idx = 0; input_idx < num_inputs; ++input_idx) {
+        out << " I" << input_idx;
+    }
+    out << "\n.outputs";
+    for (std::size_t out_idx = 0; out_idx < program.outputs.size(); ++out_idx) {
+        out << " OUT" << out_idx;
+    }
+    out << "\n";
+
+    for (std::size_t instr_idx = 0; instr_idx < program.instrs.size(); ++instr_idx) {
+        const auto &instr = program.instrs[instr_idx];
+        if (!known_op(instr.op)) {
+            throw std::runtime_error("Unsupported operation in BLIF output");
+        }
+        if (instr.s1 == instr.s2) {
+            if (instr.op != 1) {
+                throw std::runtime_error("Only XOR may use duplicate sources in BLIF output");
+            }
+            out << ".names T" << instr_idx << "\n";
+        } else {
+            out << ".names " << format_source(instr.s1, num_inputs) << " "
+                << format_source(instr.s2, num_inputs) << " T" << instr_idx << "\n";
+            for (const char *row : op_blif_rows(instr.op)) {
+                out << row << "\n";
+            }
+        }
+    }
+
+    for (std::size_t out_idx = 0; out_idx < program.outputs.size(); ++out_idx) {
+        out << ".names " << format_source(program.outputs[out_idx], num_inputs) << " OUT" << out_idx << "\n";
+        out << "1 1\n";
+    }
+    out << ".end\n";
+}
+
+void export_spec_blif(std::ostream &out, const std::vector<Example> &examples, int num_inputs, int num_outputs) {
+    out << ".model synth_program\n";
+    out << ".inputs";
+    for (int input_idx = 0; input_idx < num_inputs; ++input_idx) {
+        out << " I" << input_idx;
+    }
+    out << "\n.outputs";
+    for (int out_idx = 0; out_idx < num_outputs; ++out_idx) {
+        out << " OUT" << out_idx;
+    }
+    out << "\n";
+
+    for (int out_idx = 0; out_idx < num_outputs; ++out_idx) {
+        out << ".names";
+        for (int input_idx = 0; input_idx < num_inputs; ++input_idx) {
+            out << " I" << input_idx;
+        }
+        out << " OUT" << out_idx << "\n";
+        for (const auto &example : examples) {
+            const auto &output = example.outputs[out_idx];
+            if (!output.has_value()) {
+                throw std::runtime_error("Cannot export BLIF with don't-care outputs");
+            }
+            if (*output) {
+                for (bool input : example.inputs) {
+                    out << (input ? '1' : '0');
+                }
+                out << " 1\n";
+            }
+        }
+    }
+
+    out << ".end\n";
 }

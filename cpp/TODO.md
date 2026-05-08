@@ -14,9 +14,6 @@
 
 ## Solver Feature Parity
 
-- Add `--make-dimacs`.
-- Add `--make-blif`.
-- Add `--output-blif`.
 - Keep quantified synthesis deferred until the explicit-example path is fully stable.
 - Keep post-processing deferred until solver/export parity is validated.
 

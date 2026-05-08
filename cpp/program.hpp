@@ -73,3 +73,5 @@ std::vector<std::size_t> verify_program(
     int num_inputs,
     int num_outputs);
 void emit_program(std::ostream &out, const Program &program, int num_inputs);
+void emit_program_blif(std::ostream &out, const Program &program, int num_inputs);
+void export_spec_blif(std::ostream &out, const std::vector<Example> &examples, int num_inputs, int num_outputs);

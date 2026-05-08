@@ -69,6 +69,10 @@ int main(int argc, char **argv) {
             std::cout << config_to_json(cfg).dump(2) << "\n";
             return 0;
         }
+        if (cli.make_blif) {
+            export_spec_blif(std::cout, cfg.examples, cfg.num_inputs, cfg.num_outputs);
+            return 0;
+        }
 
         if (!cli.no_shuffle) {
             std::mt19937 rng(cli.seed);
@@ -82,16 +86,30 @@ int main(int argc, char **argv) {
             std::cout << make_smt2(cfg, solve_options);
             return 0;
         }
+        if (cli.make_dimacs) {
+            std::cout << make_dimacs(cfg, solve_options);
+            return 0;
+        }
 
         log_info(cli, "Built program structure with " + std::to_string(cfg.instructions) + " instructions");
         SolveResult result = solve_config(cfg, solve_options);
         if (result.status == SolveStatus::Sat) {
-            emit_program(std::cout, *result.program, cfg.num_inputs);
+            if (cli.output_blif) {
+                emit_program_blif(std::cout, *result.program, cfg.num_inputs);
+            } else {
+                emit_program(std::cout, *result.program, cfg.num_inputs);
+            }
             log_info(cli, "SAT in " + std::to_string(result.elapsed_seconds) + " seconds");
             return 0;
         }
         if (result.status == SolveStatus::VerificationFailed) {
-            if (result.program.has_value()) emit_program(std::cout, *result.program, cfg.num_inputs);
+            if (result.program.has_value()) {
+                if (cli.output_blif) {
+                    emit_program_blif(std::cout, *result.program, cfg.num_inputs);
+                } else {
+                    emit_program(std::cout, *result.program, cfg.num_inputs);
+                }
+            }
             std::cerr << "Total mismatches: " << result.mismatch_count << "\n";
             return 1;
         }

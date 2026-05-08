@@ -22,6 +22,35 @@ TEST_CASE("program source formatting and text emission match Python format") {
     REQUIRE(emitted.str() == "T0: XOR(I0, I1)\nOUT0: T0\n");
 }
 
+TEST_CASE("program BLIF emission matches supported logic gates") {
+    Program program{{Instruction{0, 1, 2}, Instruction{1, 1, 2}, Instruction{2, 3, 4}}, {5}};
+    std::ostringstream emitted;
+    emit_program_blif(emitted, program, 2);
+    REQUIRE(emitted.str().find(".model spec\n") == 0);
+    REQUIRE(emitted.str().find(".names I0 I1 T0\n11 1\n") != std::string::npos);
+    REQUIRE(emitted.str().find(".names I0 I1 T1\n10 1\n01 1\n") != std::string::npos);
+    REQUIRE(emitted.str().find(".names T0 T1 T2\n10 1\n01 1\n11 1\n") != std::string::npos);
+    REQUIRE(emitted.str().find(".names T2 OUT0\n1 1\n.end\n") != std::string::npos);
+
+    Program duplicate_and{{Instruction{0, 1, 1}}, {2}};
+    REQUIRE_THROWS(emit_program_blif(emitted, duplicate_and, 1));
+}
+
+TEST_CASE("spec BLIF export emits truth table and rejects don't-cares") {
+    std::vector<Example> examples = {
+        {{false, false}, {false}},
+        {{false, true}, {true}},
+        {{true, false}, {true}},
+        {{true, true}, {false}},
+    };
+    std::ostringstream emitted;
+    export_spec_blif(emitted, examples, 2, 1);
+    REQUIRE(emitted.str() == ".model synth_program\n.inputs I0 I1\n.outputs OUT0\n.names I0 I1 OUT0\n01 1\n10 1\n.end\n");
+
+    std::vector<Example> dont_care = {{{false}, {std::nullopt}}};
+    REQUIRE_THROWS(export_spec_blif(emitted, dont_care, 1, 1));
+}
+
 TEST_CASE("packed verification accepts valid XOR and reports mismatches") {
     std::vector<Example> examples = {
         {{false, false}, {false}},

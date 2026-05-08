@@ -21,6 +21,9 @@ cxxopts::Options make_options() {
         ("list-datasets", "List built-in datasets")
         ("dump-dataset", "Print the generated dataset JSON and exit")
         ("make-smt2", "Output the problem in SMT-LIB2 format and exit")
+        ("make-dimacs", "Output the problem in DIMACS CNF format and exit")
+        ("make-blif", "Output the problem specification in BLIF format and exit")
+        ("output-blif", "Output the found program in BLIF format")
         ("instructions", "Override number of SSA instructions", cxxopts::value<int>())
         ("solver", "Solver to use: z3, simple-tactic, ctx-simplify-tactic", cxxopts::value<std::string>()->default_value("simple-tactic"))
         ("encode-boolean", "Enable boolean source/output selection encoding")
@@ -75,12 +78,17 @@ CliOptions parse_args(int argc, char **argv) {
     options.list_datasets = parsed.count("list-datasets") > 0;
     options.dump_dataset = parsed.count("dump-dataset") > 0;
     options.make_smt2 = parsed.count("make-smt2") > 0;
+    options.make_dimacs = parsed.count("make-dimacs") > 0;
+    options.make_blif = parsed.count("make-blif") > 0;
+    options.output_blif = parsed.count("output-blif") > 0;
 
     if (options.list_datasets) return options;
     if (options.config_path.empty() == options.dataset_name.empty()) {
         usage_error("exactly one of --config or --dataset is required");
     }
-    if (options.cegis && options.make_smt2) usage_error("--cegis cannot be combined with --make-smt2");
+    if (options.cegis && (options.make_smt2 || options.make_dimacs)) {
+        usage_error("--cegis cannot be combined with --make-smt2 or --make-dimacs");
+    }
     if (options.batch_size.has_value() && *options.batch_size == 0) usage_error("--batch-size must be positive");
     if (options.cegis_initial_size == 0) usage_error("--cegis-initial-size must be positive");
     if (options.cegis_counterexamples == 0) usage_error("--cegis-counterexamples must be positive");
