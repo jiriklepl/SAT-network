@@ -5,7 +5,7 @@ It supports JSON configs with explicit `examples` and C++-generated built-in
 datasets selected by config `type` or `--dataset`.
 
 It intentionally does not support Python plugin loading, quantified synthesis,
-post-processing, assumption files, BLIF output, SMT-LIB export, or DIMACS export.
+post-processing, BLIF output, or DIMACS export.
 
 ## Build
 
@@ -46,6 +46,7 @@ build/sat_synth_cpp --config path/to/config.json --cegis --cegis-initial-size 1
 build/sat_synth_cpp --dataset adder --cegis
 build/sat_synth_cpp --config typed-dataset.json --dump-dataset
 build/sat_synth_cpp --config path/to/config.json --assume path/to/program.txt
+build/sat_synth_cpp --config path/to/config.json --make-smt2
 build/sat_synth_cpp --list-datasets
 ```
 

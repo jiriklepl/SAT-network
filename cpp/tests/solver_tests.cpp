@@ -3,6 +3,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <string>
+
 namespace {
 
 Config xor_config(int instructions) {
@@ -78,4 +80,19 @@ TEST_CASE("solver applies assumptions before solving") {
     contradictory.assumptions.instructions.push_back({0, 0, 1, 1});
     SolveResult unsat = solve_config(xor_config(1), contradictory);
     REQUIRE(unsat.status == SolveStatus::Unsat);
+}
+
+TEST_CASE("solver exports SMT2 with structure, assumptions, and examples") {
+    SolveOptions options;
+    options.batch_size = 2;
+    options.assumptions.instructions.push_back({0, 1, 1, 2});
+    options.assumptions.outputs.push_back({0, 3});
+
+    std::string smt2 = make_smt2(xor_config(1), options);
+    REQUIRE(smt2.find("OP_0") != std::string::npos);
+    REQUIRE(smt2.find("S1_0") != std::string::npos);
+    REQUIRE(smt2.find("OUT_0_idx") != std::string::npos);
+    REQUIRE(smt2.find("b0") != std::string::npos);
+    REQUIRE(smt2.find("b1") != std::string::npos);
+    REQUIRE(smt2.find("assert") != std::string::npos);
 }

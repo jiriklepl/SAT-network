@@ -77,6 +77,23 @@ z3::check_result solve_with_batches(
     return result;
 }
 
+void add_all_example_constraints(
+    z3::context &ctx,
+    z3::solver &solver,
+    const Config &cfg,
+    const ProgramSpec &spec,
+    const EncodingOptions &encoding,
+    const SolveOptions &options
+) {
+    std::size_t batch_size = options.batch_size.value_or(cfg.examples.size());
+    for (std::size_t offset = 0, batch_idx = 0; offset < cfg.examples.size(); offset += batch_size, ++batch_idx) {
+        std::size_t end = std::min(offset + batch_size, cfg.examples.size());
+        std::vector<Example> batch(cfg.examples.begin() + static_cast<std::ptrdiff_t>(offset),
+                                   cfg.examples.begin() + static_cast<std::ptrdiff_t>(end));
+        add_example_constraints(ctx, solver, batch, "b" + std::to_string(batch_idx), spec, encoding);
+    }
+}
+
 SolveStatus map_status(z3::check_result result) {
     if (result == z3::sat) return SolveStatus::Sat;
     if (result == z3::unsat) return SolveStatus::Unsat;
@@ -115,4 +132,14 @@ SolveResult solve_config(const Config &cfg, const SolveOptions &options) {
         result.status = SolveStatus::VerificationFailed;
     }
     return result;
+}
+
+std::string make_smt2(const Config &cfg, const SolveOptions &options) {
+    ProgramSpec spec{cfg.num_inputs, cfg.num_outputs, cfg.instructions};
+    z3::context ctx;
+    z3::solver solver = make_solver(ctx, options.solver);
+    add_exprs(solver, build_program(ctx, spec, options.encoding));
+    add_exprs(solver, build_assumption_constraints(ctx, spec, options.assumptions));
+    add_all_example_constraints(ctx, solver, cfg, spec, options.encoding, options);
+    return solver.to_smt2();
 }

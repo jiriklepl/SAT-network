@@ -24,6 +24,7 @@ struct CliOptions {
     bool quiet = false;
     bool list_datasets = false;
     bool dump_dataset = false;
+    bool make_smt2 = false;
 };
 
 void print_usage(std::ostream &out);

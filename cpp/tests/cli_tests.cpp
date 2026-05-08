@@ -46,6 +46,13 @@ TEST_CASE("CLI parses supported solver options") {
     REQUIRE(options.quiet);
 }
 
+TEST_CASE("CLI parses SMT2 export option") {
+    const char *argv[] = {"sat_synth_cpp", "--dataset", "adder", "--make-smt2"};
+    CliOptions options = parse_args(static_cast<int>(std::size(argv)), const_cast<char **>(argv));
+    REQUIRE(options.dataset_name == "adder");
+    REQUIRE(options.make_smt2);
+}
+
 TEST_CASE("CLI validation rejects invalid combinations and counts") {
     const char *both_inputs[] = {"sat_synth_cpp", "--dataset", "adder", "--config", "x.json"};
     REQUIRE_THROWS(parse_args(static_cast<int>(std::size(both_inputs)), const_cast<char **>(both_inputs)));
@@ -61,6 +68,9 @@ TEST_CASE("CLI validation rejects invalid combinations and counts") {
 
     const char *zero_counterexamples[] = {"sat_synth_cpp", "--dataset", "adder", "--cegis-counterexamples", "0"};
     REQUIRE_THROWS(parse_args(static_cast<int>(std::size(zero_counterexamples)), const_cast<char **>(zero_counterexamples)));
+
+    const char *cegis_smt2[] = {"sat_synth_cpp", "--dataset", "adder", "--cegis", "--make-smt2"};
+    REQUIRE_THROWS(parse_args(static_cast<int>(std::size(cegis_smt2)), const_cast<char **>(cegis_smt2)));
 }
 
 TEST_CASE("CLI list-datasets works without config or dataset") {
@@ -77,5 +87,6 @@ TEST_CASE("usage text mentions main input modes") {
     REQUIRE(out.str().find("--config") != std::string::npos);
     REQUIRE(out.str().find("--dataset") != std::string::npos);
     REQUIRE(out.str().find("--assume") != std::string::npos);
+    REQUIRE(out.str().find("--make-smt2") != std::string::npos);
     REQUIRE(out.str().find("--list-datasets") != std::string::npos);
 }

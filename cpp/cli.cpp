@@ -20,6 +20,7 @@ cxxopts::Options make_options() {
         ("assume", "Path to a text file with assumed program bits, or - for stdin", cxxopts::value<std::string>())
         ("list-datasets", "List built-in datasets")
         ("dump-dataset", "Print the generated dataset JSON and exit")
+        ("make-smt2", "Output the problem in SMT-LIB2 format and exit")
         ("instructions", "Override number of SSA instructions", cxxopts::value<int>())
         ("solver", "Solver to use: z3, simple-tactic, ctx-simplify-tactic", cxxopts::value<std::string>()->default_value("simple-tactic"))
         ("encode-boolean", "Enable boolean source/output selection encoding")
@@ -73,11 +74,13 @@ CliOptions parse_args(int argc, char **argv) {
     options.quiet = parsed.count("quiet") > 0;
     options.list_datasets = parsed.count("list-datasets") > 0;
     options.dump_dataset = parsed.count("dump-dataset") > 0;
+    options.make_smt2 = parsed.count("make-smt2") > 0;
 
     if (options.list_datasets) return options;
     if (options.config_path.empty() == options.dataset_name.empty()) {
         usage_error("exactly one of --config or --dataset is required");
     }
+    if (options.cegis && options.make_smt2) usage_error("--cegis cannot be combined with --make-smt2");
     if (options.batch_size.has_value() && *options.batch_size == 0) usage_error("--batch-size must be positive");
     if (options.cegis_initial_size == 0) usage_error("--cegis-initial-size must be positive");
     if (options.cegis_counterexamples == 0) usage_error("--cegis-counterexamples must be positive");

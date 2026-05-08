@@ -78,6 +78,11 @@ int main(int argc, char **argv) {
         SolveOptions solve_options = make_solve_options(cli);
         solve_options.assumptions = load_assumptions(cli, cfg);
 
+        if (cli.make_smt2) {
+            std::cout << make_smt2(cfg, solve_options);
+            return 0;
+        }
+
         log_info(cli, "Built program structure with " + std::to_string(cfg.instructions) + " instructions");
         SolveResult result = solve_config(cfg, solve_options);
         if (result.status == SolveStatus::Sat) {
