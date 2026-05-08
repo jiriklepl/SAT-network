@@ -1,5 +1,6 @@
 #pragma once
 
+#include "assumptions.hpp"
 #include "datasets.hpp"
 #include "program.hpp"
 
@@ -17,6 +18,7 @@ enum class SolveStatus {
 struct SolveOptions {
     std::string solver = "simple-tactic";
     EncodingOptions encoding;
+    Assumptions assumptions;
     std::optional<std::size_t> batch_size;
     bool cegis = false;
     std::size_t cegis_initial_size = 64;

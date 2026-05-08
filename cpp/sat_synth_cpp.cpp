@@ -1,3 +1,4 @@
+#include "assumptions.hpp"
 #include "cli.hpp"
 #include "config.hpp"
 #include "datasets.hpp"
@@ -6,6 +7,7 @@
 
 #include <algorithm>
 #include <exception>
+#include <fstream>
 #include <iostream>
 #include <random>
 #include <stdexcept>
@@ -33,6 +35,23 @@ SolveOptions make_solve_options(const CliOptions &cli) {
     return options;
 }
 
+Assumptions load_assumptions(const CliOptions &cli, const Config &cfg) {
+    if (cli.assume_path.empty()) {
+        return {};
+    }
+
+    ProgramSpec spec{cfg.num_inputs, cfg.num_outputs, cfg.instructions};
+    if (cli.assume_path == "-") {
+        return parse_assumptions(std::cin, spec);
+    }
+
+    std::ifstream file(cli.assume_path);
+    if (!file) {
+        throw std::runtime_error("Assume file not found: " + cli.assume_path);
+    }
+    return parse_assumptions(file, spec);
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -56,8 +75,11 @@ int main(int argc, char **argv) {
             std::shuffle(cfg.examples.begin(), cfg.examples.end(), rng);
         }
 
+        SolveOptions solve_options = make_solve_options(cli);
+        solve_options.assumptions = load_assumptions(cli, cfg);
+
         log_info(cli, "Built program structure with " + std::to_string(cfg.instructions) + " instructions");
-        SolveResult result = solve_config(cfg, make_solve_options(cli));
+        SolveResult result = solve_config(cfg, solve_options);
         if (result.status == SolveStatus::Sat) {
             emit_program(std::cout, *result.program, cfg.num_inputs);
             log_info(cli, "SAT in " + std::to_string(result.elapsed_seconds) + " seconds");

@@ -49,6 +49,15 @@ int op_rank(int code) {
     throw std::runtime_error("unknown operator code");
 }
 
+int op_code_by_label(const std::string &label) {
+    for (const auto &op : logic_operators()) {
+        if (label == op.label) {
+            return op.code;
+        }
+    }
+    throw std::runtime_error("unknown operator label");
+}
+
 const char *op_label(int code) {
     for (const auto &op : logic_operators()) {
         if (op.code == code) {

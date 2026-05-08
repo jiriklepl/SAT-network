@@ -54,6 +54,7 @@ std::string cpp_int_to_string(const boost::multiprecision::cpp_int &value);
 boost::multiprecision::cpp_int all_ones(unsigned width);
 std::string bv_name(const std::string &prefix, int idx);
 int op_rank(int code);
+int op_code_by_label(const std::string &label);
 const char *op_label(int code);
 bool known_op(int code);
 boost::multiprecision::cpp_int apply_operator_mask(

@@ -14,7 +14,6 @@
 
 ## Solver Feature Parity
 
-- Add `--assume` support.
 - Add `--make-smt2`.
 - Add `--make-dimacs`.
 - Add `--make-blif`.

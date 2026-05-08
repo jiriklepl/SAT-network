@@ -63,3 +63,19 @@ TEST_CASE("solver supports alternate encoding flags") {
     REQUIRE(result.program.has_value());
     REQUIRE(result.mismatch_count == 0);
 }
+
+TEST_CASE("solver applies assumptions before solving") {
+    SolveOptions options;
+    options.assumptions.instructions.push_back({0, 1, 1, 2});
+    options.assumptions.outputs.push_back({0, 3});
+    SolveResult result = solve_config(xor_config(1), options);
+    REQUIRE(result.status == SolveStatus::Sat);
+    REQUIRE(result.program.has_value());
+    REQUIRE(result.program->instrs[0].op == 1);
+    REQUIRE(result.program->outputs[0] == 3);
+
+    SolveOptions contradictory;
+    contradictory.assumptions.instructions.push_back({0, 0, 1, 1});
+    SolveResult unsat = solve_config(xor_config(1), contradictory);
+    REQUIRE(unsat.status == SolveStatus::Unsat);
+}

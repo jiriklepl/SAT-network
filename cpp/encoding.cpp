@@ -239,6 +239,25 @@ std::vector<z3::expr> build_program(z3::context &ctx, const ProgramSpec &spec, c
     return constraints;
 }
 
+std::vector<z3::expr> build_assumption_constraints(z3::context &ctx, const ProgramSpec &spec, const Assumptions &assumptions) {
+    std::vector<z3::expr> constraints;
+    for (const auto &instr : assumptions.instructions) {
+        constraints.push_back(bv_const(ctx, bv_name("OP", instr.instr_idx), 2) == bv_val(ctx, static_cast<uint64_t>(instr.op), 2));
+        constraints.push_back(
+            bv_const(ctx, bv_name("S1", instr.instr_idx), spec.idx_bits()) ==
+            bv_val(ctx, static_cast<uint64_t>(instr.s1), spec.idx_bits()));
+        constraints.push_back(
+            bv_const(ctx, bv_name("S2", instr.instr_idx), spec.idx_bits()) ==
+            bv_val(ctx, static_cast<uint64_t>(instr.s2), spec.idx_bits()));
+    }
+    for (const auto &output : assumptions.outputs) {
+        constraints.push_back(
+            bv_const(ctx, "OUT_" + std::to_string(output.out_idx) + "_idx", spec.idx_bits()) ==
+            bv_val(ctx, static_cast<uint64_t>(output.source), spec.idx_bits()));
+    }
+    return constraints;
+}
+
 void add_exprs(z3::solver &solver, const std::vector<z3::expr> &exprs) {
     for (const auto &expr : exprs) solver.add(expr);
 }

@@ -37,6 +37,7 @@ if(NOT Z3_INCLUDE_DIR OR NOT Z3_LIBRARY)
 endif()
 
 add_library(sat_synth_core
+  cpp/assumptions.cpp
   cpp/cli.cpp
   cpp/config.cpp
   cpp/datasets.cpp
@@ -54,6 +55,7 @@ include(CTest)
 if(BUILD_TESTING)
   add_executable(cpp_unit_tests cpp/tests/cpp_unit_tests.cpp)
   target_sources(cpp_unit_tests PRIVATE
+    cpp/tests/assumptions_tests.cpp
     cpp/tests/cli_tests.cpp
     cpp/tests/config_tests.cpp
     cpp/tests/datasets_tests.cpp

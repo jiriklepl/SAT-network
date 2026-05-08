@@ -90,6 +90,7 @@ SolveResult solve_config(const Config &cfg, const SolveOptions &options) {
     z3::context ctx;
     z3::solver solver = make_solver(ctx, options.solver);
     add_exprs(solver, build_program(ctx, spec, options.encoding));
+    add_exprs(solver, build_assumption_constraints(ctx, spec, options.assumptions));
 
     auto start = std::chrono::steady_clock::now();
     std::optional<Program> program;

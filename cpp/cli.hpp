@@ -8,6 +8,7 @@
 struct CliOptions {
     std::string config_path;
     std::string dataset_name;
+    std::string assume_path;
     std::optional<int> instructions;
     std::string solver = "simple-tactic";
     bool encode_boolean = false;

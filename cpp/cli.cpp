@@ -17,6 +17,7 @@ cxxopts::Options make_options() {
     options.add_options()
         ("config", "Path to a JSON config", cxxopts::value<std::string>())
         ("dataset", "Choose a built-in dataset config", cxxopts::value<std::string>())
+        ("assume", "Path to a text file with assumed program bits, or - for stdin", cxxopts::value<std::string>())
         ("list-datasets", "List built-in datasets")
         ("dump-dataset", "Print the generated dataset JSON and exit")
         ("instructions", "Override number of SSA instructions", cxxopts::value<int>())
@@ -56,6 +57,7 @@ CliOptions parse_args(int argc, char **argv) {
     CliOptions options;
     if (parsed.count("config")) options.config_path = parsed["config"].as<std::string>();
     if (parsed.count("dataset")) options.dataset_name = parsed["dataset"].as<std::string>();
+    if (parsed.count("assume")) options.assume_path = parsed["assume"].as<std::string>();
     if (parsed.count("instructions")) options.instructions = parsed["instructions"].as<int>();
     options.solver = parsed["solver"].as<std::string>();
     options.encode_boolean = parsed.count("encode-boolean") > 0;

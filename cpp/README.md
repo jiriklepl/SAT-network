@@ -45,6 +45,7 @@ for now because the C++ generator does not reproduce Python's RNG sampling.
 build/sat_synth_cpp --config path/to/config.json --cegis --cegis-initial-size 1
 build/sat_synth_cpp --dataset adder --cegis
 build/sat_synth_cpp --config typed-dataset.json --dump-dataset
+build/sat_synth_cpp --config path/to/config.json --assume path/to/program.txt
 build/sat_synth_cpp --list-datasets
 ```
 
@@ -54,6 +55,9 @@ The emitted program uses the same text format as `main.py`:
 T0: XOR(I0, I1)
 OUT0: T0
 ```
+
+Assumption files use the same text format. Blank lines and lines starting with
+`#` are ignored. Use `--assume -` to read assumptions from stdin.
 
 ## Test
 

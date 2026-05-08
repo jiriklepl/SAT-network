@@ -11,6 +11,8 @@ TEST_CASE("CLI parses supported solver options") {
         "sat_synth_cpp",
         "--dataset",
         "adder",
+        "--assume",
+        "program.txt",
         "--instructions",
         "2",
         "--solver",
@@ -29,6 +31,7 @@ TEST_CASE("CLI parses supported solver options") {
     };
     CliOptions options = parse_args(static_cast<int>(std::size(argv)), const_cast<char **>(argv));
     REQUIRE(options.dataset_name == "adder");
+    REQUIRE(options.assume_path == "program.txt");
     REQUIRE(options.instructions.has_value());
     REQUIRE(*options.instructions == 2);
     REQUIRE(options.solver == "z3");
@@ -73,5 +76,6 @@ TEST_CASE("usage text mentions main input modes") {
     print_usage(out);
     REQUIRE(out.str().find("--config") != std::string::npos);
     REQUIRE(out.str().find("--dataset") != std::string::npos);
+    REQUIRE(out.str().find("--assume") != std::string::npos);
     REQUIRE(out.str().find("--list-datasets") != std::string::npos);
 }
