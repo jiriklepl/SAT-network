@@ -636,6 +636,24 @@ def _evaluate_program(
     return [values[selector] for selector in output_selectors]
 
 
+def _evaluate_program_masks(
+    instrs: List[Tuple[Optional[int], int, int]],
+    output_selectors: List[int],
+    input_masks: List[int],
+    all_examples_mask: int,
+) -> List[int]:
+    values: List[int] = [all_examples_mask] + list(input_masks)
+
+    for op, s1_idx, s2_idx in instrs:
+        if op is None:
+            val = 0
+        else:
+            val = _apply_operator(op, values[s1_idx], values[s2_idx], 0) & all_examples_mask
+        values.append(val)
+
+    return [values[selector] for selector in output_selectors]
+
+
 def _verify_program(
     instrs: List[Tuple[Optional[int], int, int]],
     output_selectors: List[int],
@@ -643,22 +661,37 @@ def _verify_program(
     num_outputs: int,
 ) -> List[Tuple[int, IOList, List[int], List[int]]]:
     mismatches: List[Tuple[int, IOList, List[int], List[int]]] = []
+    if not examples:
+        return mismatches
 
-    for idx, ex in enumerate(examples):
+    width = len(examples)
+    all_examples_mask = (1 << width) - 1
+    _width, input_masks, expected_output_values, output_dont_care_masks = _pack_examples_to_bitvectors(
+        examples,
+        len(examples[0]["inputs"]),
+        num_outputs,
+    )
+    actual_output_values = _evaluate_program_masks(instrs, output_selectors, input_masks, all_examples_mask)
+
+    mismatch_mask = 0
+    for out_idx in range(num_outputs):
+        care_mask = all_examples_mask ^ output_dont_care_masks[out_idx]
+        mismatch_mask |= (actual_output_values[out_idx] ^ expected_output_values[out_idx]) & care_mask
+
+    while mismatch_mask:
+        lowest_bit = mismatch_mask & -mismatch_mask
+        idx = lowest_bit.bit_length() - 1
+        mismatch_mask ^= lowest_bit
+        ex = examples[idx]
         ins = ex["inputs"]
         outs = ex["outputs"]
 
-        expected_outs_mask = [int(v is None) for v in outs]
-        expected_outs = [int(bool(v)) for v in outs]
-        actual_outs = _evaluate_program(instrs, output_selectors, ins)
-
-        for j in range(num_outputs):
-            if expected_outs_mask[j]:
-                actual_outs[j] = -1  # don't care
-                expected_outs[j] = -1  # don't care
-
-        if actual_outs != expected_outs:
-            mismatches.append((idx, ins, expected_outs, actual_outs))
+        expected_outs = [-1 if outs[out_idx] is None else int(bool(outs[out_idx])) for out_idx in range(num_outputs)]
+        actual_outs = [
+            -1 if outs[out_idx] is None else int((actual_output_values[out_idx] >> idx) & 1)
+            for out_idx in range(num_outputs)
+        ]
+        mismatches.append((idx, ins, expected_outs, actual_outs))
 
     return mismatches
 
@@ -1076,45 +1109,82 @@ def _post_process_program(
 
     def program_score(candidate_instrs: Program, candidate_outputs: List[int]) -> Score:
         score_parts: List[Any] = []
+        cached_instruction_depths: Optional[Dict[int, int]] = None
+        cached_output_depths: Optional[Tuple[int, ...]] = None
+        cached_tree_sizes: Optional[Dict[int, int]] = None
+        cached_output_cone_sizes: Optional[Tuple[int, ...]] = None
+        cached_fanouts: Optional[Tuple[int, ...]] = None
+
+        def get_instruction_depths() -> Dict[int, int]:
+            nonlocal cached_instruction_depths
+            if cached_instruction_depths is None:
+                cached_instruction_depths = instruction_depths(candidate_instrs)
+            return cached_instruction_depths
+
+        def get_output_depths() -> Tuple[int, ...]:
+            nonlocal cached_output_depths
+            if cached_output_depths is None:
+                depths = get_instruction_depths()
+                cached_output_depths = tuple(depths[sel_idx] for sel_idx in candidate_outputs)
+            return cached_output_depths
+
+        def get_tree_sizes() -> Dict[int, int]:
+            nonlocal cached_tree_sizes
+            if cached_tree_sizes is None:
+                cached_tree_sizes = instruction_tree_sizes(candidate_instrs)
+            return cached_tree_sizes
+
+        def get_output_cone_sizes() -> Tuple[int, ...]:
+            nonlocal cached_output_cone_sizes
+            if cached_output_cone_sizes is None:
+                cached_output_cone_sizes = output_cone_sizes(candidate_instrs, candidate_outputs)
+            return cached_output_cone_sizes
+
+        def get_fanouts() -> Tuple[int, ...]:
+            nonlocal cached_fanouts
+            if cached_fanouts is None:
+                cached_fanouts = instruction_fanouts(candidate_instrs, candidate_outputs)
+            return cached_fanouts
+
         for metric, reverse_sort in active_score_metric_specs:
             if metric == "program-length":
                 value = len(candidate_instrs)
             elif metric == "output-depth":
-                value = output_depths(candidate_instrs, candidate_outputs)
+                value = get_output_depths()
             elif metric == "max-output-depth":
-                depths = output_depths(candidate_instrs, candidate_outputs)
+                depths = get_output_depths()
                 value = max(depths, default=0)
             elif metric == "sum-output-depth":
-                depths = output_depths(candidate_instrs, candidate_outputs)
+                depths = get_output_depths()
                 value = sum(depths)
             elif metric == "total-node-depth":
-                depths_by_idx = instruction_depths(candidate_instrs)
+                depths_by_idx = get_instruction_depths()
                 value = sum(depths_by_idx[num_inputs + 1 + instr_idx] for instr_idx in range(len(candidate_instrs)))
             elif metric == "total-tree-size":
-                tree_sizes_by_idx = instruction_tree_sizes(candidate_instrs)
+                tree_sizes_by_idx = get_tree_sizes()
                 value = sum(tree_sizes_by_idx[num_inputs + 1 + instr_idx] for instr_idx in range(len(candidate_instrs)))
             elif metric == "operator-cost":
                 value = operator_cost(candidate_instrs)
             elif metric == "xor-count":
                 value = sum(1 for op, _s1, _s2 in candidate_instrs if op == OP_BY_LABEL["XOR"].code)
             elif metric == "output-cone-size":
-                value = output_cone_sizes(candidate_instrs, candidate_outputs)
+                value = get_output_cone_sizes()
             elif metric == "max-output-cone-size":
-                cone_sizes = output_cone_sizes(candidate_instrs, candidate_outputs)
+                cone_sizes = get_output_cone_sizes()
                 value = max(cone_sizes, default=0)
             elif metric == "sum-output-cone-size":
-                cone_sizes = output_cone_sizes(candidate_instrs, candidate_outputs)
+                cone_sizes = get_output_cone_sizes()
                 value = sum(cone_sizes)
             elif metric == "fanout":
-                value = instruction_fanouts(candidate_instrs, candidate_outputs)
+                value = get_fanouts()
             elif metric == "max-fanout":
-                fanouts = instruction_fanouts(candidate_instrs, candidate_outputs)
+                fanouts = get_fanouts()
                 value = max(fanouts, default=0)
             elif metric == "sum-fanout":
-                fanouts = instruction_fanouts(candidate_instrs, candidate_outputs)
+                fanouts = get_fanouts()
                 value = sum(fanouts)
             elif metric == "one-fanout-count":
-                fanouts = instruction_fanouts(candidate_instrs, candidate_outputs)
+                fanouts = get_fanouts()
                 value = sum(1 for fanout in fanouts if fanout == 1)
             elif metric == "independent-pairs":
                 value = independent_instruction_pairs(candidate_instrs)
