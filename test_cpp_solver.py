@@ -305,7 +305,94 @@ class CppSolverIntegrationTests(unittest.TestCase):
         }
         proc = self.run_cpp(config, "--cegis", "--make-smt2")
         self.assertEqual(proc.returncode, 2)
-        self.assertIn("--cegis cannot be combined with --make-smt2", proc.stderr)
+        self.assertIn("--cegis cannot be combined with --make-smt2 or --make-dimacs", proc.stderr)
+
+    def test_make_dimacs_outputs_cnf(self) -> None:
+        config = {
+            "num_inputs": 2,
+            "num_outputs": 1,
+            "instructions": 1,
+            "examples": [
+                {"inputs": [False, False], "outputs": [False]},
+                {"inputs": [False, True], "outputs": [True]},
+                {"inputs": [True, False], "outputs": [True]},
+                {"inputs": [True, True], "outputs": [False]},
+            ],
+        }
+        proc = self.run_cpp(config, "--make-dimacs", "--batch-size", "2", "--no-shuffle")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("p cnf ", proc.stdout)
+        self.assertNotIn("T0:", proc.stdout)
+
+    def test_cegis_make_dimacs_is_rejected(self) -> None:
+        config = {
+            "num_inputs": 1,
+            "num_outputs": 1,
+            "instructions": 0,
+            "examples": [{"inputs": [False], "outputs": [False]}],
+        }
+        proc = self.run_cpp(config, "--cegis", "--make-dimacs")
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("--cegis cannot be combined with --make-smt2 or --make-dimacs", proc.stderr)
+
+    def test_make_blif_outputs_spec_truth_table(self) -> None:
+        config = {
+            "num_inputs": 2,
+            "num_outputs": 1,
+            "instructions": 1,
+            "examples": [
+                {"inputs": [False, False], "outputs": [False]},
+                {"inputs": [False, True], "outputs": [True]},
+                {"inputs": [True, False], "outputs": [True]},
+                {"inputs": [True, True], "outputs": [False]},
+            ],
+        }
+        proc = self.run_cpp(config, "--make-blif")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn(".model synth_program", proc.stdout)
+        self.assertIn(".inputs I0 I1", proc.stdout)
+        self.assertIn(".outputs OUT0", proc.stdout)
+        self.assertIn("01 1", proc.stdout)
+        self.assertIn("10 1", proc.stdout)
+        self.assertNotIn("T0:", proc.stdout)
+
+    def test_make_blif_rejects_dont_care_outputs(self) -> None:
+        config = {
+            "num_inputs": 1,
+            "num_outputs": 1,
+            "instructions": 0,
+            "examples": [{"inputs": [False], "outputs": [None]}],
+        }
+        proc = self.run_cpp(config, "--make-blif")
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("Cannot export BLIF with don't-care outputs", proc.stderr)
+
+    def test_output_blif_emits_solved_program(self) -> None:
+        config = {
+            "num_inputs": 2,
+            "num_outputs": 1,
+            "instructions": 1,
+            "examples": [
+                {"inputs": [False, False], "outputs": [False]},
+                {"inputs": [False, True], "outputs": [True]},
+                {"inputs": [True, False], "outputs": [True]},
+                {"inputs": [True, True], "outputs": [False]},
+            ],
+        }
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json") as file:
+            json.dump(config, file)
+            file.flush()
+            proc = self.run_cpp_args_with_input(
+                ["--config", file.name, "--output-blif", "--assume", "-"],
+                "T0: XOR(I0, I1)\nOUT0: T0\n",
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn(".model spec", proc.stdout)
+        self.assertIn(".names I0 I1 T0", proc.stdout)
+        self.assertIn("10 1", proc.stdout)
+        self.assertIn("01 1", proc.stdout)
+        self.assertIn(".names T0 OUT0", proc.stdout)
+        self.assertNotIn("T0:", proc.stdout)
 
     def test_dataset_flag_uses_builtin_config(self) -> None:
         cfg = get_plugin_config("adder")
