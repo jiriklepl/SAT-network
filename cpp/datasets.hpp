@@ -1,7 +1,10 @@
 #pragma once
 
+#include <boost/dynamic_bitset.hpp>
+
 #include <nlohmann/json.hpp>
 
+#include <initializer_list>
 #include <optional>
 #include <string>
 #include <vector>
@@ -9,8 +12,19 @@
 constexpr int kDefaultProgramLength = 16;
 
 struct Example {
-    std::vector<bool> inputs;
-    std::vector<std::optional<bool>> outputs;
+    boost::dynamic_bitset<> inputs;
+    boost::dynamic_bitset<> output_values;
+    boost::dynamic_bitset<> output_dont_care;
+
+    Example() = default;
+    Example(std::initializer_list<bool> input_values, std::initializer_list<std::optional<bool>> output_values);
+
+    std::size_t input_count() const;
+    std::size_t output_count() const;
+    bool input(std::size_t idx) const;
+    std::optional<bool> output(std::size_t idx) const;
+    void push_input(bool value);
+    void push_output(std::optional<bool> value);
 };
 
 struct Config {

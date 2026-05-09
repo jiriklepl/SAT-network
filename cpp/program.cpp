@@ -95,7 +95,7 @@ std::string format_source(int idx, int num_inputs) {
     return "T" + std::to_string(idx - num_inputs - 1);
 }
 
-PackedExamples pack_examples(const std::vector<Example> &examples, int num_inputs, int num_outputs) {
+PackedExamples pack_examples(std::span<const Example> examples, int num_inputs, int num_outputs) {
     PackedExamples packed;
     packed.width = static_cast<unsigned>(examples.size());
     packed.input_masks.assign(num_inputs, 0);
@@ -106,14 +106,15 @@ PackedExamples pack_examples(const std::vector<Example> &examples, int num_input
         cpp_int bit = cpp_int(1) << ex_idx;
         const auto &ex = examples[ex_idx];
         for (int input_idx = 0; input_idx < num_inputs; ++input_idx) {
-            if (ex.inputs[input_idx]) {
+            if (ex.input(static_cast<std::size_t>(input_idx))) {
                 packed.input_masks[input_idx] |= bit;
             }
         }
         for (int output_idx = 0; output_idx < num_outputs; ++output_idx) {
-            if (!ex.outputs[output_idx].has_value()) {
+            const std::size_t idx = static_cast<std::size_t>(output_idx);
+            if (ex.output_dont_care[idx]) {
                 packed.output_dont_care_masks[output_idx] |= bit;
-            } else if (*ex.outputs[output_idx]) {
+            } else if (ex.output_values[idx]) {
                 packed.output_values[output_idx] |= bit;
             }
         }
@@ -123,7 +124,7 @@ PackedExamples pack_examples(const std::vector<Example> &examples, int num_input
 
 std::vector<cpp_int> evaluate_program_masks(
     const Program &program,
-    const std::vector<cpp_int> &input_masks,
+    std::span<const cpp_int> input_masks,
     const cpp_int &all_examples_mask
 ) {
     std::vector<cpp_int> values;
@@ -142,7 +143,7 @@ std::vector<cpp_int> evaluate_program_masks(
 
 std::vector<std::size_t> verify_program(
     const Program &program,
-    const std::vector<Example> &examples,
+    std::span<const Example> examples,
     int num_inputs,
     int num_outputs
 ) {
@@ -214,7 +215,7 @@ void emit_program_blif(std::ostream &out, const Program &program, int num_inputs
     out << ".end\n";
 }
 
-void export_spec_blif(std::ostream &out, const std::vector<Example> &examples, int num_inputs, int num_outputs) {
+void export_spec_blif(std::ostream &out, std::span<const Example> examples, int num_inputs, int num_outputs) {
     out << ".model synth_program\n";
     out << ".inputs";
     for (int input_idx = 0; input_idx < num_inputs; ++input_idx) {
@@ -233,13 +234,13 @@ void export_spec_blif(std::ostream &out, const std::vector<Example> &examples, i
         }
         out << " OUT" << out_idx << "\n";
         for (const auto &example : examples) {
-            const auto &output = example.outputs[out_idx];
+            const auto output = example.output(static_cast<std::size_t>(out_idx));
             if (!output.has_value()) {
                 throw std::runtime_error("Cannot export BLIF with don't-care outputs");
             }
             if (*output) {
-                for (bool input : example.inputs) {
-                    out << (input ? '1' : '0');
+                for (int input_idx = 0; input_idx < num_inputs; ++input_idx) {
+                    out << (example.input(static_cast<std::size_t>(input_idx)) ? '1' : '0');
                 }
                 out << " 1\n";
             }

@@ -28,7 +28,6 @@
   - model extraction
   - packed verification
 - Cache common Z3 constants and selector values.
-- Avoid copying example batches where spans or index ranges are enough.
 - Consider a word-vector packed mask representation before falling back to `cpp_int`.
 - Measure whether balanced selectors, boolean encoding, and tactic choices should have dataset-specific defaults.
 

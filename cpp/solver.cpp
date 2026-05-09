@@ -2,11 +2,14 @@
 
 #include "encoding.hpp"
 
+#include <boost/dynamic_bitset.hpp>
+
 #include <z3++.h>
 
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -22,14 +25,18 @@ z3::check_result solve_with_cegis(
     const SolveOptions &options,
     std::optional<Program> &program
 ) {
-    std::vector<bool> active(cfg.examples.size(), false);
-    std::vector<Example> initial;
+    boost::dynamic_bitset<> active(cfg.examples.size());
     const std::size_t initial_count = std::min(options.cegis_initial_size, cfg.examples.size());
     for (std::size_t idx = 0; idx < initial_count; ++idx) {
         active[idx] = true;
-        initial.push_back(cfg.examples[idx]);
     }
-    add_example_constraints(ctx, solver, initial, "cegis0", spec, encoding);
+    add_example_constraints(
+        ctx,
+        solver,
+        std::span<const Example>(cfg.examples.begin(), initial_count),
+        "cegis0",
+        spec,
+        encoding);
 
     std::size_t iteration = 0;
     while (true) {
@@ -41,6 +48,7 @@ z3::check_result solve_with_cegis(
         if (mismatches.empty()) return result;
 
         std::vector<Example> counterexamples;
+        counterexamples.reserve(options.cegis_counterexamples);
         for (std::size_t idx : mismatches) {
             if (!active[idx]) {
                 active[idx] = true;
@@ -68,9 +76,13 @@ z3::check_result solve_with_batches(
     const std::size_t batch_size = options.batch_size.value_or(cfg.examples.size());
     for (std::size_t offset = 0, batch_idx = 0; offset < cfg.examples.size(); offset += batch_size, ++batch_idx) {
         const std::size_t end = std::min(offset + batch_size, cfg.examples.size());
-        const std::vector<Example> batch(cfg.examples.begin() + static_cast<std::ptrdiff_t>(offset),
-                                         cfg.examples.begin() + static_cast<std::ptrdiff_t>(end));
-        add_example_constraints(ctx, solver, batch, "b" + std::to_string(batch_idx), spec, encoding);
+        add_example_constraints(
+            ctx,
+            solver,
+            std::span<const Example>(cfg.examples.begin() + offset, end - offset),
+            "b" + std::to_string(batch_idx),
+            spec,
+            encoding);
         result = solver.check();
         if (result != z3::sat) break;
     }
@@ -88,9 +100,13 @@ void add_all_example_constraints(
     std::size_t batch_size = options.batch_size.value_or(cfg.examples.size());
     for (std::size_t offset = 0, batch_idx = 0; offset < cfg.examples.size(); offset += batch_size, ++batch_idx) {
         const std::size_t end = std::min(offset + batch_size, cfg.examples.size());
-        const std::vector<Example> batch(cfg.examples.begin() + static_cast<std::ptrdiff_t>(offset),
-                                         cfg.examples.begin() + static_cast<std::ptrdiff_t>(end));
-        add_example_constraints(ctx, solver, batch, "b" + std::to_string(batch_idx), spec, encoding);
+        add_example_constraints(
+            ctx,
+            solver,
+            std::span<const Example>(cfg.examples.begin() + offset, end - offset),
+            "b" + std::to_string(batch_idx),
+            spec,
+            encoding);
     }
 }
 

@@ -59,17 +59,25 @@ TEST_CASE("dataset generator rejects unknown and unsupported sampled configs") {
 
 TEST_CASE("specific dataset rows match documented rules") {
     Config adder = build_dataset_from_config(nlohmann::json{{"type", "adder"}, {"num_inputs", 2}});
-    REQUIRE(adder.examples[0].inputs == std::vector<bool>{false, false});
-    REQUIRE(adder.examples[0].outputs.size() == 2);
-    REQUIRE(adder.examples[0].outputs[0] == false);
-    REQUIRE(adder.examples[0].outputs[1] == false);
-    REQUIRE(adder.examples[3].inputs == std::vector<bool>{true, true});
-    REQUIRE(adder.examples[3].outputs[0] == false);
-    REQUIRE(adder.examples[3].outputs[1] == true);
+    REQUIRE_FALSE(adder.examples[0].input(0));
+    REQUIRE_FALSE(adder.examples[0].input(1));
+    REQUIRE(adder.examples[0].output_count() == 2);
+    REQUIRE(adder.examples[0].output(0) == false);
+    REQUIRE(adder.examples[0].output(1) == false);
+    REQUIRE(adder.examples[3].input(0));
+    REQUIRE(adder.examples[3].input(1));
+    REQUIRE(adder.examples[3].output(0) == false);
+    REQUIRE(adder.examples[3].output(1) == true);
 
     Config critters = build_dataset_from_config(default_dataset_config("critters"));
-    REQUIRE(critters.examples.front().inputs == std::vector<bool>{false, false, false, false});
-    REQUIRE(critters.examples.front().outputs == std::vector<std::optional<bool>>{true, true, true, true});
+    REQUIRE_FALSE(critters.examples.front().input(0));
+    REQUIRE_FALSE(critters.examples.front().input(1));
+    REQUIRE_FALSE(critters.examples.front().input(2));
+    REQUIRE_FALSE(critters.examples.front().input(3));
+    REQUIRE(critters.examples.front().output(0) == true);
+    REQUIRE(critters.examples.front().output(1) == true);
+    REQUIRE(critters.examples.front().output(2) == true);
+    REQUIRE(critters.examples.front().output(3) == true);
 }
 
 TEST_CASE("compact deterministic parametric datasets are supported") {

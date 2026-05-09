@@ -1,35 +1,71 @@
 #include "datasets.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cstddef>
 #include <functional>
 #include <map>
+#include <span>
 #include <stdexcept>
 #include <tuple>
 
 namespace {
 
-using IOList = std::vector<std::optional<bool>>;
-using StateRule = std::function<std::vector<int>(const std::vector<int> &)>;
+struct BitList {
+    boost::dynamic_bitset<> values;
+    boost::dynamic_bitset<> dont_care;
+
+    BitList() = default;
+    BitList(std::initializer_list<bool> items) {
+        for (bool item : items) push_back(item);
+    }
+    BitList(std::initializer_list<std::optional<bool>> items) {
+        for (const auto &item : items) push_back(item);
+    }
+
+    std::size_t size() const {
+        return values.size();
+    }
+
+    void push_back(std::optional<bool> value) {
+        values.push_back(value.value_or(false));
+        dont_care.push_back(!value.has_value());
+    }
+
+    void append(const BitList &other) {
+        for (std::size_t idx = 0; idx < other.size(); ++idx) {
+            push_back(other[idx]);
+        }
+    }
+
+    std::optional<bool> operator[](std::size_t idx) const {
+        if (dont_care[idx]) return std::nullopt;
+        return values[idx];
+    }
+
+    bool operator==(const BitList &other) const {
+        return values == other.values && dont_care == other.dont_care;
+    }
+};
+
+using StateRule = std::function<std::vector<int>(std::span<const int>)>;
 using SummaryRule = std::function<int(int, int)>;
 
 constexpr int kMooreCells = 9;
 constexpr int kVonNeumannCells = 5;
 
-IOList bits(int value, int width) {
-    IOList result;
-    result.reserve(width);
+BitList bits(int value, int width) {
+    BitList result;
     for (int bit = 0; bit < width; ++bit) {
         result.push_back((value & (1 << bit)) != 0);
     }
     return result;
 }
 
-IOList state_bits(const std::vector<int> &states, int bits_per_state) {
-    IOList result;
-    result.reserve(states.size() * static_cast<std::size_t>(bits_per_state));
+BitList state_bits(std::span<const int> states, int bits_per_state) {
+    BitList result;
     for (int state : states) {
-        IOList state_value = bits(state, bits_per_state);
-        result.insert(result.end(), state_value.begin(), state_value.end());
+        result.append(bits(state, bits_per_state));
     }
     return result;
 }
@@ -60,16 +96,18 @@ const nlohmann::json &section_or_empty(const nlohmann::json &cfg, const std::str
     return cfg.at(section);
 }
 
-void add_example(Config &dataset, IOList inputs, IOList outputs) {
+void add_example(Config &dataset, const BitList &inputs, const BitList &outputs) {
     Example example;
-    example.inputs.reserve(inputs.size());
-    for (const auto &input : inputs) {
+    for (std::size_t idx = 0; idx < inputs.size(); ++idx) {
+        const auto input = inputs[idx];
         if (!input.has_value()) {
             throw std::runtime_error("input values cannot be null");
         }
-        example.inputs.push_back(*input);
+        example.push_input(*input);
     }
-    example.outputs = std::move(outputs);
+    for (std::size_t idx = 0; idx < outputs.size(); ++idx) {
+        example.push_output(outputs[idx]);
+    }
     dataset.examples.push_back(std::move(example));
 }
 
@@ -111,19 +149,19 @@ Config build_state_dataset(
 ) {
     Config dataset;
     dataset.num_inputs = cell_count * bits_per_state;
-    dataset.num_outputs = static_cast<int>(rule(std::vector<int>(cell_count, 0)).size()) * bits_per_state;
+    const std::vector<int> zero_states(cell_count, 0);
+    dataset.num_outputs = static_cast<int>(rule(zero_states).size()) * bits_per_state;
     for (const auto &states : state_vectors(state_count, cell_count, cfg, section)) {
-        IOList outputs;
+        BitList outputs;
         for (int output_state : rule(states)) {
-            IOList output_bits = bits(output_state, bits_per_state);
-            outputs.insert(outputs.end(), output_bits.begin(), output_bits.end());
+            outputs.append(bits(output_state, bits_per_state));
         }
         add_example(dataset, state_bits(states, bits_per_state), std::move(outputs));
     }
     return dataset;
 }
 
-Config build_summary_dataset(const std::vector<std::pair<IOList, int>> &rows, int num_inputs, int bits_per_output) {
+Config build_summary_dataset(std::span<const std::pair<BitList, int>> rows, int num_inputs, int bits_per_output) {
     Config dataset;
     dataset.num_inputs = num_inputs;
     dataset.num_outputs = bits_per_output;
@@ -136,19 +174,16 @@ Config build_summary_dataset(const std::vector<std::pair<IOList, int>> &rows, in
     return dataset;
 }
 
-IOList moore_column_count_inputs(int center, int left_count, int center_count, int right_count, int center_bits) {
-    IOList result = bits(left_count, 2);
-    IOList center_count_bits = bits(center_count, 2);
-    IOList right_count_bits = bits(right_count, 2);
-    IOList center_value = bits(center, center_bits);
-    result.insert(result.end(), center_count_bits.begin(), center_count_bits.end());
-    result.insert(result.end(), right_count_bits.begin(), right_count_bits.end());
-    result.insert(result.end(), center_value.begin(), center_value.end());
+BitList moore_column_count_inputs(int center, int left_count, int center_count, int right_count, int center_bits) {
+    BitList result = bits(left_count, 2);
+    result.append(bits(center_count, 2));
+    result.append(bits(right_count, 2));
+    result.append(bits(center, center_bits));
     return result;
 }
 
 Config build_moore_column_count_dataset(int state_count, int center_bits, int output_bits, const SummaryRule &rule) {
-    std::vector<std::pair<IOList, int>> rows;
+    std::vector<std::pair<BitList, int>> rows;
     for (int center = 0; center < state_count; ++center) {
         for (int left_count = 0; left_count < 4; ++left_count) {
             for (int center_count = 0; center_count < 3; ++center_count) {
@@ -164,7 +199,7 @@ Config build_moore_column_count_dataset(int state_count, int center_bits, int ou
     return build_summary_dataset(rows, center_bits + 6, output_bits);
 }
 
-int moore_alive_count(const std::vector<int> &states, int alive_state = 1) {
+int moore_alive_count(std::span<const int> states, int alive_state = 1) {
     return static_cast<int>(std::count(states.begin() + 1, states.end(), alive_state));
 }
 
@@ -185,7 +220,7 @@ Config build_adder(const nlohmann::json &cfg) {
     dataset.num_outputs = num_outputs;
     for (int value = 0; value < (1 << num_inputs); ++value) {
         int total = 0;
-        IOList inputs;
+        BitList inputs;
         for (int bit = 0; bit < num_inputs; ++bit) {
             bool input = (value & (1 << bit)) != 0;
             inputs.push_back(input);
@@ -209,8 +244,9 @@ Config build_gol(const nlohmann::json &cfg) {
     for (int left = 0; left < left_range; ++left) {
         for (int center = 0; center < center_range; ++center) {
             for (int right = 0; right < right_range; ++right) {
-                for (bool alive : include_alive ? std::vector<bool>{true, false} : std::vector<bool>{false}) {
-                    IOList inputs = {
+                for (bool alive : {true, false}) {
+                    if (alive && !include_alive) continue;
+                    BitList inputs = {
                         (left & 1) != 0,
                         ((left >> 1) & 1) != 0,
                         (center & 1) != 0,
@@ -220,7 +256,7 @@ Config build_gol(const nlohmann::json &cfg) {
                         alive,
                     };
                     int sum = left + center + right;
-                    add_example(dataset, inputs, IOList{sum == 3 || (sum == 2 && alive)});
+                    add_example(dataset, inputs, BitList{sum == 3 || (sum == 2 && alive)});
                 }
             }
         }
@@ -238,7 +274,7 @@ Config build_gol1(const nlohmann::json &) {
                 for (bool alive : {true, false}) {
                     int sum = left + center + right;
                     int carry = ((left & 1) + (center & 1) + (right & 1)) / 2;
-                    IOList inputs = {
+                    BitList inputs = {
                         (left & 1) != 0,
                         ((left >> 1) & 1) != 0,
                         (center & 1) != 0,
@@ -247,7 +283,7 @@ Config build_gol1(const nlohmann::json &) {
                         ((right >> 1) & 1) != 0,
                         alive,
                     };
-                    add_example(dataset, inputs, IOList{((sum | static_cast<int>(alive)) % 2) == 1, carry == 1});
+                    add_example(dataset, inputs, BitList{((sum | static_cast<int>(alive)) % 2) == 1, carry == 1});
                 }
             }
         }
@@ -265,14 +301,14 @@ Config build_gol2(const nlohmann::json &) {
                 for (bool alive : {true, false}) {
                     int sum = left + center + right;
                     int carry = ((left & 1) + (center & 1) + (right & 1)) / 2;
-                    IOList inputs = {
+                    BitList inputs = {
                         ((left >> 1) & 1) != 0,
                         ((center >> 1) & 1) != 0,
                         ((right >> 1) & 1) != 0,
                         carry == 1,
                         ((sum | static_cast<int>(alive)) % 2) == 1,
                     };
-                    add_example(dataset, inputs, IOList{(sum | static_cast<int>(alive)) == 3});
+                    add_example(dataset, inputs, BitList{(sum | static_cast<int>(alive)) == 3});
                 }
             }
         }
@@ -291,8 +327,8 @@ Config build_sloppy_adder(const nlohmann::json &cfg) {
         for (int right = 0; right < right_range; ++right) {
             int result = left + right;
             bool carry = result >= 4;
-            IOList inputs = {((left >> 1) & 1) != 0, (left & 1) != 0, ((right >> 1) & 1) != 0, (right & 1) != 0};
-            IOList outputs = {carry, carry ? std::nullopt : std::optional<bool>((result & 2) != 0), carry ? std::nullopt : std::optional<bool>((result & 1) != 0)};
+            BitList inputs = {((left >> 1) & 1) != 0, (left & 1) != 0, ((right >> 1) & 1) != 0, (right & 1) != 0};
+            BitList outputs = {carry, carry ? std::nullopt : std::optional<bool>((result & 2) != 0), carry ? std::nullopt : std::optional<bool>((result & 1) != 0)};
             add_example(dataset, inputs, outputs);
         }
     }
@@ -312,12 +348,12 @@ Config build_sloppy_adder3(const nlohmann::json &cfg) {
             for (int right = 0; right < right_range; ++right) {
                 int result = left + center + right;
                 bool carry = result >= 4;
-                IOList inputs = {
+                BitList inputs = {
                     ((left >> 1) & 1) != 0, (left & 1) != 0,
                     ((center >> 1) & 1) != 0, (center & 1) != 0,
                     ((right >> 1) & 1) != 0, (right & 1) != 0,
                 };
-                IOList outputs = {carry, carry ? std::nullopt : std::optional<bool>((result & 2) != 0), carry ? std::nullopt : std::optional<bool>((result & 1) != 0)};
+                BitList outputs = {carry, carry ? std::nullopt : std::optional<bool>((result & 2) != 0), carry ? std::nullopt : std::optional<bool>((result & 1) != 0)};
                 add_example(dataset, inputs, outputs);
             }
         }
@@ -326,7 +362,7 @@ Config build_sloppy_adder3(const nlohmann::json &cfg) {
 }
 
 Config build_life(const nlohmann::json &cfg) {
-    return with_instructions(build_state_dataset(cfg, "life", 2, 1, kMooreCells, [](const std::vector<int> &states) {
+    return with_instructions(build_state_dataset(cfg, "life", 2, 1, kMooreCells, [](std::span<const int> states) {
         int center = states[0];
         int alive_neighbors = moore_alive_count(states);
         return std::vector<int>{(alive_neighbors == 3 || (center == 1 && alive_neighbors == 2)) ? 1 : 0};
@@ -340,7 +376,7 @@ Config build_life_compressed(const nlohmann::json &) {
 }
 
 Config build_maze(const nlohmann::json &cfg) {
-    return with_instructions(build_state_dataset(cfg, "maze", 2, 1, kMooreCells, [](const std::vector<int> &states) {
+    return with_instructions(build_state_dataset(cfg, "maze", 2, 1, kMooreCells, [](std::span<const int> states) {
         int center = states[0];
         int wall_neighbors = moore_alive_count(states);
         return std::vector<int>{(wall_neighbors == 3 || (center == 1 && wall_neighbors < 6)) ? 1 : 0};
@@ -354,7 +390,7 @@ Config build_maze_compressed(const nlohmann::json &) {
 }
 
 Config build_brian(const nlohmann::json &cfg) {
-    return with_instructions(build_state_dataset(cfg, "brian", 3, 2, kMooreCells, [](const std::vector<int> &states) {
+    return with_instructions(build_state_dataset(cfg, "brian", 3, 2, kMooreCells, [](std::span<const int> states) {
         int center = states[0];
         if (center == 1) return std::vector<int>{2};
         if (center == 2) return std::vector<int>{0};
@@ -371,7 +407,7 @@ Config build_brian_compressed(const nlohmann::json &) {
 }
 
 Config build_fire(const nlohmann::json &cfg) {
-    return with_instructions(build_state_dataset(cfg, "fire", 4, 2, kVonNeumannCells, [](const std::vector<int> &states) {
+    return with_instructions(build_state_dataset(cfg, "fire", 4, 2, kVonNeumannCells, [](std::span<const int> states) {
         int center = states[0];
         bool has_fire_neighbor = std::find(states.begin() + 1, states.end(), 2) != states.end();
         if (center == 1) return std::vector<int>{has_fire_neighbor ? 2 : 1};
@@ -382,7 +418,7 @@ Config build_fire(const nlohmann::json &cfg) {
 }
 
 Config build_fire_compressed(const nlohmann::json &) {
-    std::vector<std::pair<IOList, int>> rows;
+    std::vector<std::pair<BitList, int>> rows;
     for (int center = 0; center < 4; ++center) {
         for (int left_count = 0; left_count < 2; ++left_count) {
             for (int vertical_count = 0; vertical_count < 3; ++vertical_count) {
@@ -392,13 +428,10 @@ Config build_fire_compressed(const nlohmann::json &) {
                     if (center == 1) output = has_fire_neighbor ? 2 : 1;
                     else if (center == 2) output = 3;
                     else if (center == 3) output = has_fire_neighbor ? 3 : 0;
-                    IOList input = bits(left_count, 1);
-                    IOList vertical = bits(vertical_count, 2);
-                    IOList right = bits(right_count, 1);
-                    IOList center_bits = bits(center, 2);
-                    input.insert(input.end(), vertical.begin(), vertical.end());
-                    input.insert(input.end(), right.begin(), right.end());
-                    input.insert(input.end(), center_bits.begin(), center_bits.end());
+                    BitList input = bits(left_count, 1);
+                    input.append(bits(vertical_count, 2));
+                    input.append(bits(right_count, 1));
+                    input.append(bits(center, 2));
                     rows.emplace_back(std::move(input), output);
                 }
             }
@@ -408,7 +441,7 @@ Config build_fire_compressed(const nlohmann::json &) {
 }
 
 Config build_wire(const nlohmann::json &cfg) {
-    return with_instructions(build_state_dataset(cfg, "wire", 4, 2, kMooreCells, [](const std::vector<int> &states) {
+    return with_instructions(build_state_dataset(cfg, "wire", 4, 2, kMooreCells, [](std::span<const int> states) {
         int center = states[0];
         if (center == 0) return std::vector<int>{0};
         if (center == 2) return std::vector<int>{3};
@@ -432,7 +465,7 @@ Config build_excitable(const nlohmann::json &cfg) {
     int state_count = json_int(section, "states", 8);
     if (state_count < 3) throw std::runtime_error("excitable.states must be at least 3");
     int bits_per_state = required_bits(state_count);
-    return with_instructions(build_state_dataset(cfg, "excitable", state_count, bits_per_state, kMooreCells, [state_count](const std::vector<int> &states) {
+    return with_instructions(build_state_dataset(cfg, "excitable", state_count, bits_per_state, kMooreCells, [state_count](std::span<const int> states) {
         int center = states[0];
         if (center == 0) return std::vector<int>{std::find(states.begin() + 1, states.end(), 1) != states.end() ? 1 : 0};
         if (center == state_count - 1) return std::vector<int>{0};
@@ -457,7 +490,7 @@ Config build_cyclic(const nlohmann::json &cfg) {
     int state_count = json_int(section, "states", 32);
     if (state_count < 2) throw std::runtime_error("cyclic.states must be at least 2");
     int bits_per_state = required_bits(state_count);
-    return with_instructions(build_state_dataset(cfg, "cyclic", state_count, bits_per_state, kMooreCells, [state_count](const std::vector<int> &states) {
+    return with_instructions(build_state_dataset(cfg, "cyclic", state_count, bits_per_state, kMooreCells, [state_count](std::span<const int> states) {
         int center = states[0];
         int successor = (center + 1) % state_count;
         return std::vector<int>{std::find(states.begin() + 1, states.end(), successor) != states.end() ? successor : center};
@@ -493,10 +526,10 @@ Config build_fluid(const nlohmann::json &cfg) {
         bool incoming_down = (states[north] & (1 << down)) != 0;
         bool incoming_left = (states[east] & (1 << left)) != 0;
         bool incoming_right = (states[west] & (1 << right)) != 0;
-        IOList output = {incoming_up, incoming_down, incoming_left, incoming_right};
-        if (output == IOList{true, true, false, false}) {
+        BitList output = {incoming_up, incoming_down, incoming_left, incoming_right};
+        if (output == BitList{true, true, false, false}) {
             output = {false, false, true, true};
-        } else if (output == IOList{false, false, true, true}) {
+        } else if (output == BitList{false, false, true, true}) {
             output = {true, true, false, false};
         }
         add_example(dataset, state_bits(states, 4), output);
@@ -512,16 +545,16 @@ Config build_critters(const nlohmann::json &) {
         for (bool b1 : {false, true}) {
             for (bool b2 : {false, true}) {
                 for (bool b3 : {false, true}) {
-                    IOList block = {b0, b1, b2, b3};
+                    BitList block = {b0, b1, b2, b3};
                     int alive_count = 0;
-                    for (const auto &bit : block) alive_count += *bit ? 1 : 0;
-                    IOList output;
+                    for (std::size_t idx = 0; idx < block.size(); ++idx) alive_count += *block[idx] ? 1 : 0;
+                    BitList output;
                     if (alive_count == 2) {
                         output = block;
                     } else if (alive_count == 3) {
                         output = {!*block[3], !*block[2], !*block[1], !*block[0]};
                     } else {
-                        for (const auto &bit : block) output.push_back(!*bit);
+                        for (std::size_t idx = 0; idx < block.size(); ++idx) output.push_back(!*block[idx]);
                     }
                     add_example(dataset, block, output);
                 }
@@ -543,9 +576,9 @@ Config build_traffic(const nlohmann::json &) {
                     int output_state = center_state;
                     if (center_state == moving_state && next_state == 0) output_state = 0;
                     else if (center_state == 0 && prev_state == moving_state) output_state = moving_state;
-                    IOList inputs = {phase};
-                    IOList states = state_bits({prev_state, center_state, next_state}, 2);
-                    inputs.insert(inputs.end(), states.begin(), states.end());
+                    BitList inputs = {phase};
+                    const std::array<int, 3> states = {prev_state, center_state, next_state};
+                    inputs.append(state_bits(states, 2));
                     add_example(dataset, inputs, bits(output_state, 2));
                 }
             }
@@ -586,6 +619,43 @@ const std::map<std::string, std::pair<int, Builder>> &registry() {
 }
 
 }  // namespace
+
+Example::Example(std::initializer_list<bool> input_values, std::initializer_list<std::optional<bool>> outputs) {
+    for (bool value : input_values) {
+        push_input(value);
+    }
+    for (const auto &value : outputs) {
+        push_output(value);
+    }
+}
+
+std::size_t Example::input_count() const {
+    return inputs.size();
+}
+
+std::size_t Example::output_count() const {
+    return output_values.size();
+}
+
+bool Example::input(std::size_t idx) const {
+    return inputs[idx];
+}
+
+std::optional<bool> Example::output(std::size_t idx) const {
+    if (output_dont_care[idx]) {
+        return std::nullopt;
+    }
+    return output_values[idx];
+}
+
+void Example::push_input(bool value) {
+    inputs.push_back(value);
+}
+
+void Example::push_output(std::optional<bool> value) {
+    output_values.push_back(value.value_or(false));
+    output_dont_care.push_back(!value.has_value());
+}
 
 std::vector<std::string> available_dataset_names() {
     std::vector<std::string> names;

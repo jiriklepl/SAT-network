@@ -18,7 +18,7 @@ TEST_CASE("explicit configs parse and dump don't-care outputs") {
     REQUIRE(cfg.num_outputs == 1);
     REQUIRE(cfg.instructions == 0);
     REQUIRE(cfg.examples.size() == 1);
-    REQUIRE_FALSE(cfg.examples[0].outputs[0].has_value());
+    REQUIRE_FALSE(cfg.examples[0].output(0).has_value());
 
     nlohmann::json dumped = config_to_json(cfg);
     REQUIRE(dumped["num_inputs"].get<int>() == 1);

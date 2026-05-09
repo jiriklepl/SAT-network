@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <span>
 #include <stdexcept>
 #include <utility>
 
@@ -63,7 +64,7 @@ z3::expr operator_rank_expr(z3::context &ctx, const z3::expr &op) {
 
 z3::expr select_bv(
     z3::context &ctx,
-    const std::vector<z3::expr> &values,
+    std::span<const z3::expr> values,
     const z3::expr &idx_var,
     unsigned bits,
     bool balanced
@@ -258,14 +259,14 @@ std::vector<z3::expr> build_assumption_constraints(z3::context &ctx, const Progr
     return constraints;
 }
 
-void add_exprs(z3::solver &solver, const std::vector<z3::expr> &exprs) {
+void add_exprs(z3::solver &solver, std::span<const z3::expr> exprs) {
     for (const auto &expr : exprs) solver.add(expr);
 }
 
 void add_example_constraints(
     z3::context &ctx,
     z3::solver &solver,
-    const std::vector<Example> &examples,
+    std::span<const Example> examples,
     const std::string &tag,
     const ProgramSpec &spec,
     const EncodingOptions &options

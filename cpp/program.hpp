@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <iosfwd>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -62,16 +63,16 @@ boost::multiprecision::cpp_int apply_operator_mask(
     const boost::multiprecision::cpp_int &left,
     const boost::multiprecision::cpp_int &right);
 std::string format_source(int idx, int num_inputs);
-PackedExamples pack_examples(const std::vector<Example> &examples, int num_inputs, int num_outputs);
+PackedExamples pack_examples(std::span<const Example> examples, int num_inputs, int num_outputs);
 std::vector<boost::multiprecision::cpp_int> evaluate_program_masks(
     const Program &program,
-    const std::vector<boost::multiprecision::cpp_int> &input_masks,
+    std::span<const boost::multiprecision::cpp_int> input_masks,
     const boost::multiprecision::cpp_int &all_examples_mask);
 std::vector<std::size_t> verify_program(
     const Program &program,
-    const std::vector<Example> &examples,
+    std::span<const Example> examples,
     int num_inputs,
     int num_outputs);
 void emit_program(std::ostream &out, const Program &program, int num_inputs);
 void emit_program_blif(std::ostream &out, const Program &program, int num_inputs);
-void export_spec_blif(std::ostream &out, const std::vector<Example> &examples, int num_inputs, int num_outputs);
+void export_spec_blif(std::ostream &out, std::span<const Example> examples, int num_inputs, int num_outputs);

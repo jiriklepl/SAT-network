@@ -1,5 +1,6 @@
 #include "config.hpp"
 
+#include <cstddef>
 #include <fstream>
 #include <stdexcept>
 
@@ -13,10 +14,11 @@ nlohmann::json config_to_json(const Config &cfg) {
         nlohmann::json raw_example;
         raw_example["inputs"] = nlohmann::json::array();
         raw_example["outputs"] = nlohmann::json::array();
-        for (bool input : example.inputs) {
-            raw_example["inputs"].push_back(input);
+        for (std::size_t input_idx = 0; input_idx < example.input_count(); ++input_idx) {
+            raw_example["inputs"].push_back(example.input(input_idx));
         }
-        for (const auto &output : example.outputs) {
+        for (std::size_t output_idx = 0; output_idx < example.output_count(); ++output_idx) {
+            const auto output = example.output(output_idx);
             if (output.has_value()) {
                 raw_example["outputs"].push_back(*output);
             } else {
@@ -43,19 +45,19 @@ Config load_explicit_examples(const nlohmann::json &cfg) {
             if (!raw_input.is_boolean()) {
                 throw std::runtime_error("Input values must be booleans");
             }
-            ex.inputs.push_back(raw_input.get<bool>());
+            ex.push_input(raw_input.get<bool>());
         }
         for (const auto &raw_output : raw_ex.at("outputs")) {
             if (raw_output.is_null()) {
-                ex.outputs.push_back(std::nullopt);
+                ex.push_output(std::nullopt);
             } else if (raw_output.is_boolean()) {
-                ex.outputs.push_back(raw_output.get<bool>());
+                ex.push_output(raw_output.get<bool>());
             } else {
                 throw std::runtime_error("Output values must be booleans or null");
             }
         }
-        if (static_cast<int>(ex.inputs.size()) != result.num_inputs ||
-            static_cast<int>(ex.outputs.size()) != result.num_outputs) {
+        if (static_cast<int>(ex.input_count()) != result.num_inputs ||
+            static_cast<int>(ex.output_count()) != result.num_outputs) {
             throw std::runtime_error("Example length does not match declared input/output sizes");
         }
         result.examples.push_back(std::move(ex));

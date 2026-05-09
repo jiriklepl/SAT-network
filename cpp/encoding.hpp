@@ -6,16 +6,17 @@
 
 #include <z3++.h>
 
+#include <span>
 #include <string>
 #include <vector>
 
 std::vector<z3::expr> build_program(z3::context &ctx, const ProgramSpec &spec, const EncodingOptions &options);
 std::vector<z3::expr> build_assumption_constraints(z3::context &ctx, const ProgramSpec &spec, const Assumptions &assumptions);
-void add_exprs(z3::solver &solver, const std::vector<z3::expr> &exprs);
+void add_exprs(z3::solver &solver, std::span<const z3::expr> exprs);
 void add_example_constraints(
     z3::context &ctx,
     z3::solver &solver,
-    const std::vector<Example> &examples,
+    std::span<const Example> examples,
     const std::string &tag,
     const ProgramSpec &spec,
     const EncodingOptions &options);
