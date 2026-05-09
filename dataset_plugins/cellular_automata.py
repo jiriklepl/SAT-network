@@ -378,10 +378,10 @@ register_plugin("maze-compressed", _build_maze_compressed, {
 
 register_plugin("brian", _build_brian, {
     "instructions": 24,
-    "brian": {
-        "max_examples": 4096,
-        "seed": 0,
-    },
+    # "brian": {
+    #     "max_examples": 4096,
+    #     "seed": 0,
+    # },
 })
 
 register_plugin("brian-compressed", _build_brian_compressed, {
@@ -398,10 +398,10 @@ register_plugin("fire-compressed", _build_fire_compressed, {
 
 register_plugin("wire", _build_wire, {
     "instructions": 24,
-    "wire": {
-        "max_examples": 4096,
-        "seed": 0,
-    },
+    # "wire": {
+    #     "max_examples": 4096,
+    #     "seed": 0,
+    # },
 })
 
 register_plugin("wire-compressed", _build_wire_compressed, {
@@ -412,8 +412,8 @@ register_plugin("excitable", _build_excitable, {
     "instructions": 32,
     "excitable": {
         "states": 8,
-        "max_examples": 4096,
-        "seed": 0,
+        # "max_examples": 4096,
+        # "seed": 0,
     },
 })
 
@@ -428,8 +428,8 @@ register_plugin("cyclic", _build_cyclic, {
     "instructions": 48,
     "cyclic": {
         "states": 32,
-        "max_examples": 4096,
-        "seed": 0,
+        # "max_examples": 4096,
+        # "seed": 0,
     },
 })
 
@@ -442,10 +442,10 @@ register_plugin("cyclic-compressed", _build_cyclic_compressed, {
 
 register_plugin("fluid", _build_fluid, {
     "instructions": 18,
-    "fluid": {
-        "max_examples": 4096,
-        "seed": 0,
-    },
+    # "fluid": {
+    #     "max_examples": 4096,
+    #     "seed": 0,
+    # },
 })
 
 register_plugin("critters", _build_critters, {
