@@ -17,7 +17,7 @@ cmake --build --preset debug -j
 The supported baseline is C++20, CMake 3.20 or newer, GCC 13 or newer or
 Clang 17 or newer, and system Z3 headers/library. CMake finds Z3 and fetches
 `nlohmann/json`, `cxxopts`, and Catch2 with `FetchContent`.
-Boost.Multiprecision is header-only.
+Boost.DynamicBitset is header-only.
 
 ## Dataset Support
 

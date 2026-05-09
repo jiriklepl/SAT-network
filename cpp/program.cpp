@@ -1,11 +1,9 @@
 #include "program.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <ostream>
 #include <stdexcept>
-#include <bit>
-
-using boost::multiprecision::cpp_int;
 
 int ProgramSpec::total_sources() const {
     return num_inputs + 1 + program_length;
@@ -24,14 +22,6 @@ const std::vector<LogicOperator> &logic_operators() {
         {2, "OR", 2},
     };
     return operators;
-}
-
-std::string cpp_int_to_string(const cpp_int &value) {
-    return value.convert_to<std::string>();
-}
-
-cpp_int all_ones(unsigned width) {
-    return (cpp_int{1} << width) - 1;
 }
 
 std::string bv_name(const std::string &prefix, int idx) {
@@ -82,11 +72,11 @@ bool known_op(int code) {
     });
 }
 
-cpp_int apply_operator_mask(int code, const cpp_int &left, const cpp_int &right) {
+PackedMask apply_operator_mask(int code, const PackedMask &left, const PackedMask &right) {
     if (code == 0) return left & right;
     if (code == 1) return left ^ right;
     if (code == 2) return left | right;
-    return 0;
+    return PackedMask(left.width());
 }
 
 std::string format_source(int idx, int num_inputs) {
@@ -98,43 +88,44 @@ std::string format_source(int idx, int num_inputs) {
 PackedExamples pack_examples(std::span<const Example> examples, int num_inputs, int num_outputs) {
     PackedExamples packed;
     packed.width = static_cast<unsigned>(examples.size());
-    packed.input_masks.assign(num_inputs, 0);
-    packed.output_values.assign(num_outputs, 0);
-    packed.output_dont_care_masks.assign(num_outputs, 0);
+    packed.input_masks.assign(num_inputs, PackedMask(packed.width));
+    packed.output_values.assign(num_outputs, PackedMask(packed.width));
+    packed.output_dont_care_masks.assign(num_outputs, PackedMask(packed.width));
 
     for (std::size_t ex_idx = 0; ex_idx < examples.size(); ++ex_idx) {
-        cpp_int bit = cpp_int(1) << ex_idx;
         const auto &ex = examples[ex_idx];
         for (int input_idx = 0; input_idx < num_inputs; ++input_idx) {
             if (ex.input(static_cast<std::size_t>(input_idx))) {
-                packed.input_masks[input_idx] |= bit;
+                packed.input_masks[input_idx].set(ex_idx);
             }
         }
         for (int output_idx = 0; output_idx < num_outputs; ++output_idx) {
             const std::size_t idx = static_cast<std::size_t>(output_idx);
             if (ex.output_dont_care[idx]) {
-                packed.output_dont_care_masks[output_idx] |= bit;
+                packed.output_dont_care_masks[output_idx].set(ex_idx);
             } else if (ex.output_values[idx]) {
-                packed.output_values[output_idx] |= bit;
+                packed.output_values[output_idx].set(ex_idx);
             }
         }
     }
     return packed;
 }
 
-std::vector<cpp_int> evaluate_program_masks(
+std::vector<PackedMask> evaluate_program_masks(
     const Program &program,
-    std::span<const cpp_int> input_masks,
-    const cpp_int &all_examples_mask
+    std::span<const PackedMask> input_masks,
+    const PackedMask &all_examples_mask
 ) {
-    std::vector<cpp_int> values;
+    std::vector<PackedMask> values;
     values.push_back(all_examples_mask);
     values.insert(values.end(), input_masks.begin(), input_masks.end());
     for (const auto &instr : program.instrs) {
-        cpp_int value = instr.op < 0 ? 0 : (apply_operator_mask(instr.op, values[instr.s1], values[instr.s2]) & all_examples_mask);
+        PackedMask value = instr.op < 0
+            ? PackedMask(all_examples_mask.width())
+            : (apply_operator_mask(instr.op, values[instr.s1], values[instr.s2]) & all_examples_mask);
         values.push_back(value);
     }
-    std::vector<cpp_int> outputs;
+    std::vector<PackedMask> outputs;
     for (int selector : program.outputs) {
         outputs.push_back(values[selector]);
     }
@@ -149,20 +140,14 @@ std::vector<std::size_t> verify_program(
 ) {
     if (examples.empty()) return {};
     PackedExamples packed = pack_examples(examples, num_inputs, num_outputs);
-    cpp_int full_mask = all_ones(packed.width);
-    std::vector<cpp_int> actual = evaluate_program_masks(program, packed.input_masks, full_mask);
-    cpp_int mismatch_mask = 0;
+    PackedMask full_mask = all_ones(packed.width);
+    std::vector<PackedMask> actual = evaluate_program_masks(program, packed.input_masks, full_mask);
+    PackedMask mismatch_mask(packed.width);
     for (int out_idx = 0; out_idx < num_outputs; ++out_idx) {
-        cpp_int care_mask = full_mask ^ packed.output_dont_care_masks[out_idx];
-        mismatch_mask |= (actual[out_idx] ^ packed.output_values[out_idx]) & care_mask;
+        PackedMask care_mask = full_mask ^ packed.output_dont_care_masks[out_idx];
+        mismatch_mask = mismatch_mask | ((actual[out_idx] ^ packed.output_values[out_idx]) & care_mask);
     }
-    std::vector<std::size_t> mismatches;
-    for (std::size_t idx = 0; idx < examples.size(); ++idx) {
-        if (((mismatch_mask >> idx) & 1) != 0) {
-            mismatches.push_back(idx);
-        }
-    }
-    return mismatches;
+    return mismatch_mask.set_bit_indices();
 }
 
 void emit_program(std::ostream &out, const Program &program, int num_inputs) {

@@ -41,6 +41,7 @@ add_library(sat_synth_core
   cpp/config.cpp
   cpp/datasets.cpp
   cpp/encoding.cpp
+  cpp/mask.cpp
   cpp/program.cpp
   cpp/solver.cpp
 )
@@ -58,6 +59,7 @@ if(BUILD_TESTING)
     cpp/tests/cli_tests.cpp
     cpp/tests/config_tests.cpp
     cpp/tests/datasets_tests.cpp
+    cpp/tests/mask_tests.cpp
     cpp/tests/program_tests.cpp
     cpp/tests/solver_tests.cpp
   )

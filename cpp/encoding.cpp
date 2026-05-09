@@ -6,20 +6,32 @@
 #include <stdexcept>
 #include <utility>
 
-using boost::multiprecision::cpp_int;
-
 namespace {
 
 z3::expr bv_const(z3::context &ctx, const std::string &name, unsigned bits) {
     return ctx.bv_const(name.c_str(), bits);
 }
 
-z3::expr bv_val(z3::context &ctx, const cpp_int &value, unsigned bits) {
-    return ctx.bv_val(cpp_int_to_string(value).c_str(), bits);
-}
-
 z3::expr bv_val(z3::context &ctx, uint64_t value, unsigned bits) {
     return ctx.bv_val(value, bits);
+}
+
+z3::expr bv_val(z3::context &ctx, const PackedMask &mask) {
+    if (mask.width() == 0) {
+        throw std::runtime_error("cannot encode zero-width packed mask as a bit-vector");
+    }
+    const auto words = mask.words();
+    if (mask.width() <= 64) {
+        return bv_val(ctx, words.empty() ? 0 : words[0], mask.width());
+    }
+
+    const std::size_t high_idx = words.size() - 1;
+    const unsigned high_bits = mask.width() - static_cast<unsigned>(high_idx * 64);
+    z3::expr result = bv_val(ctx, words[high_idx], high_bits);
+    for (std::size_t idx = high_idx; idx-- > 0;) {
+        result = z3::concat(result, bv_val(ctx, words[idx], 64));
+    }
+    return result;
 }
 
 z3::expr op_code_expr(z3::context &ctx, int code) {
@@ -102,9 +114,9 @@ std::pair<std::vector<z3::expr>, std::vector<z3::expr>> build_test(
 ) {
     std::vector<z3::expr> constraints;
     std::vector<z3::expr> values;
-    values.push_back(bv_val(ctx, all_ones(packed.width), packed.width));
+    values.push_back(bv_val(ctx, all_ones(packed.width)));
     for (const auto &input_mask : packed.input_masks) {
-        values.push_back(bv_val(ctx, input_mask, packed.width));
+        values.push_back(bv_val(ctx, input_mask));
     }
 
     for (int instr = 0; instr < spec.program_length; ++instr) {
@@ -275,9 +287,9 @@ void add_example_constraints(
     auto [constraints, outputs] = build_test(ctx, packed, tag, spec, options);
     add_exprs(solver, constraints);
     for (int out_idx = 0; out_idx < spec.num_outputs; ++out_idx) {
-        z3::expr expected = bv_val(ctx, packed.output_values[out_idx], packed.width);
-        if (packed.output_dont_care_masks[out_idx] != 0) {
-            z3::expr dont_care = bv_val(ctx, packed.output_dont_care_masks[out_idx], packed.width);
+        z3::expr expected = bv_val(ctx, packed.output_values[out_idx]);
+        if (!packed.output_dont_care_masks[out_idx].is_zero()) {
+            z3::expr dont_care = bv_val(ctx, packed.output_dont_care_masks[out_idx]);
             solver.add((outputs[out_idx] | dont_care) == (expected | dont_care));
         } else {
             solver.add(outputs[out_idx] == expected);

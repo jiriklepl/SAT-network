@@ -1,14 +1,11 @@
 #include "datasets.hpp"
 #include "program.hpp"
 
-#include <boost/multiprecision/cpp_int.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <sstream>
 #include <string>
 #include <vector>
-
-using boost::multiprecision::cpp_int;
 
 TEST_CASE("program source formatting and text emission match Python format") {
     REQUIRE(format_source(0, 2) == "1");
@@ -77,9 +74,28 @@ TEST_CASE("packed verification respects don't-care output masks") {
 
     PackedExamples packed = pack_examples(examples, 1, 1);
     REQUIRE(packed.width == 2);
-    REQUIRE(packed.input_masks[0] == cpp_int(2));
-    REQUIRE(packed.output_values[0] == cpp_int(2));
-    REQUIRE(packed.output_dont_care_masks[0] == cpp_int(1));
+    REQUIRE(packed.input_masks[0].set_bit_indices() == std::vector<std::size_t>{1});
+    REQUIRE(packed.output_values[0].set_bit_indices() == std::vector<std::size_t>{1});
+    REQUIRE(packed.output_dont_care_masks[0].set_bit_indices() == std::vector<std::size_t>{0});
+}
+
+TEST_CASE("packed verification handles more than one mask word") {
+    std::vector<Example> examples;
+    for (std::size_t idx = 0; idx < 130; ++idx) {
+        const bool bit = (idx % 2) != 0;
+        examples.push_back({{bit}, {bit}});
+    }
+
+    Program identity{{}, {1}};
+    REQUIRE(verify_program(identity, examples, 1, 1).empty());
+
+    Program constant_one{{}, {0}};
+    std::vector<std::size_t> mismatches = verify_program(constant_one, examples, 1, 1);
+    std::vector<std::size_t> expected;
+    for (std::size_t idx = 0; idx < 130; idx += 2) {
+        expected.push_back(idx);
+    }
+    REQUIRE(mismatches == expected);
 }
 
 TEST_CASE("program spec computes source counts and bit widths") {

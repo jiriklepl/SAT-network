@@ -4,6 +4,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -18,6 +19,18 @@ Config xor_config(int instructions) {
         {{true, false}, {true}},
         {{true, true}, {false}},
     };
+    return cfg;
+}
+
+Config wide_identity_config() {
+    Config cfg;
+    cfg.num_inputs = 1;
+    cfg.num_outputs = 1;
+    cfg.instructions = 0;
+    for (std::size_t idx = 0; idx < 130; ++idx) {
+        const bool bit = (idx % 2) != 0;
+        cfg.examples.push_back({{bit}, {bit}});
+    }
     return cfg;
 }
 
@@ -63,6 +76,14 @@ TEST_CASE("solver supports alternate encoding flags") {
     SolveResult result = solve_config(xor_config(1), options);
     REQUIRE(result.status == SolveStatus::Sat);
     REQUIRE(result.program.has_value());
+    REQUIRE(result.mismatch_count == 0);
+}
+
+TEST_CASE("solver encodes batches wider than one mask word") {
+    SolveResult result = solve_config(wide_identity_config(), SolveOptions{});
+    REQUIRE(result.status == SolveStatus::Sat);
+    REQUIRE(result.program.has_value());
+    REQUIRE(result.program->outputs == std::vector<int>{1});
     REQUIRE(result.mismatch_count == 0);
 }
 

@@ -1,8 +1,7 @@
 #pragma once
 
 #include "datasets.hpp"
-
-#include <boost/multiprecision/cpp_int.hpp>
+#include "mask.hpp"
 
 #include <cstddef>
 #include <iosfwd>
@@ -45,29 +44,24 @@ struct Program {
 
 struct PackedExamples {
     unsigned width = 0;
-    std::vector<boost::multiprecision::cpp_int> input_masks;
-    std::vector<boost::multiprecision::cpp_int> output_values;
-    std::vector<boost::multiprecision::cpp_int> output_dont_care_masks;
+    std::vector<PackedMask> input_masks;
+    std::vector<PackedMask> output_values;
+    std::vector<PackedMask> output_dont_care_masks;
 };
 
 const std::vector<LogicOperator> &logic_operators();
-std::string cpp_int_to_string(const boost::multiprecision::cpp_int &value);
-boost::multiprecision::cpp_int all_ones(unsigned width);
 std::string bv_name(const std::string &prefix, int idx);
 int op_rank(int code);
 int op_code_by_label(const std::string &label);
 const char *op_label(int code);
 bool known_op(int code);
-boost::multiprecision::cpp_int apply_operator_mask(
-    int code,
-    const boost::multiprecision::cpp_int &left,
-    const boost::multiprecision::cpp_int &right);
+PackedMask apply_operator_mask(int code, const PackedMask &left, const PackedMask &right);
 std::string format_source(int idx, int num_inputs);
 PackedExamples pack_examples(std::span<const Example> examples, int num_inputs, int num_outputs);
-std::vector<boost::multiprecision::cpp_int> evaluate_program_masks(
+std::vector<PackedMask> evaluate_program_masks(
     const Program &program,
-    std::span<const boost::multiprecision::cpp_int> input_masks,
-    const boost::multiprecision::cpp_int &all_examples_mask);
+    std::span<const PackedMask> input_masks,
+    const PackedMask &all_examples_mask);
 std::vector<std::size_t> verify_program(
     const Program &program,
     std::span<const Example> examples,

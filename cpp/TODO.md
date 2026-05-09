@@ -28,7 +28,6 @@
   - model extraction
   - packed verification
 - Cache common Z3 constants and selector values.
-- Consider a word-vector packed mask representation before falling back to `cpp_int`.
 - Measure whether balanced selectors, boolean encoding, and tactic choices should have dataset-specific defaults.
 
 ## Post-Processing Port
