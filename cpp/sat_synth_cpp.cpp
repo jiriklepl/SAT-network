@@ -6,14 +6,22 @@
 #include "solver.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <exception>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <random>
 #include <stdexcept>
 #include <string>
 
 namespace {
+
+using Clock = std::chrono::steady_clock;
+
+double elapsed_seconds(Clock::time_point start) {
+    return std::chrono::duration<double>(Clock::now() - start).count();
+}
 
 Config load_requested_config(const CliOptions &cli) {
     Config cfg = cli.config_path.empty()
@@ -33,6 +41,26 @@ SolveOptions make_solve_options(const CliOptions &cli) {
         .cegis_initial_size = cli.cegis_initial_size,
         .cegis_counterexamples = cli.cegis_counterexamples,
     };
+}
+
+void print_profile(const ProfileData &profile) {
+    std::cerr << std::fixed << std::setprecision(6);
+    std::cerr << "PROFILE dataset_generation_seconds=" << profile.dataset_generation_seconds << "\n";
+    std::cerr << "PROFILE structure_encoding_seconds=" << profile.structure_encoding_seconds << "\n";
+    std::cerr << "PROFILE example_packing_seconds=" << profile.example_packing_seconds << "\n";
+    std::cerr << "PROFILE example_encoding_seconds=" << profile.example_encoding_seconds << "\n";
+    std::cerr << "PROFILE z3_solve_seconds=" << profile.z3_solve_seconds << "\n";
+    std::cerr << "PROFILE model_extraction_seconds=" << profile.model_extraction_seconds << "\n";
+    std::cerr << "PROFILE packed_verification_seconds=" << profile.packed_verification_seconds << "\n";
+    std::cerr << "PROFILE structure_constraints=" << profile.structure_constraints << "\n";
+    std::cerr << "PROFILE example_constraints=" << profile.example_constraints << "\n";
+    std::cerr << "PROFILE example_batches=" << profile.example_batches << "\n";
+    std::cerr << "PROFILE packed_examples=" << profile.packed_examples << "\n";
+    std::cerr << "PROFILE solver_checks=" << profile.solver_checks << "\n";
+    std::cerr << "PROFILE model_extractions=" << profile.model_extractions << "\n";
+    std::cerr << "PROFILE verification_examples=" << profile.verification_examples << "\n";
+    std::cerr << "PROFILE bv_cache_hits=" << profile.bv_cache_hits << "\n";
+    std::cerr << "PROFILE bv_cache_misses=" << profile.bv_cache_misses << "\n";
 }
 
 Assumptions load_assumptions(const CliOptions &cli, const Config &cfg) {
@@ -64,13 +92,18 @@ int main(int argc, char **argv) {
             return 0;
         }
 
+        ProfileData profile;
+        const auto dataset_start = Clock::now();
         Config cfg = load_requested_config(cli);
+        if (cli.profile) profile.dataset_generation_seconds = elapsed_seconds(dataset_start);
         if (cli.dump_dataset) {
             std::cout << config_to_json(cfg).dump(2) << "\n";
+            if (cli.profile) print_profile(profile);
             return 0;
         }
         if (cli.make_blif) {
             export_spec_blif(std::cout, cfg.examples, cfg.num_inputs, cfg.num_outputs);
+            if (cli.profile) print_profile(profile);
             return 0;
         }
 
@@ -80,14 +113,17 @@ int main(int argc, char **argv) {
         }
 
         SolveOptions solve_options = make_solve_options(cli);
+        if (cli.profile) solve_options.profile = &profile;
         solve_options.assumptions = load_assumptions(cli, cfg);
 
         if (cli.make_smt2) {
             std::cout << make_smt2(cfg, solve_options);
+            if (cli.profile) print_profile(profile);
             return 0;
         }
         if (cli.make_dimacs) {
             std::cout << make_dimacs(cfg, solve_options);
+            if (cli.profile) print_profile(profile);
             return 0;
         }
 
@@ -100,6 +136,7 @@ int main(int argc, char **argv) {
                 emit_program(std::cout, *result.program, cfg.num_inputs);
             }
             log_info(cli, "SAT in " + std::to_string(result.elapsed_seconds) + " seconds");
+            if (cli.profile) print_profile(profile);
             return 0;
         }
         if (result.status == SolveStatus::VerificationFailed) {
@@ -111,13 +148,16 @@ int main(int argc, char **argv) {
                 }
             }
             std::cerr << "Total mismatches: " << result.mismatch_count << "\n";
+            if (cli.profile) print_profile(profile);
             return 1;
         }
         if (result.status == SolveStatus::Unsat) {
             log_info(cli, "UNSAT in " + std::to_string(result.elapsed_seconds) + " seconds");
+            if (cli.profile) print_profile(profile);
             return 1;
         }
         log_info(cli, "UNKNOWN in " + std::to_string(result.elapsed_seconds) + " seconds");
+        if (cli.profile) print_profile(profile);
         return 1;
     } catch (const std::exception &exc) {
         std::cerr << exc.what() << "\n";

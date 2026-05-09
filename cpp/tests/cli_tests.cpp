@@ -28,6 +28,7 @@ TEST_CASE("CLI parses supported solver options") {
         "2",
         "--no-shuffle",
         "--quiet",
+        "--profile",
     };
     CliOptions options = parse_args(static_cast<int>(std::size(argv)), const_cast<char **>(argv));
     REQUIRE(options.dataset_name == "adder");
@@ -44,6 +45,7 @@ TEST_CASE("CLI parses supported solver options") {
     REQUIRE(options.cegis_counterexamples == 2);
     REQUIRE(options.no_shuffle);
     REQUIRE(options.quiet);
+    REQUIRE(options.profile);
 }
 
 TEST_CASE("CLI parses SMT2 export option") {
@@ -97,5 +99,6 @@ TEST_CASE("usage text mentions main input modes") {
     REQUIRE(out.str().find("--make-dimacs") != std::string::npos);
     REQUIRE(out.str().find("--make-blif") != std::string::npos);
     REQUIRE(out.str().find("--output-blif") != std::string::npos);
+    REQUIRE(out.str().find("--profile") != std::string::npos);
     REQUIRE(out.str().find("--list-datasets") != std::string::npos);
 }

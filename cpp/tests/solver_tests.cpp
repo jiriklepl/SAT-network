@@ -87,6 +87,30 @@ TEST_CASE("solver encodes batches wider than one mask word") {
     REQUIRE(result.mismatch_count == 0);
 }
 
+TEST_CASE("solver records profiling counters and phase timings") {
+    ProfileData profile;
+    SolveOptions options;
+    options.batch_size = 2;
+    options.profile = &profile;
+    SolveResult result = solve_config(xor_config(1), options);
+    REQUIRE(result.status == SolveStatus::Sat);
+    REQUIRE(profile.structure_constraints > 0);
+    REQUIRE(profile.example_constraints > 0);
+    REQUIRE(profile.example_batches == 2);
+    REQUIRE(profile.packed_examples == 4);
+    REQUIRE(profile.solver_checks >= 1);
+    REQUIRE(profile.model_extractions == 1);
+    REQUIRE(profile.verification_examples == 4);
+    REQUIRE(profile.structure_encoding_seconds >= 0.0);
+    REQUIRE(profile.example_packing_seconds >= 0.0);
+    REQUIRE(profile.example_encoding_seconds >= 0.0);
+    REQUIRE(profile.z3_solve_seconds >= 0.0);
+    REQUIRE(profile.model_extraction_seconds >= 0.0);
+    REQUIRE(profile.packed_verification_seconds >= 0.0);
+    REQUIRE(profile.bv_cache_hits > 0);
+    REQUIRE(profile.bv_cache_misses > 0);
+}
+
 TEST_CASE("solver applies assumptions before solving") {
     SolveOptions options;
     options.assumptions.instructions.push_back({0, 1, 1, 2});

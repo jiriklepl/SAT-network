@@ -37,6 +37,7 @@ cxxopts::Options make_options() {
         ("no-shuffle", "Disable shuffling of examples")
         ("seed", "Seed for shuffling examples", cxxopts::value<unsigned>()->default_value("0"))
         ("quiet", "Suppress informational output")
+        ("profile", "Print C++ phase timings and counters to stderr")
         ("h,help", "Print usage");
     return options;
 }
@@ -81,6 +82,7 @@ CliOptions parse_args(int argc, char **argv) {
     options.make_dimacs = parsed.count("make-dimacs") > 0;
     options.make_blif = parsed.count("make-blif") > 0;
     options.output_blif = parsed.count("output-blif") > 0;
+    options.profile = parsed.count("profile") > 0;
 
     if (options.list_datasets) return options;
     if (options.config_path.empty() == options.dataset_name.empty()) {

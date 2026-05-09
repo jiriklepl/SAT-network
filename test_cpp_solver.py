@@ -479,6 +479,30 @@ class CppSolverIntegrationTests(unittest.TestCase):
         self.assertIn("gol", names)
         self.assertIn("traffic", names)
 
+    def test_profile_outputs_phase_timings(self) -> None:
+        config = {
+            "num_inputs": 2,
+            "num_outputs": 1,
+            "instructions": 1,
+            "examples": [
+                {"inputs": [False, False], "outputs": [False]},
+                {"inputs": [False, True], "outputs": [True]},
+                {"inputs": [True, False], "outputs": [True]},
+                {"inputs": [True, True], "outputs": [False]},
+            ],
+        }
+        proc = self.run_cpp(config, "--profile", "--batch-size", "2", "--no-shuffle")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("PROFILE dataset_generation_seconds=", proc.stderr)
+        self.assertIn("PROFILE structure_encoding_seconds=", proc.stderr)
+        self.assertIn("PROFILE example_packing_seconds=", proc.stderr)
+        self.assertIn("PROFILE example_encoding_seconds=", proc.stderr)
+        self.assertIn("PROFILE z3_solve_seconds=", proc.stderr)
+        self.assertIn("PROFILE model_extraction_seconds=", proc.stderr)
+        self.assertIn("PROFILE packed_verification_seconds=", proc.stderr)
+        self.assertIn("PROFILE bv_cache_hits=", proc.stderr)
+        self.assertIn("PROFILE bv_cache_misses=", proc.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

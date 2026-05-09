@@ -2,6 +2,7 @@
 
 #include "assumptions.hpp"
 #include "datasets.hpp"
+#include "profile.hpp"
 #include "program.hpp"
 
 #include <cstddef>
@@ -23,6 +24,7 @@ struct SolveOptions {
     bool cegis = false;
     std::size_t cegis_initial_size = 64;
     std::size_t cegis_counterexamples = 1;
+    ProfileData *profile = nullptr;
 };
 
 struct SolveResult {

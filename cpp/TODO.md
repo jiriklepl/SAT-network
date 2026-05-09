@@ -17,19 +17,6 @@
 - Keep quantified synthesis deferred until the explicit-example path is fully stable.
 - Keep post-processing deferred until solver/export parity is validated.
 
-## Performance
-
-- Profile phases separately:
-  - dataset generation
-  - example packing
-  - structure encoding
-  - example encoding
-  - Z3 solve time
-  - model extraction
-  - packed verification
-- Cache common Z3 constants and selector values.
-- Measure whether balanced selectors, boolean encoding, and tactic choices should have dataset-specific defaults.
-
 ## Post-Processing Port
 
 - Start with pure mask-based simplifications that do not require Z3.

@@ -50,6 +50,7 @@ build/sat_synth_cpp --config path/to/config.json --make-smt2
 build/sat_synth_cpp --config path/to/config.json --make-dimacs
 build/sat_synth_cpp --config path/to/config.json --make-blif
 build/sat_synth_cpp --config path/to/config.json --output-blif
+build/sat_synth_cpp --config path/to/config.json --profile
 build/sat_synth_cpp --list-datasets
 ```
 
@@ -62,6 +63,10 @@ OUT0: T0
 
 Assumption files use the same text format. Blank lines and lines starting with
 `#` are ignored. Use `--assume -` to read assumptions from stdin.
+
+`--profile` prints phase timings and counters to stderr. It covers dataset
+generation, structure encoding, example packing/encoding, Z3 solve time, model
+extraction, packed verification, and Z3 bit-vector literal cache hits/misses.
 
 ## Test
 
