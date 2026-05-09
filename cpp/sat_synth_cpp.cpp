@@ -40,6 +40,12 @@ SolveOptions make_solve_options(const CliOptions &cli) {
         .cegis = cli.cegis,
         .cegis_initial_size = cli.cegis_initial_size,
         .cegis_counterexamples = cli.cegis_counterexamples,
+        .postprocess = {
+            .enabled = cli.post_process,
+            .beam_width = cli.post_process_beam_width,
+            .beam_rounds = cli.post_process_beam_rounds,
+            .beam_candidates = cli.post_process_beam_candidates,
+        },
     };
 }
 
@@ -51,6 +57,7 @@ void print_profile(const ProfileData &profile) {
     std::cerr << "PROFILE example_encoding_seconds=" << profile.example_encoding_seconds << "\n";
     std::cerr << "PROFILE z3_solve_seconds=" << profile.z3_solve_seconds << "\n";
     std::cerr << "PROFILE model_extraction_seconds=" << profile.model_extraction_seconds << "\n";
+    std::cerr << "PROFILE post_processing_seconds=" << profile.post_processing_seconds << "\n";
     std::cerr << "PROFILE packed_verification_seconds=" << profile.packed_verification_seconds << "\n";
     std::cerr << "PROFILE structure_constraints=" << profile.structure_constraints << "\n";
     std::cerr << "PROFILE example_constraints=" << profile.example_constraints << "\n";
@@ -58,6 +65,9 @@ void print_profile(const ProfileData &profile) {
     std::cerr << "PROFILE packed_examples=" << profile.packed_examples << "\n";
     std::cerr << "PROFILE solver_checks=" << profile.solver_checks << "\n";
     std::cerr << "PROFILE model_extractions=" << profile.model_extractions << "\n";
+    std::cerr << "PROFILE post_processing_runs=" << profile.post_processing_runs << "\n";
+    std::cerr << "PROFILE post_processing_input_instructions=" << profile.post_processing_input_instructions << "\n";
+    std::cerr << "PROFILE post_processing_output_instructions=" << profile.post_processing_output_instructions << "\n";
     std::cerr << "PROFILE verification_examples=" << profile.verification_examples << "\n";
     std::cerr << "PROFILE bv_cache_hits=" << profile.bv_cache_hits << "\n";
     std::cerr << "PROFILE bv_cache_misses=" << profile.bv_cache_misses << "\n";

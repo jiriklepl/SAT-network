@@ -42,6 +42,25 @@ Program timed_extract_program(z3::context &ctx, const z3::model &model, const Pr
     return program;
 }
 
+Program timed_post_process_program(
+    const Program &program,
+    std::span<const Example> examples,
+    int num_inputs,
+    int num_outputs,
+    const PostProcessOptions &options,
+    ProfileData *profile
+) {
+    const auto start = Clock::now();
+    Program processed = post_process_program(program, examples, num_inputs, num_outputs, options);
+    if (profile != nullptr) {
+        profile->post_processing_seconds += elapsed_seconds(start);
+        ++profile->post_processing_runs;
+        profile->post_processing_input_instructions += program.instrs.size();
+        profile->post_processing_output_instructions += processed.instrs.size();
+    }
+    return processed;
+}
+
 std::vector<std::size_t> timed_verify_program(
     const Program &program,
     std::span<const Example> examples,
@@ -187,6 +206,15 @@ SolveResult solve_config(const Config &cfg, const SolveOptions &options) {
     }
 
     if (!program.has_value()) program = timed_extract_program(ctx, solver.get_model(), spec, options.profile);
+    if (options.postprocess.enabled) {
+        program = timed_post_process_program(
+            *program,
+            cfg.examples,
+            spec.num_inputs,
+            spec.num_outputs,
+            options.postprocess,
+            options.profile);
+    }
     const std::vector<std::size_t> mismatches =
         timed_verify_program(*program, cfg.examples, spec.num_inputs, spec.num_outputs, options.profile);
     result.program = std::move(program);

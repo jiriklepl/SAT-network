@@ -5,7 +5,8 @@ It supports JSON configs with explicit `examples` and C++-generated built-in
 datasets selected by config `type` or `--dataset`.
 
 It intentionally does not support Python plugin loading, quantified synthesis,
-or post-processing.
+or SAT-resynthesis post-processing. The `--post-process` flag currently runs a
+mask-only simplification pass.
 
 ## Build
 
@@ -35,6 +36,7 @@ for now because the C++ generator does not reproduce Python's RNG sampling.
 - `config.*`: JSON config loading and dataset dumping.
 - `datasets.*`: C++ built-in dataset generators.
 - `program.*`: program/data model, operator table, text emission, and packed verifier.
+- `postprocess.*`: mask-only program simplification and dead-node pruning.
 - `encoding.*`: Z3 structure/example encoding, solver construction, and model extraction.
 - `solver.*`: solver orchestration, CEGIS, batching, timing, and verification result packaging.
 - `tests/`: modular Catch2 unit tests for core modules.
@@ -50,6 +52,7 @@ build/sat_synth_cpp --config path/to/config.json --make-smt2
 build/sat_synth_cpp --config path/to/config.json --make-dimacs
 build/sat_synth_cpp --config path/to/config.json --make-blif
 build/sat_synth_cpp --config path/to/config.json --output-blif
+build/sat_synth_cpp --config path/to/config.json --post-process
 build/sat_synth_cpp --config path/to/config.json --profile
 build/sat_synth_cpp --list-datasets
 ```
@@ -66,7 +69,14 @@ Assumption files use the same text format. Blank lines and lines starting with
 
 `--profile` prints phase timings and counters to stderr. It covers dataset
 generation, structure encoding, example packing/encoding, Z3 solve time, model
-extraction, packed verification, and Z3 bit-vector literal cache hits/misses.
+extraction, post-processing, packed verification, and Z3 bit-vector literal
+cache hits/misses.
+
+`--post-process` runs deterministic mask-only simplifications after model
+extraction and before text or BLIF emission. It can remove unreachable
+instructions, redirect equivalent masks to earlier sources, apply simple
+`AND`/`OR`/`XOR` algebra, and simplify output selectors under don't-care masks.
+Local SAT resynthesis and generator timeouts are deferred.
 
 ## Test
 

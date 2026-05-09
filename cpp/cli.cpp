@@ -24,6 +24,10 @@ cxxopts::Options make_options() {
         ("make-dimacs", "Output the problem in DIMACS CNF format and exit")
         ("make-blif", "Output the problem specification in BLIF format and exit")
         ("output-blif", "Output the found program in BLIF format")
+        ("post-process", "Run mask-only post-processing on the solved program")
+        ("post-process-beam-width", "Maximum post-processing beam width", cxxopts::value<int>()->default_value("1"))
+        ("post-process-beam-rounds", "Post-processing beam rounds; 0 means until no improvement", cxxopts::value<int>()->default_value("0"))
+        ("post-process-beam-candidates", "Maximum neighbor candidates per beam state; 0 means unlimited", cxxopts::value<int>()->default_value("0"))
         ("instructions", "Override number of SSA instructions", cxxopts::value<int>())
         ("solver", "Solver to use: z3, simple-tactic, ctx-simplify-tactic", cxxopts::value<std::string>()->default_value("simple-tactic"))
         ("encode-boolean", "Enable boolean source/output selection encoding")
@@ -83,6 +87,10 @@ CliOptions parse_args(int argc, char **argv) {
     options.make_blif = parsed.count("make-blif") > 0;
     options.output_blif = parsed.count("output-blif") > 0;
     options.profile = parsed.count("profile") > 0;
+    options.post_process = parsed.count("post-process") > 0;
+    const int post_process_beam_width = parsed["post-process-beam-width"].as<int>();
+    const int post_process_beam_rounds = parsed["post-process-beam-rounds"].as<int>();
+    const int post_process_beam_candidates = parsed["post-process-beam-candidates"].as<int>();
 
     if (options.list_datasets) return options;
     if (options.config_path.empty() == options.dataset_name.empty()) {
@@ -94,6 +102,12 @@ CliOptions parse_args(int argc, char **argv) {
     if (options.batch_size.has_value() && *options.batch_size == 0) usage_error("--batch-size must be positive");
     if (options.cegis_initial_size == 0) usage_error("--cegis-initial-size must be positive");
     if (options.cegis_counterexamples == 0) usage_error("--cegis-counterexamples must be positive");
+    if (post_process_beam_width < 1) usage_error("--post-process-beam-width must be at least 1");
+    if (post_process_beam_rounds < 0) usage_error("--post-process-beam-rounds must be non-negative");
+    if (post_process_beam_candidates < 0) usage_error("--post-process-beam-candidates must be non-negative");
+    options.post_process_beam_width = static_cast<std::size_t>(post_process_beam_width);
+    options.post_process_beam_rounds = static_cast<std::size_t>(post_process_beam_rounds);
+    options.post_process_beam_candidates = static_cast<std::size_t>(post_process_beam_candidates);
     return options;
 }
 

@@ -394,6 +394,70 @@ class CppSolverIntegrationTests(unittest.TestCase):
         self.assertIn(".names T0 OUT0", proc.stdout)
         self.assertNotIn("T0:", proc.stdout)
 
+    def test_post_process_shortens_redundant_assumed_program(self) -> None:
+        config = {
+            "num_inputs": 2,
+            "num_outputs": 1,
+            "instructions": 2,
+            "examples": [
+                {"inputs": [False, False], "outputs": [False]},
+                {"inputs": [False, True], "outputs": [True]},
+                {"inputs": [True, False], "outputs": [True]},
+                {"inputs": [True, True], "outputs": [False]},
+            ],
+        }
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".txt") as assume_file:
+            assume_file.write("T0: XOR(I0, I1)\nT1: AND(1, T0)\nOUT0: T1\n")
+            assume_file.flush()
+            proc = self.run_cpp(config, "--assume", assume_file.name, "--post-process", "--no-shuffle")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        instrs, outputs = _parse_program(proc.stdout, config["num_inputs"], config["num_outputs"])
+        self.assertLess(len(instrs), 2)
+        self.assertEqual(_verify_program(instrs, outputs, config["examples"], config["num_outputs"]), [])
+
+    def test_output_blif_uses_post_processed_program(self) -> None:
+        config = {
+            "num_inputs": 2,
+            "num_outputs": 1,
+            "instructions": 2,
+            "examples": [
+                {"inputs": [False, False], "outputs": [False]},
+                {"inputs": [False, True], "outputs": [True]},
+                {"inputs": [True, False], "outputs": [True]},
+                {"inputs": [True, True], "outputs": [False]},
+            ],
+        }
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json") as file:
+            json.dump(config, file)
+            file.flush()
+            proc = self.run_cpp_args_with_input(
+                ["--config", file.name, "--output-blif", "--post-process", "--assume", "-"],
+                "T0: XOR(I0, I1)\nT1: AND(1, T0)\nOUT0: T1\n",
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn(".model spec", proc.stdout)
+        self.assertIn(".names I0 I1 T0", proc.stdout)
+        self.assertIn(".names T0 OUT0", proc.stdout)
+        self.assertNotIn("T1", proc.stdout)
+        self.assertNotIn("T0:", proc.stdout)
+
+    def test_invalid_post_process_options_return_usage_error(self) -> None:
+        config = {
+            "num_inputs": 1,
+            "num_outputs": 1,
+            "instructions": 0,
+            "examples": [{"inputs": [False], "outputs": [False]}],
+        }
+        for args, message in [
+            (["--post-process-beam-width", "0"], "--post-process-beam-width must be at least 1"),
+            (["--post-process-beam-rounds", "-1"], "--post-process-beam-rounds must be non-negative"),
+            (["--post-process-beam-candidates", "-1"], "--post-process-beam-candidates must be non-negative"),
+        ]:
+            with self.subTest(args=args):
+                proc = self.run_cpp(config, *args)
+                self.assertEqual(proc.returncode, 2)
+                self.assertIn(message, proc.stderr)
+
     def test_dataset_flag_uses_builtin_config(self) -> None:
         cfg = get_plugin_config("adder")
         examples, num_inputs, num_outputs = get_plugin("adder")(cfg)
@@ -499,9 +563,34 @@ class CppSolverIntegrationTests(unittest.TestCase):
         self.assertIn("PROFILE example_encoding_seconds=", proc.stderr)
         self.assertIn("PROFILE z3_solve_seconds=", proc.stderr)
         self.assertIn("PROFILE model_extraction_seconds=", proc.stderr)
+        self.assertIn("PROFILE post_processing_seconds=", proc.stderr)
         self.assertIn("PROFILE packed_verification_seconds=", proc.stderr)
+        self.assertIn("PROFILE post_processing_runs=", proc.stderr)
+        self.assertIn("PROFILE post_processing_input_instructions=", proc.stderr)
+        self.assertIn("PROFILE post_processing_output_instructions=", proc.stderr)
         self.assertIn("PROFILE bv_cache_hits=", proc.stderr)
         self.assertIn("PROFILE bv_cache_misses=", proc.stderr)
+
+    def test_profile_reports_post_processing_run(self) -> None:
+        config = {
+            "num_inputs": 2,
+            "num_outputs": 1,
+            "instructions": 2,
+            "examples": [
+                {"inputs": [False, False], "outputs": [False]},
+                {"inputs": [False, True], "outputs": [True]},
+                {"inputs": [True, False], "outputs": [True]},
+                {"inputs": [True, True], "outputs": [False]},
+            ],
+        }
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".txt") as assume_file:
+            assume_file.write("T0: XOR(I0, I1)\nT1: AND(1, T0)\nOUT0: T1\n")
+            assume_file.flush()
+            proc = self.run_cpp(config, "--assume", assume_file.name, "--post-process", "--profile", "--no-shuffle")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("PROFILE post_processing_runs=1", proc.stderr)
+        self.assertIn("PROFILE post_processing_input_instructions=2", proc.stderr)
+        self.assertIn("PROFILE post_processing_output_instructions=1", proc.stderr)
 
 
 if __name__ == "__main__":

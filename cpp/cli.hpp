@@ -29,6 +29,10 @@ struct CliOptions {
     bool make_blif = false;
     bool output_blif = false;
     bool profile = false;
+    bool post_process = false;
+    std::size_t post_process_beam_width = 1;
+    std::size_t post_process_beam_rounds = 0;
+    std::size_t post_process_beam_candidates = 0;
 };
 
 void print_usage(std::ostream &out);

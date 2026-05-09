@@ -2,6 +2,7 @@
 
 #include "assumptions.hpp"
 #include "datasets.hpp"
+#include "postprocess.hpp"
 #include "profile.hpp"
 #include "program.hpp"
 
@@ -24,6 +25,7 @@ struct SolveOptions {
     bool cegis = false;
     std::size_t cegis_initial_size = 64;
     std::size_t cegis_counterexamples = 1;
+    PostProcessOptions postprocess;
     ProfileData *profile = nullptr;
 };
 

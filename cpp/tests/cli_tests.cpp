@@ -29,6 +29,13 @@ TEST_CASE("CLI parses supported solver options") {
         "--no-shuffle",
         "--quiet",
         "--profile",
+        "--post-process",
+        "--post-process-beam-width",
+        "3",
+        "--post-process-beam-rounds",
+        "4",
+        "--post-process-beam-candidates",
+        "5",
     };
     CliOptions options = parse_args(static_cast<int>(std::size(argv)), const_cast<char **>(argv));
     REQUIRE(options.dataset_name == "adder");
@@ -46,6 +53,10 @@ TEST_CASE("CLI parses supported solver options") {
     REQUIRE(options.no_shuffle);
     REQUIRE(options.quiet);
     REQUIRE(options.profile);
+    REQUIRE(options.post_process);
+    REQUIRE(options.post_process_beam_width == 3);
+    REQUIRE(options.post_process_beam_rounds == 4);
+    REQUIRE(options.post_process_beam_candidates == 5);
 }
 
 TEST_CASE("CLI parses SMT2 export option") {
@@ -79,6 +90,12 @@ TEST_CASE("CLI validation rejects invalid combinations and counts") {
 
     const char *cegis_dimacs[] = {"sat_synth_cpp", "--dataset", "adder", "--cegis", "--make-dimacs"};
     REQUIRE_THROWS(parse_args(static_cast<int>(std::size(cegis_dimacs)), const_cast<char **>(cegis_dimacs)));
+
+    const char *zero_beam_width[] = {"sat_synth_cpp", "--dataset", "adder", "--post-process-beam-width", "0"};
+    REQUIRE_THROWS(parse_args(static_cast<int>(std::size(zero_beam_width)), const_cast<char **>(zero_beam_width)));
+
+    const char *negative_beam_rounds[] = {"sat_synth_cpp", "--dataset", "adder", "--post-process-beam-rounds", "-1"};
+    REQUIRE_THROWS(parse_args(static_cast<int>(std::size(negative_beam_rounds)), const_cast<char **>(negative_beam_rounds)));
 }
 
 TEST_CASE("CLI list-datasets works without config or dataset") {
@@ -100,5 +117,6 @@ TEST_CASE("usage text mentions main input modes") {
     REQUIRE(out.str().find("--make-blif") != std::string::npos);
     REQUIRE(out.str().find("--output-blif") != std::string::npos);
     REQUIRE(out.str().find("--profile") != std::string::npos);
+    REQUIRE(out.str().find("--post-process") != std::string::npos);
     REQUIRE(out.str().find("--list-datasets") != std::string::npos);
 }

@@ -15,11 +15,11 @@
 ## Solver Feature Parity
 
 - Keep quantified synthesis deferred until the explicit-example path is fully stable.
-- Keep post-processing deferred until solver/export parity is validated.
+- Keep local SAT resynthesis post-processing deferred until the mask-only pass is stable.
 
 ## Post-Processing Port
 
-- Start with pure mask-based simplifications that do not require Z3.
+- Extend mask-only simplification coverage as new algebraic opportunities are found.
 - Port local SAT resynthesis as a separate module after mask-only transforms are tested.
 - Add fixtures that compare Python and C++ post-processed program behavior, not textual identity.
 - Keep scoring and candidate generation modular, so individual generators can be tested independently.
