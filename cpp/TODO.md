@@ -22,7 +22,7 @@
 - Start with pure mask-based simplifications that do not require Z3.
 - Port local SAT resynthesis as a separate module after mask-only transforms are tested.
 - Add fixtures that compare Python and C++ post-processed program behavior, not textual identity.
-- Keep scoring and candidate generation modular so individual generators can be tested independently.
+- Keep scoring and candidate generation modular, so individual generators can be tested independently.
 
 ## Developer UX
 
