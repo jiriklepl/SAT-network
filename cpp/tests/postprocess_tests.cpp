@@ -37,7 +37,7 @@ void require_equivalent(const Program &program, std::span<const Example> example
 }  // namespace
 
 TEST_CASE("post-process leaves an already minimal correct program equivalent") {
-    Program program{{Instruction{1, 1, 2}}, {3}};
+    Program program{{Instruction{kOpXor, 1, 2}}, {3}};
     Program simplified = post_process_program(program, xor_examples(), 2, 1, enabled_options());
     REQUIRE(simplified.instrs.size() == 1);
     REQUIRE(simplified.outputs == std::vector<int>{3});
@@ -45,7 +45,7 @@ TEST_CASE("post-process leaves an already minimal correct program equivalent") {
 }
 
 TEST_CASE("post-process removes unused instructions") {
-    Program program{{Instruction{1, 1, 2}, Instruction{0, 1, 2}}, {3}};
+    Program program{{Instruction{kOpXor, 1, 2}, Instruction{kOpAnd, 1, 2}}, {3}};
     Program simplified = post_process_program(program, xor_examples(), 2, 1, enabled_options());
     REQUIRE(simplified.instrs.size() == 1);
     REQUIRE(simplified.outputs == std::vector<int>{3});
@@ -57,7 +57,7 @@ TEST_CASE("post-process simplifies output selectors under don't-cares") {
         {{false}, {std::nullopt}},
         {{true}, {true}},
     };
-    Program program{{Instruction{2, 0, 1}}, {2}};
+    Program program{{Instruction{kOpOr, kSourceConstantOne, 1}}, {2}};
     Program simplified = post_process_program(program, examples, 1, 1, enabled_options());
     REQUIRE(simplified.instrs.empty());
     REQUIRE(simplified.outputs == std::vector<int>{0});
@@ -65,17 +65,17 @@ TEST_CASE("post-process simplifies output selectors under don't-cares") {
 }
 
 TEST_CASE("post-process applies algebraic identities and annihilators") {
-    Program and_identity{{Instruction{0, 0, 1}}, {2}};
+    Program and_identity{{Instruction{kOpAnd, kSourceConstantOne, 1}}, {2}};
     Program simplified_and = post_process_program(and_identity, identity_examples(), 1, 1, enabled_options());
     REQUIRE(simplified_and.instrs.empty());
     REQUIRE(simplified_and.outputs == std::vector<int>{1});
 
-    Program false_source{{Instruction{1, 1, 1}, Instruction{2, 1, 2}}, {3}};
+    Program false_source{{Instruction{kOpXor, 1, 1}, Instruction{kOpOr, 1, 2}}, {3}};
     Program simplified_or = post_process_program(false_source, identity_examples(), 1, 1, enabled_options());
     REQUIRE(simplified_or.instrs.empty());
     REQUIRE(simplified_or.outputs == std::vector<int>{1});
 
-    Program xor_self{{Instruction{1, 1, 1}, Instruction{1, 2, 2}}, {3}};
+    Program xor_self{{Instruction{kOpXor, 1, 1}, Instruction{kOpXor, 2, 2}}, {3}};
     std::vector<Example> false_examples = {
         {{false}, {false}},
         {{true}, {false}},
@@ -86,7 +86,7 @@ TEST_CASE("post-process applies algebraic identities and annihilators") {
 }
 
 TEST_CASE("post-process applies absorption and XOR cancellation") {
-    Program absorption{{Instruction{2, 1, 2}, Instruction{0, 1, 3}}, {4}};
+    Program absorption{{Instruction{kOpOr, 1, 2}, Instruction{kOpAnd, 1, 3}}, {4}};
     std::vector<Example> first_input_examples = {
         {{false, false}, {false}},
         {{false, true}, {false}},
@@ -97,7 +97,7 @@ TEST_CASE("post-process applies absorption and XOR cancellation") {
     REQUIRE(simplified_absorption.instrs.empty());
     REQUIRE(simplified_absorption.outputs == std::vector<int>{1});
 
-    Program cancellation{{Instruction{1, 1, 2}, Instruction{1, 3, 2}}, {4}};
+    Program cancellation{{Instruction{kOpXor, 1, 2}, Instruction{kOpXor, 3, 2}}, {4}};
     Program simplified_cancellation = post_process_program(cancellation, first_input_examples, 2, 1, enabled_options());
     REQUIRE(simplified_cancellation.instrs.empty());
     REQUIRE(simplified_cancellation.outputs == std::vector<int>{1});
@@ -108,7 +108,7 @@ TEST_CASE("post-process tie-breaking picks the earliest matching source") {
         {{false, false}, {false}},
         {{true, true}, {true}},
     };
-    Program program{{Instruction{0, 1, 2}}, {3}};
+    Program program{{Instruction{kOpAnd, 1, 2}}, {3}};
     Program simplified = post_process_program(program, examples, 2, 1, enabled_options());
     REQUIRE(simplified.instrs.empty());
     REQUIRE(simplified.outputs == std::vector<int>{1});

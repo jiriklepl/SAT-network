@@ -129,8 +129,8 @@ TEST_CASE("solver profiles post-processing when enabled") {
     SolveOptions options;
     options.profile = &profile;
     options.assumptions.instructions = {
-        InstructionAssumption{0, 1, 1, 2},
-        InstructionAssumption{1, 0, 0, 3},
+        InstructionAssumption{0, kOpXor, 1, 2},
+        InstructionAssumption{1, kOpAnd, kSourceConstantOne, 3},
     };
     options.assumptions.outputs = {OutputAssumption{0, 4}};
     options.postprocess.enabled = true;
@@ -145,16 +145,16 @@ TEST_CASE("solver profiles post-processing when enabled") {
 
 TEST_CASE("solver applies assumptions before solving") {
     SolveOptions options;
-    options.assumptions.instructions.push_back({0, 1, 1, 2});
+    options.assumptions.instructions.push_back({0, kOpXor, 1, 2});
     options.assumptions.outputs.push_back({0, 3});
     SolveResult result = solve_config(xor_config(1), options);
     REQUIRE(result.status == SolveStatus::Sat);
     REQUIRE(result.program.has_value());
-    REQUIRE(result.program->instrs[0].op == 1);
+    REQUIRE(result.program->instrs[0].op == kOpXor);
     REQUIRE(result.program->outputs[0] == 3);
 
     SolveOptions contradictory;
-    contradictory.assumptions.instructions.push_back({0, 0, 1, 1});
+    contradictory.assumptions.instructions.push_back({0, kOpAnd, 1, 1});
     SolveResult unsat = solve_config(xor_config(1), contradictory);
     REQUIRE(unsat.status == SolveStatus::Unsat);
 }
@@ -162,7 +162,7 @@ TEST_CASE("solver applies assumptions before solving") {
 TEST_CASE("solver exports SMT2 with structure, assumptions, and examples") {
     SolveOptions options;
     options.batch_size = 2;
-    options.assumptions.instructions.push_back({0, 1, 1, 2});
+    options.assumptions.instructions.push_back({0, kOpXor, 1, 2});
     options.assumptions.outputs.push_back({0, 3});
 
     std::string smt2 = make_smt2(xor_config(1), options);

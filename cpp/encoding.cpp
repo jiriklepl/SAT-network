@@ -84,9 +84,9 @@ z3::expr op_code_expr(ExprCache &cache, int code) {
 }
 
 z3::expr apply_operator(int code, const z3::expr &left, const z3::expr &right) {
-    if (code == 0) return left & right;
-    if (code == 1) return left ^ right;
-    if (code == 2) return left | right;
+    if (code == kOpAnd) return left & right;
+    if (code == kOpXor) return left ^ right;
+    if (code == kOpOr) return left | right;
     throw std::runtime_error("unknown operator code");
 }
 
@@ -244,7 +244,7 @@ std::vector<z3::expr> build_program(z3::context &ctx, const ProgramSpec &spec, c
     }
 
     for (int instr = 0; instr < spec.program_length; ++instr) {
-        const int idx = spec.num_inputs + 1 + instr;
+        const int idx = temp_source(instr, spec.num_inputs);
         const int max_idx = idx - 1;
         const z3::expr op = ops[instr];
         const z3::expr src1 = src1s[instr];
@@ -284,7 +284,7 @@ std::vector<z3::expr> build_program(z3::context &ctx, const ProgramSpec &spec, c
         constraints.push_back(operator_constraint(ctx, cache, op));
         constraints.push_back(z3::ule(src1, bv_val(cache, static_cast<uint64_t>(max_idx), spec.idx_bits())));
         constraints.push_back(z3::ule(src2, bv_val(cache, static_cast<uint64_t>(max_idx), spec.idx_bits())));
-        constraints.push_back(z3::ult(src1, src2) || ((op == op_code_expr(cache, 1)) && (src1 == src2)));
+        constraints.push_back(z3::ult(src1, src2) || ((op == op_code_expr(cache, kOpXor)) && (src1 == src2)));
     }
 
     z3::expr max_total_idx = bv_val(cache, static_cast<uint64_t>(spec.total_sources() - 1), spec.idx_bits());

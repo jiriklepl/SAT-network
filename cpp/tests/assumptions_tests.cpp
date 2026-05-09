@@ -26,7 +26,7 @@ TEST_CASE("assumption parser accepts instructions outputs comments and blanks") 
 
     REQUIRE(assumptions.instructions.size() == 1);
     REQUIRE(assumptions.instructions[0].instr_idx == 0);
-    REQUIRE(assumptions.instructions[0].op == 1);
+    REQUIRE(assumptions.instructions[0].op == kOpXor);
     REQUIRE(assumptions.instructions[0].s1 == 1);
     REQUIRE(assumptions.instructions[0].s2 == 2);
     REQUIRE(assumptions.outputs.size() == 1);

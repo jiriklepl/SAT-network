@@ -15,6 +15,13 @@ struct LogicOperator {
     int canonical_rank;
 };
 
+constexpr int kSourceConstantOne = 0;
+constexpr int kOpAnd = 0;
+constexpr int kOpXor = 1;
+constexpr int kOpOr = 2;
+constexpr int kDefaultOperatorCost = 1;
+constexpr int kXorOperatorCost = 2;
+
 struct ProgramSpec {
     int num_inputs = 0;
     int num_outputs = 0;
@@ -23,6 +30,11 @@ struct ProgramSpec {
     int total_sources() const;
     unsigned idx_bits() const;
 };
+
+int input_source(int input_idx);
+int temp_source(int temp_idx, int num_inputs);
+int temp_index_from_source(int source, int num_inputs);
+bool is_temp_source(int source, int num_inputs, int program_length);
 
 struct EncodingOptions {
     bool encode_boolean = false;

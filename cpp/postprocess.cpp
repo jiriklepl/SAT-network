@@ -15,10 +15,6 @@
 
 namespace {
 
-constexpr int kAnd = 0;
-constexpr int kXor = 1;
-constexpr int kOr = 2;
-
 struct ProgramScore {
     std::size_t length = 0;
     int max_output_depth = 0;
@@ -44,22 +40,9 @@ std::string program_key(const Program &program) {
     return key;
 }
 
-int temp_idx_for_source(int source, int num_inputs) {
-    return source - num_inputs - 1;
-}
-
-int source_for_temp_idx(std::size_t idx, int num_inputs) {
-    return num_inputs + 1 + static_cast<int>(idx);
-}
-
-bool is_temp_source(int source, int num_inputs, std::size_t instr_count) {
-    const int idx = temp_idx_for_source(source, num_inputs);
-    return idx >= 0 && static_cast<std::size_t>(idx) < instr_count;
-}
-
 void mark_reachable(int source, const Program &program, int num_inputs, std::vector<bool> &reachable) {
-    if (!is_temp_source(source, num_inputs, program.instrs.size())) return;
-    const std::size_t idx = static_cast<std::size_t>(temp_idx_for_source(source, num_inputs));
+    if (!is_temp_source(source, num_inputs, static_cast<int>(program.instrs.size()))) return;
+    const std::size_t idx = static_cast<std::size_t>(temp_index_from_source(source, num_inputs));
     if (reachable[idx]) return;
     reachable[idx] = true;
     const Instruction &instr = program.instrs[idx];
@@ -69,7 +52,7 @@ void mark_reachable(int source, const Program &program, int num_inputs, std::vec
 
 int remap_source(int source, int num_inputs, const std::vector<int> &temp_remap) {
     if (source <= num_inputs) return source;
-    const int idx = temp_idx_for_source(source, num_inputs);
+    const int idx = temp_index_from_source(source, num_inputs);
     if (idx < 0 || static_cast<std::size_t>(idx) >= temp_remap.size()) return source;
     return temp_remap[static_cast<std::size_t>(idx)];
 }
@@ -85,7 +68,7 @@ Program prune_dead_nodes(const Program &program, int num_inputs) {
     result.outputs = program.outputs;
     for (std::size_t idx = 0; idx < program.instrs.size(); ++idx) {
         if (!reachable[idx]) continue;
-        temp_remap[idx] = source_for_temp_idx(result.instrs.size(), num_inputs);
+        temp_remap[idx] = temp_source(static_cast<int>(result.instrs.size()), num_inputs);
         result.instrs.push_back(program.instrs[idx]);
     }
     for (auto &instr : result.instrs) {
@@ -107,7 +90,7 @@ ProgramScore score_program(const Program &program, int num_inputs) {
     for (const auto &instr : program.instrs) {
         const int depth = std::max(depths[static_cast<std::size_t>(instr.s1)], depths[static_cast<std::size_t>(instr.s2)]) + 1;
         depths.push_back(depth);
-        score.operator_cost += instr.op == kXor ? 2 : 1;
+        score.operator_cost += instr.op == kOpXor ? kXorOperatorCost : kDefaultOperatorCost;
         score.instr_key.push_back(instr.op);
         score.instr_key.push_back(instr.s1);
         score.instr_key.push_back(instr.s2);
@@ -141,20 +124,20 @@ int first_zero_source(std::span<const PackedMask> values) {
 }
 
 bool source_is_operator(const Program &program, int source, int num_inputs, int op) {
-    if (!is_temp_source(source, num_inputs, program.instrs.size())) return false;
-    return program.instrs[static_cast<std::size_t>(temp_idx_for_source(source, num_inputs))].op == op;
+    if (!is_temp_source(source, num_inputs, static_cast<int>(program.instrs.size()))) return false;
+    return program.instrs[static_cast<std::size_t>(temp_index_from_source(source, num_inputs))].op == op;
 }
 
 bool op_source_contains(const Program &program, int source, int num_inputs, int needle) {
-    if (!is_temp_source(source, num_inputs, program.instrs.size())) return false;
-    const Instruction &instr = program.instrs[static_cast<std::size_t>(temp_idx_for_source(source, num_inputs))];
+    if (!is_temp_source(source, num_inputs, static_cast<int>(program.instrs.size()))) return false;
+    const Instruction &instr = program.instrs[static_cast<std::size_t>(temp_index_from_source(source, num_inputs))];
     return instr.s1 == needle || instr.s2 == needle;
 }
 
 int xor_cancellation_replacement(const Program &program, const Instruction &instr, int num_inputs) {
     auto check_nested = [&](int nested_source, int other_source) -> int {
-        if (!source_is_operator(program, nested_source, num_inputs, kXor)) return -1;
-        const Instruction &nested = program.instrs[static_cast<std::size_t>(temp_idx_for_source(nested_source, num_inputs))];
+        if (!source_is_operator(program, nested_source, num_inputs, kOpXor)) return -1;
+        const Instruction &nested = program.instrs[static_cast<std::size_t>(temp_index_from_source(nested_source, num_inputs))];
         if (nested.s1 == other_source) return nested.s2;
         if (nested.s2 == other_source) return nested.s1;
         return -1;
@@ -166,32 +149,29 @@ int xor_cancellation_replacement(const Program &program, const Instruction &inst
 
 int algebraic_replacement(const Program &program, std::size_t instr_idx, int num_inputs, int false_source) {
     const Instruction &instr = program.instrs[instr_idx];
-    const int self_source = source_for_temp_idx(instr_idx, num_inputs);
-    (void)self_source;
-
-    if (instr.op == kAnd) {
+    if (instr.op == kOpAnd) {
         if (instr.s1 == instr.s2) return instr.s1;
         if (instr.s1 == 0) return instr.s2;
         if (instr.s2 == 0) return instr.s1;
         if (false_source >= 0 && (instr.s1 == false_source || instr.s2 == false_source)) return false_source;
-        if (source_is_operator(program, instr.s2, num_inputs, kOr) && op_source_contains(program, instr.s2, num_inputs, instr.s1)) {
+        if (source_is_operator(program, instr.s2, num_inputs, kOpOr) && op_source_contains(program, instr.s2, num_inputs, instr.s1)) {
             return instr.s1;
         }
-        if (source_is_operator(program, instr.s1, num_inputs, kOr) && op_source_contains(program, instr.s1, num_inputs, instr.s2)) {
+        if (source_is_operator(program, instr.s1, num_inputs, kOpOr) && op_source_contains(program, instr.s1, num_inputs, instr.s2)) {
             return instr.s2;
         }
-    } else if (instr.op == kOr) {
+    } else if (instr.op == kOpOr) {
         if (instr.s1 == instr.s2) return instr.s1;
         if (false_source >= 0 && instr.s1 == false_source) return instr.s2;
         if (false_source >= 0 && instr.s2 == false_source) return instr.s1;
-        if (instr.s1 == 0 || instr.s2 == 0) return 0;
-        if (source_is_operator(program, instr.s2, num_inputs, kAnd) && op_source_contains(program, instr.s2, num_inputs, instr.s1)) {
+        if (instr.s1 == kSourceConstantOne || instr.s2 == kSourceConstantOne) return kSourceConstantOne;
+        if (source_is_operator(program, instr.s2, num_inputs, kOpAnd) && op_source_contains(program, instr.s2, num_inputs, instr.s1)) {
             return instr.s1;
         }
-        if (source_is_operator(program, instr.s1, num_inputs, kAnd) && op_source_contains(program, instr.s1, num_inputs, instr.s2)) {
+        if (source_is_operator(program, instr.s1, num_inputs, kOpAnd) && op_source_contains(program, instr.s1, num_inputs, instr.s2)) {
             return instr.s2;
         }
-    } else if (instr.op == kXor) {
+    } else if (instr.op == kOpXor) {
         if (instr.s1 == instr.s2) return false_source;
         if (false_source >= 0 && instr.s1 == false_source) return instr.s2;
         if (false_source >= 0 && instr.s2 == false_source) return instr.s1;
@@ -263,7 +243,7 @@ std::vector<Program> generate_candidates(
     for (std::size_t instr_idx = 0; instr_idx < base.instrs.size(); ++instr_idx) {
         const int replacement = algebraic_replacement(base, instr_idx, num_inputs, false_source);
         if (replacement >= 0) {
-            add(redirect_source(base, source_for_temp_idx(instr_idx, num_inputs), replacement, num_inputs));
+            add(redirect_source(base, temp_source(static_cast<int>(instr_idx), num_inputs), replacement, num_inputs));
         }
     }
 

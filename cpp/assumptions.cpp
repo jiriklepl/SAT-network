@@ -39,21 +39,21 @@ int parse_index(const std::string &kind, const std::string &raw) {
 int translate_source(const std::string &raw_arg, const ProgramSpec &spec) {
     const std::string arg = trim(raw_arg);
     if (arg == "1") {
-        return 0;
+        return kSourceConstantOne;
     }
     if (!arg.empty() && arg[0] == 'I') {
         const int input_idx = parse_index("I", arg.substr(1));
         if (input_idx < 0 || input_idx >= spec.num_inputs) {
             throw std::runtime_error("Input index out of range in assumption: " + arg);
         }
-        return input_idx + 1;
+        return input_source(input_idx);
     }
     if (!arg.empty() && arg[0] == 'T') {
         const int temp_idx = parse_index("T", arg.substr(1));
         if (temp_idx < 0 || temp_idx >= spec.program_length) {
             throw std::runtime_error("Temporary index out of range in assumption: " + arg);
         }
-        return spec.num_inputs + 1 + temp_idx;
+        return temp_source(temp_idx, spec.num_inputs);
     }
     throw std::runtime_error("Unknown argument in assumption: " + arg);
 }

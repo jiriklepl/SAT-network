@@ -6,7 +6,7 @@
 #include <stdexcept>
 
 int ProgramSpec::total_sources() const {
-    return num_inputs + 1 + program_length;
+    return temp_source(program_length, num_inputs);
 }
 
 unsigned ProgramSpec::idx_bits() const {
@@ -15,11 +15,28 @@ unsigned ProgramSpec::idx_bits() const {
     return std::max(1u, bits);
 }
 
+int input_source(int input_idx) {
+    return input_idx + 1;
+}
+
+int temp_source(int temp_idx, int num_inputs) {
+    return num_inputs + 1 + temp_idx;
+}
+
+int temp_index_from_source(int source, int num_inputs) {
+    return source - num_inputs - 1;
+}
+
+bool is_temp_source(int source, int num_inputs, int program_length) {
+    const int idx = temp_index_from_source(source, num_inputs);
+    return idx >= 0 && idx < program_length;
+}
+
 const std::vector<LogicOperator> &logic_operators() {
     static const std::vector<LogicOperator> operators{
-        {0, "AND", 1},
-        {1, "XOR", 0},
-        {2, "OR", 2},
+        {kOpAnd, "AND", 1},
+        {kOpXor, "XOR", 0},
+        {kOpOr, "OR", 2},
     };
     return operators;
 }
@@ -73,16 +90,16 @@ bool known_op(int code) {
 }
 
 PackedMask apply_operator_mask(int code, const PackedMask &left, const PackedMask &right) {
-    if (code == 0) return left & right;
-    if (code == 1) return left ^ right;
-    if (code == 2) return left | right;
+    if (code == kOpAnd) return left & right;
+    if (code == kOpXor) return left ^ right;
+    if (code == kOpOr) return left | right;
     return PackedMask(left.width());
 }
 
 std::string format_source(int idx, int num_inputs) {
-    if (idx == 0) return "1";
+    if (idx == kSourceConstantOne) return "1";
     if (idx <= num_inputs) return "I" + std::to_string(idx - 1);
-    return "T" + std::to_string(idx - num_inputs - 1);
+    return "T" + std::to_string(temp_index_from_source(idx, num_inputs));
 }
 
 PackedExamples pack_examples(std::span<const Example> examples, int num_inputs, int num_outputs) {
@@ -180,7 +197,7 @@ void emit_program_blif(std::ostream &out, const Program &program, int num_inputs
             throw std::runtime_error("Unsupported operation in BLIF output");
         }
         if (instr.s1 == instr.s2) {
-            if (instr.op != 1) {
+            if (instr.op != kOpXor) {
                 throw std::runtime_error("Only XOR may use duplicate sources in BLIF output");
             }
             out << ".names T" << instr_idx << "\n";

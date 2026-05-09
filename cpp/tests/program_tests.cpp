@@ -13,14 +13,14 @@ TEST_CASE("program source formatting and text emission match Python format") {
     REQUIRE(format_source(2, 2) == "I1");
     REQUIRE(format_source(3, 2) == "T0");
 
-    Program xor_program{{Instruction{1, 1, 2}}, {3}};
+    Program xor_program{{Instruction{kOpXor, 1, 2}}, {3}};
     std::ostringstream emitted;
     emit_program(emitted, xor_program, 2);
     REQUIRE(emitted.str() == "T0: XOR(I0, I1)\nOUT0: T0\n");
 }
 
 TEST_CASE("program BLIF emission matches supported logic gates") {
-    Program program{{Instruction{0, 1, 2}, Instruction{1, 1, 2}, Instruction{2, 3, 4}}, {5}};
+    Program program{{Instruction{kOpAnd, 1, 2}, Instruction{kOpXor, 1, 2}, Instruction{kOpOr, 3, 4}}, {5}};
     std::ostringstream emitted;
     emit_program_blif(emitted, program, 2);
     REQUIRE(emitted.str().find(".model spec\n") == 0);
@@ -29,7 +29,7 @@ TEST_CASE("program BLIF emission matches supported logic gates") {
     REQUIRE(emitted.str().find(".names T0 T1 T2\n10 1\n01 1\n11 1\n") != std::string::npos);
     REQUIRE(emitted.str().find(".names T2 OUT0\n1 1\n.end\n") != std::string::npos);
 
-    Program duplicate_and{{Instruction{0, 1, 1}}, {2}};
+    Program duplicate_and{{Instruction{kOpAnd, 1, 1}}, {2}};
     REQUIRE_THROWS(emit_program_blif(emitted, duplicate_and, 1));
 }
 
@@ -56,10 +56,10 @@ TEST_CASE("packed verification accepts valid XOR and reports mismatches") {
         {{true, true}, {false}},
     };
 
-    Program xor_program{{Instruction{1, 1, 2}}, {3}};
+    Program xor_program{{Instruction{kOpXor, 1, 2}}, {3}};
     REQUIRE(verify_program(xor_program, examples, 2, 1).empty());
 
-    Program or_program{{Instruction{2, 1, 2}}, {3}};
+    Program or_program{{Instruction{kOpOr, 1, 2}}, {3}};
     std::vector<std::size_t> mismatches = verify_program(or_program, examples, 2, 1);
     REQUIRE(mismatches == std::vector<std::size_t>{3});
 }
