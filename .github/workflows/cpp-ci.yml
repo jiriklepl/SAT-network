@@ -6,6 +6,16 @@ on:
 
 jobs:
   build-and-test:
+    strategy:
+      matrix:
+        compiler: [g++-14, clang++-18]
+        include:
+          - compiler: g++-14
+            name: "GCC 14"
+            install: sudo apt-get install -y g++-14
+          - compiler: clang++-18
+            name: "Clang 18"
+            install: sudo apt-get install -y clang-18
     runs-on: ubuntu-24.04
 
     steps:
@@ -16,6 +26,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake g++ libz3-dev python3 python3-pip python3-venv
+          ${{ matrix.install }}
 
       - name: Install Python test dependencies
         run: |
@@ -23,7 +34,7 @@ jobs:
           .venv/bin/python -m pip install z3-solver
 
       - name: Configure
-        run: cmake --preset debug
+        run: cmake --preset debug -D CMAKE_CXX_COMPILER=${{ matrix.compiler }}
 
       - name: Build
         run: cmake --build --preset debug -j2
