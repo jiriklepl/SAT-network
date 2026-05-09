@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <ostream>
 #include <stdexcept>
+#include <bit>
 
 using boost::multiprecision::cpp_int;
 
@@ -11,17 +12,13 @@ int ProgramSpec::total_sources() const {
 }
 
 unsigned ProgramSpec::idx_bits() const {
-    int max_idx = std::max(0, total_sources() - 1);
-    unsigned bits = 0;
-    do {
-        ++bits;
-        max_idx >>= 1;
-    } while (max_idx != 0);
-    return bits;
+    const int max_idx = std::max(0, total_sources() - 1);
+    const unsigned bits = std::bit_width(static_cast<unsigned>(max_idx));
+    return std::max(1u, bits);
 }
 
 const std::vector<LogicOperator> &logic_operators() {
-    static const std::vector<LogicOperator> operators = {
+    static const std::vector<LogicOperator> operators{
         {0, "AND", 1},
         {1, "XOR", 0},
         {2, "OR", 2},
@@ -34,7 +31,7 @@ std::string cpp_int_to_string(const cpp_int &value) {
 }
 
 cpp_int all_ones(unsigned width) {
-    return (cpp_int(1) << width) - 1;
+    return (cpp_int{1} << width) - 1;
 }
 
 std::string bv_name(const std::string &prefix, int idx) {

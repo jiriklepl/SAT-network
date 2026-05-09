@@ -24,7 +24,7 @@ z3::check_result solve_with_cegis(
 ) {
     std::vector<bool> active(cfg.examples.size(), false);
     std::vector<Example> initial;
-    std::size_t initial_count = std::min(options.cegis_initial_size, cfg.examples.size());
+    const std::size_t initial_count = std::min(options.cegis_initial_size, cfg.examples.size());
     for (std::size_t idx = 0; idx < initial_count; ++idx) {
         active[idx] = true;
         initial.push_back(cfg.examples[idx]);
@@ -33,11 +33,11 @@ z3::check_result solve_with_cegis(
 
     std::size_t iteration = 0;
     while (true) {
-        z3::check_result result = solver.check();
+        const z3::check_result result = solver.check();
         if (result != z3::sat) return result;
 
         program = extract_program(ctx, solver.get_model(), spec);
-        std::vector<std::size_t> mismatches = verify_program(*program, cfg.examples, spec.num_inputs, spec.num_outputs);
+        const std::vector<std::size_t> mismatches = verify_program(*program, cfg.examples, spec.num_inputs, spec.num_outputs);
         if (mismatches.empty()) return result;
 
         std::vector<Example> counterexamples;
@@ -65,11 +65,11 @@ z3::check_result solve_with_batches(
     const SolveOptions &options
 ) {
     z3::check_result result = z3::unknown;
-    std::size_t batch_size = options.batch_size.value_or(cfg.examples.size());
+    const std::size_t batch_size = options.batch_size.value_or(cfg.examples.size());
     for (std::size_t offset = 0, batch_idx = 0; offset < cfg.examples.size(); offset += batch_size, ++batch_idx) {
-        std::size_t end = std::min(offset + batch_size, cfg.examples.size());
-        std::vector<Example> batch(cfg.examples.begin() + static_cast<std::ptrdiff_t>(offset),
-                                   cfg.examples.begin() + static_cast<std::ptrdiff_t>(end));
+        const std::size_t end = std::min(offset + batch_size, cfg.examples.size());
+        const std::vector<Example> batch(cfg.examples.begin() + static_cast<std::ptrdiff_t>(offset),
+                                         cfg.examples.begin() + static_cast<std::ptrdiff_t>(end));
         add_example_constraints(ctx, solver, batch, "b" + std::to_string(batch_idx), spec, encoding);
         result = solver.check();
         if (result != z3::sat) break;
@@ -87,9 +87,9 @@ void add_all_example_constraints(
 ) {
     std::size_t batch_size = options.batch_size.value_or(cfg.examples.size());
     for (std::size_t offset = 0, batch_idx = 0; offset < cfg.examples.size(); offset += batch_size, ++batch_idx) {
-        std::size_t end = std::min(offset + batch_size, cfg.examples.size());
-        std::vector<Example> batch(cfg.examples.begin() + static_cast<std::ptrdiff_t>(offset),
-                                   cfg.examples.begin() + static_cast<std::ptrdiff_t>(end));
+        const std::size_t end = std::min(offset + batch_size, cfg.examples.size());
+        const std::vector<Example> batch(cfg.examples.begin() + static_cast<std::ptrdiff_t>(offset),
+                                         cfg.examples.begin() + static_cast<std::ptrdiff_t>(end));
         add_example_constraints(ctx, solver, batch, "b" + std::to_string(batch_idx), spec, encoding);
     }
 }
@@ -103,18 +103,18 @@ SolveStatus map_status(z3::check_result result) {
 }  // namespace
 
 SolveResult solve_config(const Config &cfg, const SolveOptions &options) {
-    ProgramSpec spec{cfg.num_inputs, cfg.num_outputs, cfg.instructions};
+    const ProgramSpec spec{cfg.num_inputs, cfg.num_outputs, cfg.instructions};
     z3::context ctx;
     z3::solver solver = make_solver(ctx, options.solver);
     add_exprs(solver, build_program(ctx, spec, options.encoding));
     add_exprs(solver, build_assumption_constraints(ctx, spec, options.assumptions));
 
-    auto start = std::chrono::steady_clock::now();
+    const auto start = std::chrono::steady_clock::now();
     std::optional<Program> program;
-    z3::check_result z3_result = options.cegis
+    const z3::check_result z3_result = options.cegis
         ? solve_with_cegis(ctx, solver, cfg, spec, options.encoding, options, program)
         : solve_with_batches(ctx, solver, cfg, spec, options.encoding, options);
-    double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
 
     SolveResult result;
     result.status = map_status(z3_result);
@@ -125,7 +125,7 @@ SolveResult solve_config(const Config &cfg, const SolveOptions &options) {
     }
 
     if (!program.has_value()) program = extract_program(ctx, solver.get_model(), spec);
-    std::vector<std::size_t> mismatches = verify_program(*program, cfg.examples, spec.num_inputs, spec.num_outputs);
+    const std::vector<std::size_t> mismatches = verify_program(*program, cfg.examples, spec.num_inputs, spec.num_outputs);
     result.program = std::move(program);
     result.mismatch_count = mismatches.size();
     if (!mismatches.empty()) {
@@ -154,9 +154,9 @@ std::string make_dimacs(const Config &cfg, const SolveOptions &options) {
 
     z3::goal goal(ctx);
     goal.add(solver.assertions());
-    z3::tactic tactic = z3::tactic(ctx, "simplify") & z3::tactic(ctx, "propagate-values") &
-                        z3::tactic(ctx, "bit-blast") & z3::tactic(ctx, "tseitin-cnf");
-    z3::apply_result result = tactic(goal);
+    const z3::tactic tactic = z3::tactic(ctx, "simplify") & z3::tactic(ctx, "propagate-values") &
+                              z3::tactic(ctx, "bit-blast") & z3::tactic(ctx, "tseitin-cnf");
+    const z3::apply_result result = tactic(goal);
     if (result.size() != 1) {
         throw std::runtime_error("DIMACS conversion produced multiple subgoals");
     }

@@ -9,10 +9,10 @@
 namespace {
 
 std::string trim(const std::string &value) {
-    auto begin = std::find_if_not(value.begin(), value.end(), [](unsigned char ch) {
+    const auto begin = std::find_if_not(value.begin(), value.end(), [](unsigned char ch) {
         return std::isspace(ch) != 0;
     });
-    auto end = std::find_if_not(value.rbegin(), value.rend(), [](unsigned char ch) {
+    const auto end = std::find_if_not(value.rbegin(), value.rend(), [](unsigned char ch) {
         return std::isspace(ch) != 0;
     }).base();
     if (begin >= end) return "";
@@ -37,19 +37,19 @@ int parse_index(const std::string &kind, const std::string &raw) {
 }
 
 int translate_source(const std::string &raw_arg, const ProgramSpec &spec) {
-    std::string arg = trim(raw_arg);
+    const std::string arg = trim(raw_arg);
     if (arg == "1") {
         return 0;
     }
     if (!arg.empty() && arg[0] == 'I') {
-        int input_idx = parse_index("I", arg.substr(1));
+        const int input_idx = parse_index("I", arg.substr(1));
         if (input_idx < 0 || input_idx >= spec.num_inputs) {
             throw std::runtime_error("Input index out of range in assumption: " + arg);
         }
         return input_idx + 1;
     }
     if (!arg.empty() && arg[0] == 'T') {
-        int temp_idx = parse_index("T", arg.substr(1));
+        const int temp_idx = parse_index("T", arg.substr(1));
         if (temp_idx < 0 || temp_idx >= spec.program_length) {
             throw std::runtime_error("Temporary index out of range in assumption: " + arg);
         }
@@ -59,7 +59,7 @@ int translate_source(const std::string &raw_arg, const ProgramSpec &spec) {
 }
 
 std::pair<std::string, std::string> split_once(const std::string &line, char delimiter, const std::string &error) {
-    std::size_t pos = line.find(delimiter);
+    const std::size_t pos = line.find(delimiter);
     if (pos == std::string::npos) {
         throw std::runtime_error(error + line);
     }
@@ -67,18 +67,18 @@ std::pair<std::string, std::string> split_once(const std::string &line, char del
 }
 
 InstructionAssumption parse_instruction(const std::string &lhs, const std::string &rhs, const ProgramSpec &spec) {
-    int instr_idx = parse_index("T", lhs.substr(1));
+    const int instr_idx = parse_index("T", lhs.substr(1));
     if (instr_idx < 0 || instr_idx >= spec.program_length) {
         throw std::runtime_error("Temporary index out of range in assumption: " + lhs);
     }
 
-    std::size_t open = rhs.find('(');
-    std::size_t close = rhs.rfind(')');
+    const std::size_t open = rhs.find('(');
+    const std::size_t close = rhs.rfind(')');
     if (open == std::string::npos || close == std::string::npos || close < open || close != rhs.size() - 1) {
         throw std::runtime_error("Invalid instruction assumption: " + lhs + ": " + rhs);
     }
 
-    std::string op_label_raw = trim(rhs.substr(0, open));
+    const std::string op_label_raw = trim(rhs.substr(0, open));
     int op = 0;
     try {
         op = op_code_by_label(op_label_raw);
@@ -86,8 +86,8 @@ InstructionAssumption parse_instruction(const std::string &lhs, const std::strin
         throw std::runtime_error("Unknown operation in assumption: " + op_label_raw);
     }
 
-    std::string args = rhs.substr(open + 1, close - open - 1);
-    std::size_t comma = args.find(',');
+    const std::string args = rhs.substr(open + 1, close - open - 1);
+    const std::size_t comma = args.find(',');
     if (comma == std::string::npos || args.find(',', comma + 1) != std::string::npos) {
         throw std::runtime_error("Invalid instruction assumption: " + lhs + ": " + rhs);
     }
@@ -119,7 +119,7 @@ Assumptions parse_assumptions(std::istream &input, const ProgramSpec &spec) {
             continue;
         }
 
-        auto [lhs, rhs] = split_once(line, ':', "Invalid assumption line: ");
+        const auto [lhs, rhs] = split_once(line, ':', "Invalid assumption line: ");
         if (lhs.starts_with("T")) {
             assumptions.instructions.push_back(parse_instruction(lhs, rhs, spec));
         } else if (lhs.starts_with("OUT")) {

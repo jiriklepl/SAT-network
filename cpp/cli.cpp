@@ -44,7 +44,7 @@ cxxopts::Options make_options() {
 }  // namespace
 
 void print_usage(std::ostream &out) {
-    cxxopts::Options options = make_options();
+    const cxxopts::Options options = make_options();
     out << "Usage: sat_synth_cpp (--config PATH | --dataset NAME) [options]\n\n"
         << "C++ v1 supports explicit examples and built-in generated datasets.\n\n"
         << options.help();
@@ -52,7 +52,7 @@ void print_usage(std::ostream &out) {
 
 CliOptions parse_args(int argc, char **argv) {
     cxxopts::Options parser = make_options();
-    cxxopts::ParseResult parsed = parser.parse(argc, argv);
+    const cxxopts::ParseResult parsed = parser.parse(argc, argv);
     if (parsed.count("help")) {
         print_usage(std::cout);
         std::exit(0);

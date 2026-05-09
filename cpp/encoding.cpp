@@ -107,10 +107,10 @@ std::pair<std::vector<z3::expr>, std::vector<z3::expr>> build_test(
     }
 
     for (int instr = 0; instr < spec.program_length; ++instr) {
-        z3::expr op = bv_const(ctx, bv_name("OP", instr), 2);
-        z3::expr src1 = bv_const(ctx, bv_name("S1", instr), spec.idx_bits());
-        z3::expr src2 = bv_const(ctx, bv_name("S2", instr), spec.idx_bits());
-        z3::expr val = bv_const(ctx, "VAL_" + tag + "_" + std::to_string(instr), packed.width);
+        const z3::expr op = bv_const(ctx, bv_name("OP", instr), 2);
+        const z3::expr src1 = bv_const(ctx, bv_name("S1", instr), spec.idx_bits());
+        const z3::expr src2 = bv_const(ctx, bv_name("S2", instr), spec.idx_bits());
+        const z3::expr val = bv_const(ctx, "VAL_" + tag + "_" + std::to_string(instr), packed.width);
 
         z3::expr left = values[0];
         z3::expr right = values[0];
@@ -134,11 +134,11 @@ std::pair<std::vector<z3::expr>, std::vector<z3::expr>> build_test(
 
     std::vector<z3::expr> outputs;
     for (int out_idx = 0; out_idx < spec.num_outputs; ++out_idx) {
-        z3::expr selector = bv_const(ctx, "OUT_" + std::to_string(out_idx) + "_idx", spec.idx_bits());
+        const z3::expr selector = bv_const(ctx, "OUT_" + std::to_string(out_idx) + "_idx", spec.idx_bits());
         if (options.encode_boolean) {
-            z3::expr out_expr = bv_const(ctx, "OUTVAL_" + tag + "_" + std::to_string(out_idx), packed.width);
+            const z3::expr out_expr = bv_const(ctx, "OUTVAL_" + tag + "_" + std::to_string(out_idx), packed.width);
             for (std::size_t source_idx = 0; source_idx < values.size(); ++source_idx) {
-                z3::expr selector_bool = ctx.bool_const(("OUT_" + std::to_string(out_idx) + "_eq_" + std::to_string(source_idx)).c_str());
+                const z3::expr selector_bool = ctx.bool_const(("OUT_" + std::to_string(out_idx) + "_eq_" + std::to_string(source_idx)).c_str());
                 constraints.push_back(z3::implies(selector_bool, out_expr == values[source_idx]));
             }
             outputs.push_back(out_expr);
@@ -182,17 +182,17 @@ std::vector<z3::expr> build_program(z3::context &ctx, const ProgramSpec &spec, c
     }
 
     for (int instr = 0; instr < spec.program_length; ++instr) {
-        int idx = spec.num_inputs + 1 + instr;
-        int max_idx = idx - 1;
-        z3::expr op = ops[instr];
-        z3::expr src1 = src1s[instr];
-        z3::expr src2 = src2s[instr];
+        const int idx = spec.num_inputs + 1 + instr;
+        const int max_idx = idx - 1;
+        const z3::expr op = ops[instr];
+        const z3::expr src1 = src1s[instr];
+        const z3::expr src2 = src2s[instr];
 
         if (options.force_ordered && instr > 0) {
-            z3::expr pre_src1 = src1s[instr - 1];
-            z3::expr pre_src2 = src2s[instr - 1];
-            z3::expr pre_rank = operator_rank_expr(ctx, ops[instr - 1]);
-            z3::expr rank = operator_rank_expr(ctx, op);
+            const z3::expr pre_src1 = src1s[instr - 1];
+            const z3::expr pre_src2 = src2s[instr - 1];
+            const z3::expr pre_rank = operator_rank_expr(ctx, ops[instr - 1]);
+            const z3::expr rank = operator_rank_expr(ctx, op);
             constraints.push_back(z3::ule(pre_src2, src2));
             constraints.push_back(z3::implies(pre_src2 == src2, z3::ule(pre_src1, src1)));
             constraints.push_back(z3::implies((pre_src2 == src2) && (pre_src1 == src1), z3::ult(pre_rank, rank)));
@@ -211,9 +211,9 @@ std::vector<z3::expr> build_program(z3::context &ctx, const ProgramSpec &spec, c
 
         if (options.encode_boolean) {
             for (int source_idx = 0; source_idx <= max_idx; ++source_idx) {
-                z3::expr s1_bool = ctx.bool_const(("S1_" + std::to_string(instr) + "_eq_" + std::to_string(source_idx)).c_str());
-                z3::expr s2_bool = ctx.bool_const(("S2_" + std::to_string(instr) + "_eq_" + std::to_string(source_idx)).c_str());
-                z3::expr source_bv = bv_val(ctx, static_cast<uint64_t>(source_idx), spec.idx_bits());
+                const z3::expr s1_bool = ctx.bool_const(("S1_" + std::to_string(instr) + "_eq_" + std::to_string(source_idx)).c_str());
+                const z3::expr s2_bool = ctx.bool_const(("S2_" + std::to_string(instr) + "_eq_" + std::to_string(source_idx)).c_str());
+                const z3::expr source_bv = bv_val(ctx, static_cast<uint64_t>(source_idx), spec.idx_bits());
                 constraints.push_back(s1_bool == (src1 == source_bv));
                 constraints.push_back(s2_bool == (src2 == source_bv));
             }

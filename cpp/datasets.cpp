@@ -1,7 +1,6 @@
 #include "datasets.hpp"
 
 #include <algorithm>
-#include <cmath>
 #include <functional>
 #include <map>
 #include <stdexcept>

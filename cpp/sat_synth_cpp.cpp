@@ -25,14 +25,14 @@ Config load_requested_config(const CliOptions &cli) {
 }
 
 SolveOptions make_solve_options(const CliOptions &cli) {
-    SolveOptions options;
-    options.solver = cli.solver;
-    options.encoding = EncodingOptions{cli.encode_boolean, cli.force_ordered, cli.force_useful, cli.balanced_select};
-    options.batch_size = cli.batch_size;
-    options.cegis = cli.cegis;
-    options.cegis_initial_size = cli.cegis_initial_size;
-    options.cegis_counterexamples = cli.cegis_counterexamples;
-    return options;
+    return {
+        .solver = cli.solver,
+        .encoding = {cli.encode_boolean, cli.force_ordered, cli.force_useful, cli.balanced_select},
+        .batch_size = cli.batch_size,
+        .cegis = cli.cegis,
+        .cegis_initial_size = cli.cegis_initial_size,
+        .cegis_counterexamples = cli.cegis_counterexamples,
+    };
 }
 
 Assumptions load_assumptions(const CliOptions &cli, const Config &cfg) {
@@ -56,7 +56,7 @@ Assumptions load_assumptions(const CliOptions &cli, const Config &cfg) {
 
 int main(int argc, char **argv) {
     try {
-        CliOptions cli = parse_args(argc, argv);
+        const CliOptions cli = parse_args(argc, argv);
         if (cli.list_datasets) {
             for (const auto &name : available_dataset_names()) {
                 std::cout << name << "\n";
@@ -92,7 +92,7 @@ int main(int argc, char **argv) {
         }
 
         log_info(cli, "Built program structure with " + std::to_string(cfg.instructions) + " instructions");
-        SolveResult result = solve_config(cfg, solve_options);
+        const SolveResult result = solve_config(cfg, solve_options);
         if (result.status == SolveStatus::Sat) {
             if (cli.output_blif) {
                 emit_program_blif(std::cout, *result.program, cfg.num_inputs);
