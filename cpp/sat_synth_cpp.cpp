@@ -50,6 +50,9 @@ SolveOptions make_solve_options(const CliOptions &cli) {
                 .beam_width = cli.post_process_beam_width,
                 .beam_rounds = cli.post_process_beam_rounds,
                 .beam_candidates = cli.post_process_beam_candidates,
+                .resynthesis_maxnodes = cli.post_process_resynthesis_maxnodes,
+                .resynthesis_patience = cli.post_process_resynthesis_patience,
+                .generator_timeout_seconds = cli.generator_timeout,
             },
     };
 }
@@ -73,6 +76,18 @@ void print_profile(const ProfileData &profile) {
     std::cerr << "PROFILE post_processing_runs=" << profile.post_processing_runs << "\n";
     std::cerr << "PROFILE post_processing_input_instructions=" << profile.post_processing_input_instructions << "\n";
     std::cerr << "PROFILE post_processing_output_instructions=" << profile.post_processing_output_instructions << "\n";
+    std::cerr << "PROFILE post_processing_resynthesis_windows_considered="
+              << profile.post_processing_resynthesis_windows_considered << "\n";
+    std::cerr << "PROFILE post_processing_resynthesis_windows_sat=" << profile.post_processing_resynthesis_windows_sat
+              << "\n";
+    std::cerr << "PROFILE post_processing_resynthesis_candidates_materialized="
+              << profile.post_processing_resynthesis_candidates_materialized << "\n";
+    std::cerr << "PROFILE post_processing_resynthesis_invalid_candidates="
+              << profile.post_processing_resynthesis_invalid_candidates << "\n";
+    std::cerr << "PROFILE post_processing_resynthesis_candidates_accepted="
+              << profile.post_processing_resynthesis_candidates_accepted << "\n";
+    std::cerr << "PROFILE post_processing_resynthesis_timeout_exits="
+              << profile.post_processing_resynthesis_timeout_exits << "\n";
     std::cerr << "PROFILE verification_examples=" << profile.verification_examples << "\n";
     std::cerr << "PROFILE bv_cache_hits=" << profile.bv_cache_hits << "\n";
     std::cerr << "PROFILE bv_cache_misses=" << profile.bv_cache_misses << "\n";

@@ -52,7 +52,7 @@ Program timed_extract_program(z3::context &ctx, const z3::model &model, const Pr
 Program timed_post_process_program(const Program &program, std::span<const Example> examples, int num_inputs,
                                    int num_outputs, const PostProcessOptions &options, ProfileData *profile) {
     const auto start = Clock::now();
-    Program processed = post_process_program(program, examples, num_inputs, num_outputs, options);
+    Program processed = post_process_program(program, examples, num_inputs, num_outputs, options, profile);
     if (profile != nullptr) {
         profile->post_processing_seconds += elapsed_seconds(start);
         ++profile->post_processing_runs;

@@ -1,5 +1,7 @@
 #include "encoding.hpp"
 
+#include "assumptions.hpp"
+#include "datasets.hpp"
 #include "mask.hpp"
 #include "profile.hpp"
 #include "program.hpp"
@@ -149,10 +151,8 @@ z3::expr select_bv(z3::context & /*ctx*/, ExprCache &cache, std::span<const z3::
     return build(1, values.size(), values[0]);
 }
 
-std::pair<std::vector<z3::expr>, std::vector<z3::expr>> build_test(z3::context &ctx, ExprCache &cache,
-                                                                   const PackedExamples &packed, const std::string &tag,
-                                                                   const ProgramSpec &spec,
-                                                                   const EncodingOptions &options) {
+PackedTestEncoding build_test(z3::context &ctx, ExprCache &cache, const PackedExamples &packed, const std::string &tag,
+                              const ProgramSpec &spec, const EncodingOptions &options) {
     std::vector<z3::expr> constraints;
     std::vector<z3::expr> values;
     values.push_back(bv_val(cache, all_ones(packed.width)));
@@ -203,7 +203,7 @@ std::pair<std::vector<z3::expr>, std::vector<z3::expr>> build_test(z3::context &
             outputs.push_back(select_bv(ctx, cache, values, selector, spec.idx_bits(), options.balanced_select));
         }
     }
-    return {constraints, outputs};
+    return {.constraints = std::move(constraints), .outputs = std::move(outputs)};
 }
 
 uint64_t model_bv_uint64(const z3::model &model, const z3::expr &expr, const std::string &name) {
@@ -307,6 +307,31 @@ std::vector<z3::expr> build_program(z3::context &ctx, const ProgramSpec &spec, c
         profile->structure_constraints += constraints.size();
     }
     return constraints;
+}
+
+PackedTestEncoding build_packed_test(z3::context &ctx, std::span<const PackedMask> input_masks, const std::string &tag,
+                                     const ProgramSpec &spec, const EncodingOptions &options, ProfileData *profile) {
+    if (input_masks.size() != static_cast<std::size_t>(spec.num_inputs)) {
+        throw std::runtime_error("packed test input count does not match program spec");
+    }
+    if (input_masks.empty()) {
+        throw std::runtime_error("packed test inputs must be non-empty");
+    }
+    PackedExamples packed;
+    packed.width = input_masks.front().width();
+    packed.input_masks.assign(input_masks.begin(), input_masks.end());
+    for (const auto &mask : packed.input_masks) {
+        if (mask.width() != packed.width) {
+            throw std::runtime_error("packed test input mask width mismatch");
+        }
+    }
+    ExprCache cache(ctx, profile);
+    return build_test(ctx, cache, packed, tag, spec, options);
+}
+
+z3::expr packed_mask_value(z3::context &ctx, const PackedMask &mask) {
+    ExprCache cache(ctx, nullptr);
+    return bv_val(cache, mask);
 }
 
 std::vector<z3::expr> build_assumption_constraints(z3::context &ctx, const ProgramSpec &spec,

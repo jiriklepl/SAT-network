@@ -21,6 +21,12 @@ struct ProfileData {
     std::size_t post_processing_runs = 0;
     std::size_t post_processing_input_instructions = 0;
     std::size_t post_processing_output_instructions = 0;
+    std::size_t post_processing_resynthesis_windows_considered = 0;
+    std::size_t post_processing_resynthesis_windows_sat = 0;
+    std::size_t post_processing_resynthesis_candidates_materialized = 0;
+    std::size_t post_processing_resynthesis_invalid_candidates = 0;
+    std::size_t post_processing_resynthesis_candidates_accepted = 0;
+    std::size_t post_processing_resynthesis_timeout_exits = 0;
     std::size_t verification_examples = 0;
     std::size_t bv_cache_hits = 0;
     std::size_t bv_cache_misses = 0;

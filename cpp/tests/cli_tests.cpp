@@ -36,6 +36,12 @@ TEST_CASE("CLI parses supported solver options") {
         "4",
         "--post-process-beam-candidates",
         "5",
+        "--post-process-resynthesis-maxnodes",
+        "6",
+        "--post-process-resynthesis-patience",
+        "7",
+        "--generator-timeout",
+        "0.25",
     };
     CliOptions options = parse_args(static_cast<int>(std::size(argv)), const_cast<char **>(argv));
     REQUIRE(options.dataset_name == "adder");
@@ -57,6 +63,9 @@ TEST_CASE("CLI parses supported solver options") {
     REQUIRE(options.post_process_beam_width == 3);
     REQUIRE(options.post_process_beam_rounds == 4);
     REQUIRE(options.post_process_beam_candidates == 5);
+    REQUIRE(options.post_process_resynthesis_maxnodes == 6);
+    REQUIRE(options.post_process_resynthesis_patience == 7);
+    REQUIRE(options.generator_timeout == 0.25);
 }
 
 TEST_CASE("CLI parses SMT2 export option") {
@@ -99,6 +108,20 @@ TEST_CASE("CLI validation rejects invalid combinations and counts") {
     const char *negative_beam_rounds[] = {"sat_synth_cpp", "--dataset", "adder", "--post-process-beam-rounds", "-1"};
     REQUIRE_THROWS(
         parse_args(static_cast<int>(std::size(negative_beam_rounds)), const_cast<char **>(negative_beam_rounds)));
+
+    const char *small_resynthesis_window[] = {"sat_synth_cpp", "--dataset", "adder",
+                                              "--post-process-resynthesis-maxnodes", "1"};
+    REQUIRE_THROWS(parse_args(static_cast<int>(std::size(small_resynthesis_window)),
+                              const_cast<char **>(small_resynthesis_window)));
+
+    const char *negative_resynthesis_patience[] = {"sat_synth_cpp", "--dataset", "adder",
+                                                   "--post-process-resynthesis-patience", "-1"};
+    REQUIRE_THROWS(parse_args(static_cast<int>(std::size(negative_resynthesis_patience)),
+                              const_cast<char **>(negative_resynthesis_patience)));
+
+    const char *negative_generator_timeout[] = {"sat_synth_cpp", "--dataset", "adder", "--generator-timeout", "-1"};
+    REQUIRE_THROWS(parse_args(static_cast<int>(std::size(negative_generator_timeout)),
+                              const_cast<char **>(negative_generator_timeout)));
 }
 
 TEST_CASE("CLI list-datasets works without config or dataset") {
@@ -121,5 +144,7 @@ TEST_CASE("usage text mentions main input modes") {
     REQUIRE(out.str().find("--output-blif") != std::string::npos);
     REQUIRE(out.str().find("--profile") != std::string::npos);
     REQUIRE(out.str().find("--post-process") != std::string::npos);
+    REQUIRE(out.str().find("--post-process-resynthesis-maxnodes") != std::string::npos);
+    REQUIRE(out.str().find("--generator-timeout") != std::string::npos);
     REQUIRE(out.str().find("--list-datasets") != std::string::npos);
 }

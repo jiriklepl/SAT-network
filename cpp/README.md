@@ -4,9 +4,9 @@
 It supports JSON configs with explicit `examples` and C++-generated built-in
 datasets selected by config `type` or `--dataset`.
 
-It intentionally does not support Python plugin loading, quantified synthesis,
-or SAT-resynthesis post-processing. The `--post-process` flag currently runs a
-mask-only simplification pass.
+It intentionally does not support Python plugin loading or quantified synthesis.
+The `--post-process` flag currently runs mask-only simplification plus local SAT
+resynthesis for small one-fanout windows.
 
 ## Build
 
@@ -52,7 +52,7 @@ build/sat_synth_cpp --config path/to/config.json --make-smt2
 build/sat_synth_cpp --config path/to/config.json --make-dimacs
 build/sat_synth_cpp --config path/to/config.json --make-blif
 build/sat_synth_cpp --config path/to/config.json --output-blif
-build/sat_synth_cpp --config path/to/config.json --post-process
+build/sat_synth_cpp --config path/to/config.json --post-process --post-process-resynthesis-maxnodes 5
 build/sat_synth_cpp --config path/to/config.json --profile
 build/sat_synth_cpp --list-datasets
 ```
@@ -76,7 +76,9 @@ cache hits/misses.
 extraction and before text or BLIF emission. It can remove unreachable
 instructions, redirect equivalent masks to earlier sources, apply simple
 `AND`/`OR`/`XOR` algebra, and simplify output selectors under don't-care masks.
-Local SAT resynthesis and generator timeouts are deferred.
+It also tries local SAT resynthesis for closed one-fanout windows. Use
+`--post-process-resynthesis-maxnodes`, `--post-process-resynthesis-patience`,
+and `--generator-timeout` to control that search.
 
 ## Test
 

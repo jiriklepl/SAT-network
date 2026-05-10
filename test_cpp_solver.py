@@ -441,6 +441,76 @@ class CppSolverIntegrationTests(unittest.TestCase):
         self.assertNotIn("T1", proc.stdout)
         self.assertNotIn("T0:", proc.stdout)
 
+    def test_post_process_resynthesis_shortens_assumed_program(self) -> None:
+        config = {
+            "num_inputs": 3,
+            "num_outputs": 1,
+            "instructions": 2,
+            "examples": [
+                {"inputs": [False, False, False], "outputs": [False]},
+                {"inputs": [False, False, True], "outputs": [True]},
+                {"inputs": [False, True, False], "outputs": [False]},
+                {"inputs": [False, True, True], "outputs": [True]},
+                {"inputs": [True, False, True], "outputs": [True]},
+                {"inputs": [True, True, False], "outputs": [True]},
+                {"inputs": [True, True, True], "outputs": [True]},
+            ],
+        }
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".txt") as assume_file:
+            assume_file.write("T0: AND(I0, I1)\nT1: OR(I2, T0)\nOUT0: T1\n")
+            assume_file.flush()
+            proc = self.run_cpp(
+                config,
+                "--assume",
+                assume_file.name,
+                "--post-process",
+                "--post-process-resynthesis-maxnodes",
+                "2",
+                "--no-shuffle",
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        instrs, outputs = _parse_program(proc.stdout, config["num_inputs"], config["num_outputs"])
+        self.assertLess(len(instrs), 2)
+        self.assertEqual(_verify_program(instrs, outputs, config["examples"], config["num_outputs"]), [])
+
+    def test_output_blif_uses_resynthesized_program(self) -> None:
+        config = {
+            "num_inputs": 3,
+            "num_outputs": 1,
+            "instructions": 2,
+            "examples": [
+                {"inputs": [False, False, False], "outputs": [False]},
+                {"inputs": [False, False, True], "outputs": [True]},
+                {"inputs": [False, True, False], "outputs": [False]},
+                {"inputs": [False, True, True], "outputs": [True]},
+                {"inputs": [True, False, True], "outputs": [True]},
+                {"inputs": [True, True, False], "outputs": [True]},
+                {"inputs": [True, True, True], "outputs": [True]},
+            ],
+        }
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json") as file:
+            json.dump(config, file)
+            file.flush()
+            proc = self.run_cpp_args_with_input(
+                [
+                    "--config",
+                    file.name,
+                    "--output-blif",
+                    "--post-process",
+                    "--post-process-resynthesis-maxnodes",
+                    "2",
+                    "--assume",
+                    "-",
+                ],
+                "T0: AND(I0, I1)\nT1: OR(I2, T0)\nOUT0: T1\n",
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn(".model spec", proc.stdout)
+        self.assertIn(".names", proc.stdout)
+        self.assertIn(".names T0 OUT0", proc.stdout)
+        self.assertNotIn("T1", proc.stdout)
+        self.assertNotIn("T0:", proc.stdout)
+
     def test_invalid_post_process_options_return_usage_error(self) -> None:
         config = {
             "num_inputs": 1,
@@ -452,6 +522,12 @@ class CppSolverIntegrationTests(unittest.TestCase):
             (["--post-process-beam-width", "0"], "--post-process-beam-width must be at least 1"),
             (["--post-process-beam-rounds", "-1"], "--post-process-beam-rounds must be non-negative"),
             (["--post-process-beam-candidates", "-1"], "--post-process-beam-candidates must be non-negative"),
+            (["--post-process-resynthesis-maxnodes", "1"], "--post-process-resynthesis-maxnodes must be at least 2"),
+            (
+                ["--post-process-resynthesis-patience", "-1"],
+                "--post-process-resynthesis-patience must be non-negative",
+            ),
+            (["--generator-timeout", "-1"], "--generator-timeout must be non-negative"),
         ]:
             with self.subTest(args=args):
                 proc = self.run_cpp(config, *args)
@@ -568,6 +644,12 @@ class CppSolverIntegrationTests(unittest.TestCase):
         self.assertIn("PROFILE post_processing_runs=", proc.stderr)
         self.assertIn("PROFILE post_processing_input_instructions=", proc.stderr)
         self.assertIn("PROFILE post_processing_output_instructions=", proc.stderr)
+        self.assertIn("PROFILE post_processing_resynthesis_windows_considered=", proc.stderr)
+        self.assertIn("PROFILE post_processing_resynthesis_windows_sat=", proc.stderr)
+        self.assertIn("PROFILE post_processing_resynthesis_candidates_materialized=", proc.stderr)
+        self.assertIn("PROFILE post_processing_resynthesis_invalid_candidates=", proc.stderr)
+        self.assertIn("PROFILE post_processing_resynthesis_candidates_accepted=", proc.stderr)
+        self.assertIn("PROFILE post_processing_resynthesis_timeout_exits=", proc.stderr)
         self.assertIn("PROFILE bv_cache_hits=", proc.stderr)
         self.assertIn("PROFILE bv_cache_misses=", proc.stderr)
 
@@ -586,11 +668,22 @@ class CppSolverIntegrationTests(unittest.TestCase):
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".txt") as assume_file:
             assume_file.write("T0: XOR(I0, I1)\nT1: AND(1, T0)\nOUT0: T1\n")
             assume_file.flush()
-            proc = self.run_cpp(config, "--assume", assume_file.name, "--post-process", "--profile", "--no-shuffle")
+            proc = self.run_cpp(
+                config,
+                "--assume",
+                assume_file.name,
+                "--post-process",
+                "--post-process-resynthesis-maxnodes",
+                "2",
+                "--profile",
+                "--no-shuffle",
+            )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("PROFILE post_processing_runs=1", proc.stderr)
         self.assertIn("PROFILE post_processing_input_instructions=2", proc.stderr)
         self.assertIn("PROFILE post_processing_output_instructions=1", proc.stderr)
+        self.assertRegex(proc.stderr, r"PROFILE post_processing_resynthesis_windows_considered=[1-9]")
+        self.assertRegex(proc.stderr, r"PROFILE post_processing_resynthesis_candidates_materialized=[1-9]")
 
 
 if __name__ == "__main__":
