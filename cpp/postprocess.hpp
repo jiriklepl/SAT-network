@@ -11,7 +11,7 @@
 #include <string>
 #include <vector>
 
-enum class PostProcessScoreMetric {
+enum class PostProcessScoreMetric : std::uint8_t {
     ProgramLength,
     OutputDepth,
     MaxOutputDepth,
