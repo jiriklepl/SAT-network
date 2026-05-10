@@ -1,8 +1,14 @@
 #include "config.hpp"
 
+#include "datasets.hpp"
+
 #include <cstddef>
+
 #include <fstream>
+#include <optional>
 #include <stdexcept>
+#include <string>
+#include <utility>
 
 nlohmann::json config_to_json(const Config &cfg) {
     nlohmann::json result;

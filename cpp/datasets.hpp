@@ -4,6 +4,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cstddef>
+
 #include <initializer_list>
 #include <optional>
 #include <string>

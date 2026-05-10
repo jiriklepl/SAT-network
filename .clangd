@@ -1,0 +1,14 @@
+CompileFlags:
+  Add: [-std=c++26, -Wall, -Wextra, -pedantic]
+  CompilationDatabase: build/debug
+
+Diagnostics:
+  MissingIncludes: Strict
+  ClangTidy:
+    FastCheckFilter: None
+
+Index:
+  Background: Build
+
+InlayHints:
+  Enabled: Yes

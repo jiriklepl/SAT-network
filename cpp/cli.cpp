@@ -3,8 +3,10 @@
 #include <cxxopts.hpp>
 
 #include <cstdlib>
+
 #include <iostream>
 #include <stdexcept>
+#include <string>
 
 namespace {
 
@@ -14,6 +16,7 @@ namespace {
 
 cxxopts::Options make_options() {
     cxxopts::Options options("sat_synth_cpp", "Synthesize a logic program with z3");
+    // clang-format off
     options.add_options()
         ("config", "Path to a JSON config", cxxopts::value<std::string>())
         ("dataset", "Choose a built-in dataset config", cxxopts::value<std::string>())
@@ -43,6 +46,7 @@ cxxopts::Options make_options() {
         ("quiet", "Suppress informational output")
         ("profile", "Print C++ phase timings and counters to stderr")
         ("h,help", "Print usage");
+    // clang-format on
     return options;
 }
 
@@ -58,36 +62,36 @@ void print_usage(std::ostream &out) {
 CliOptions parse_args(int argc, char **argv) {
     cxxopts::Options parser = make_options();
     const cxxopts::ParseResult parsed = parser.parse(argc, argv);
-    if (parsed.count("help")) {
+    if (parsed.contains("help")) {
         print_usage(std::cout);
         std::exit(0);
     }
 
     CliOptions options;
-    if (parsed.count("config")) options.config_path = parsed["config"].as<std::string>();
-    if (parsed.count("dataset")) options.dataset_name = parsed["dataset"].as<std::string>();
-    if (parsed.count("assume")) options.assume_path = parsed["assume"].as<std::string>();
-    if (parsed.count("instructions")) options.instructions = parsed["instructions"].as<int>();
+    if (parsed.contains("config")) options.config_path = parsed["config"].as<std::string>();
+    if (parsed.contains("dataset")) options.dataset_name = parsed["dataset"].as<std::string>();
+    if (parsed.contains("assume")) options.assume_path = parsed["assume"].as<std::string>();
+    if (parsed.contains("instructions")) options.instructions = parsed["instructions"].as<int>();
     options.solver = parsed["solver"].as<std::string>();
-    options.encode_boolean = parsed.count("encode-boolean") > 0;
-    options.balanced_select = parsed.count("balanced-select") > 0;
-    options.force_ordered = parsed.count("force-ordered") > 0;
-    options.force_useful = parsed.count("force-useful") > 0;
-    if (parsed.count("batch-size")) options.batch_size = parsed["batch-size"].as<std::size_t>();
-    options.cegis = parsed.count("cegis") > 0;
+    options.encode_boolean = parsed.contains("encode-boolean");
+    options.balanced_select = parsed.contains("balanced-select");
+    options.force_ordered = parsed.contains("force-ordered");
+    options.force_useful = parsed.contains("force-useful");
+    if (parsed.contains("batch-size")) options.batch_size = parsed["batch-size"].as<std::size_t>();
+    options.cegis = parsed.contains("cegis");
     options.cegis_initial_size = parsed["cegis-initial-size"].as<std::size_t>();
     options.cegis_counterexamples = parsed["cegis-counterexamples"].as<std::size_t>();
-    options.no_shuffle = parsed.count("no-shuffle") > 0;
+    options.no_shuffle = parsed.contains("no-shuffle");
     options.seed = parsed["seed"].as<unsigned>();
-    options.quiet = parsed.count("quiet") > 0;
-    options.list_datasets = parsed.count("list-datasets") > 0;
-    options.dump_dataset = parsed.count("dump-dataset") > 0;
-    options.make_smt2 = parsed.count("make-smt2") > 0;
-    options.make_dimacs = parsed.count("make-dimacs") > 0;
-    options.make_blif = parsed.count("make-blif") > 0;
-    options.output_blif = parsed.count("output-blif") > 0;
-    options.profile = parsed.count("profile") > 0;
-    options.post_process = parsed.count("post-process") > 0;
+    options.quiet = parsed.contains("quiet");
+    options.list_datasets = parsed.contains("list-datasets");
+    options.dump_dataset = parsed.contains("dump-dataset");
+    options.make_smt2 = parsed.contains("make-smt2");
+    options.make_dimacs = parsed.contains("make-dimacs");
+    options.make_blif = parsed.contains("make-blif");
+    options.output_blif = parsed.contains("output-blif");
+    options.profile = parsed.contains("profile");
+    options.post_process = parsed.contains("post-process");
     const int post_process_beam_width = parsed["post-process-beam-width"].as<int>();
     const int post_process_beam_rounds = parsed["post-process-beam-rounds"].as<int>();
     const int post_process_beam_candidates = parsed["post-process-beam-candidates"].as<int>();

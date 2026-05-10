@@ -50,11 +50,13 @@ TEST_CASE("dataset generator rejects unknown and unsupported sampled configs") {
 
     nlohmann::json sampled_life = default_dataset_config("life");
     sampled_life["life"] = {{"max_examples", 4}, {"seed", 0}};
-    require_throws_message(sampled_life, "life.max_examples sampling is not supported by the C++ dataset generator yet");
+    require_throws_message(sampled_life,
+                           "life.max_examples sampling is not supported by the C++ dataset generator yet");
 
     nlohmann::json sampled_excitable = default_dataset_config("excitable");
     sampled_excitable["excitable"] = {{"states", 3}, {"max_examples", 4}, {"seed", 0}};
-    require_throws_message(sampled_excitable, "excitable.max_examples sampling is not supported by the C++ dataset generator yet");
+    require_throws_message(sampled_excitable,
+                           "excitable.max_examples sampling is not supported by the C++ dataset generator yet");
 }
 
 TEST_CASE("specific dataset rows match documented rules") {

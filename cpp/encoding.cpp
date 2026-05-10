@@ -1,12 +1,20 @@
 #include "encoding.hpp"
 
+#include "mask.hpp"
+#include "profile.hpp"
+#include "program.hpp"
+
+#include <cstddef>
 #include <cstdint>
+
 #include <chrono>
 #include <functional>
 #include <map>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -20,10 +28,7 @@ struct BvKey {
     std::uint64_t value = 0;
     unsigned bits = 0;
 
-    friend bool operator<(const BvKey &left, const BvKey &right) {
-        if (left.value != right.value) return left.value < right.value;
-        return left.bits < right.bits;
-    }
+    friend auto operator<=>(const BvKey &left, const BvKey &right) = default;
 };
 
 class ExprCache {
@@ -31,7 +36,7 @@ public:
     ExprCache(z3::context &ctx, ProfileData *profile) : ctx_(ctx), profile_(profile) {}
 
     z3::expr bv_val(std::uint64_t value, unsigned bits) {
-        const BvKey key{value, bits};
+        const BvKey key{.value = value, .bits = bits};
         const auto it = bv_values_.find(key);
         if (it != bv_values_.end()) {
             if (profile_ != nullptr) ++profile_->bv_cache_hits;
@@ -98,7 +103,8 @@ z3::expr operator_constraint(z3::context &ctx, ExprCache &cache, const z3::expr 
     return z3::mk_or(disj);
 }
 
-z3::expr operator_expr(z3::context &ctx, ExprCache &cache, const z3::expr &op, const z3::expr &left, const z3::expr &right) {
+z3::expr operator_expr(z3::context & /*ctx*/, ExprCache &cache, const z3::expr &op, const z3::expr &left,
+                       const z3::expr &right) {
     const auto &operators = logic_operators();
     z3::expr expr = apply_operator(operators.back().code, left, right);
     for (auto it = operators.rbegin() + 1; it != operators.rend(); ++it) {
@@ -111,22 +117,14 @@ z3::expr operator_rank_expr(ExprCache &cache, const z3::expr &op) {
     const auto &operators = logic_operators();
     z3::expr expr = bv_val(cache, static_cast<uint64_t>(operators.back().canonical_rank), 2);
     for (auto it = operators.rbegin() + 1; it != operators.rend(); ++it) {
-        expr = z3::ite(
-            op == op_code_expr(cache, it->code),
-            bv_val(cache, static_cast<uint64_t>(it->canonical_rank), 2),
-            expr);
+        expr = z3::ite(op == op_code_expr(cache, it->code), bv_val(cache, static_cast<uint64_t>(it->canonical_rank), 2),
+                       expr);
     }
     return expr;
 }
 
-z3::expr select_bv(
-    z3::context &ctx,
-    ExprCache &cache,
-    std::span<const z3::expr> values,
-    const z3::expr &idx_var,
-    unsigned bits,
-    bool balanced
-) {
+z3::expr select_bv(z3::context & /*ctx*/, ExprCache &cache, std::span<const z3::expr> values, const z3::expr &idx_var,
+                   unsigned bits, bool balanced) {
     if (values.empty()) {
         throw std::runtime_error("select values must be non-empty");
     }
@@ -140,25 +138,21 @@ z3::expr select_bv(
 
     std::function<z3::expr(std::size_t, std::size_t, const z3::expr &)> build =
         [&](std::size_t lo, std::size_t hi, const z3::expr &default_expr) -> z3::expr {
-            if (lo >= hi) return default_expr;
-            if (hi - lo == 1) {
-                return z3::ite(idx_var == bv_val(cache, static_cast<uint64_t>(lo), bits), values[lo], default_expr);
-            }
-            std::size_t mid = (lo + hi) / 2;
-            z3::expr right = build(mid, hi, default_expr);
-            return build(lo, mid, right);
-        };
+        if (lo >= hi) return default_expr;
+        if (hi - lo == 1) {
+            return z3::ite(idx_var == bv_val(cache, static_cast<uint64_t>(lo), bits), values[lo], default_expr);
+        }
+        const std::size_t mid = (lo + hi) / 2;
+        const z3::expr right = build(mid, hi, default_expr);
+        return build(lo, mid, right);
+    };
     return build(1, values.size(), values[0]);
 }
 
-std::pair<std::vector<z3::expr>, std::vector<z3::expr>> build_test(
-    z3::context &ctx,
-    ExprCache &cache,
-    const PackedExamples &packed,
-    const std::string &tag,
-    const ProgramSpec &spec,
-    const EncodingOptions &options
-) {
+std::pair<std::vector<z3::expr>, std::vector<z3::expr>> build_test(z3::context &ctx, ExprCache &cache,
+                                                                   const PackedExamples &packed, const std::string &tag,
+                                                                   const ProgramSpec &spec,
+                                                                   const EncodingOptions &options) {
     std::vector<z3::expr> constraints;
     std::vector<z3::expr> values;
     values.push_back(bv_val(cache, all_ones(packed.width)));
@@ -178,8 +172,10 @@ std::pair<std::vector<z3::expr>, std::vector<z3::expr>> build_test(
             left = bv_const(ctx, "LEFT_" + tag + "_" + std::to_string(instr), packed.width);
             right = bv_const(ctx, "RIGHT_" + tag + "_" + std::to_string(instr), packed.width);
             for (std::size_t source_idx = 0; source_idx < values.size(); ++source_idx) {
-                z3::expr s1_bool = ctx.bool_const(("S1_" + std::to_string(instr) + "_eq_" + std::to_string(source_idx)).c_str());
-                z3::expr s2_bool = ctx.bool_const(("S2_" + std::to_string(instr) + "_eq_" + std::to_string(source_idx)).c_str());
+                const z3::expr s1_bool =
+                    ctx.bool_const(("S1_" + std::to_string(instr) + "_eq_" + std::to_string(source_idx)).c_str());
+                const z3::expr s2_bool =
+                    ctx.bool_const(("S2_" + std::to_string(instr) + "_eq_" + std::to_string(source_idx)).c_str());
                 constraints.push_back(z3::implies(s1_bool, left == values[source_idx]));
                 constraints.push_back(z3::implies(s2_bool, right == values[source_idx]));
             }
@@ -198,7 +194,8 @@ std::pair<std::vector<z3::expr>, std::vector<z3::expr>> build_test(
         if (options.encode_boolean) {
             const z3::expr out_expr = bv_const(ctx, "OUTVAL_" + tag + "_" + std::to_string(out_idx), packed.width);
             for (std::size_t source_idx = 0; source_idx < values.size(); ++source_idx) {
-                const z3::expr selector_bool = ctx.bool_const(("OUT_" + std::to_string(out_idx) + "_eq_" + std::to_string(source_idx)).c_str());
+                const z3::expr selector_bool =
+                    ctx.bool_const(("OUT_" + std::to_string(out_idx) + "_eq_" + std::to_string(source_idx)).c_str());
                 constraints.push_back(z3::implies(selector_bool, out_expr == values[source_idx]));
             }
             outputs.push_back(out_expr);
@@ -210,7 +207,7 @@ std::pair<std::vector<z3::expr>, std::vector<z3::expr>> build_test(
 }
 
 uint64_t model_bv_uint64(const z3::model &model, const z3::expr &expr, const std::string &name) {
-    z3::expr value = model.eval(expr, true);
+    const z3::expr value = model.eval(expr, true);
     uint64_t result = 0;
     if (!Z3_get_numeral_uint64(value.ctx(), value, &result)) {
         throw std::runtime_error("Model did not provide a concrete value for " + name + ": " + value.to_string());
@@ -220,7 +217,8 @@ uint64_t model_bv_uint64(const z3::model &model, const z3::expr &expr, const std
 
 }  // namespace
 
-std::vector<z3::expr> build_program(z3::context &ctx, const ProgramSpec &spec, const EncodingOptions &options, ProfileData *profile) {
+std::vector<z3::expr> build_program(z3::context &ctx, const ProgramSpec &spec, const EncodingOptions &options,
+                                    ProfileData *profile) {
     const auto start = Clock::now();
     ExprCache cache(ctx, profile);
     if (spec.num_inputs <= 0 || spec.num_outputs <= 0 || spec.program_length < 0) {
@@ -239,6 +237,7 @@ std::vector<z3::expr> build_program(z3::context &ctx, const ProgramSpec &spec, c
         src1s.push_back(bv_const(ctx, bv_name("S1", instr), spec.idx_bits()));
         src2s.push_back(bv_const(ctx, bv_name("S2", instr), spec.idx_bits()));
     }
+    output_selectors.reserve(spec.num_outputs);
     for (int out_idx = 0; out_idx < spec.num_outputs; ++out_idx) {
         output_selectors.push_back(bv_const(ctx, "OUT_" + std::to_string(out_idx) + "_idx", spec.idx_bits()));
     }
@@ -246,13 +245,13 @@ std::vector<z3::expr> build_program(z3::context &ctx, const ProgramSpec &spec, c
     for (int instr = 0; instr < spec.program_length; ++instr) {
         const int idx = temp_source(instr, spec.num_inputs);
         const int max_idx = idx - 1;
-        const z3::expr op = ops[instr];
-        const z3::expr src1 = src1s[instr];
-        const z3::expr src2 = src2s[instr];
+        const z3::expr &op = ops[instr];
+        const z3::expr &src1 = src1s[instr];
+        const z3::expr &src2 = src2s[instr];
 
         if (options.force_ordered && instr > 0) {
-            const z3::expr pre_src1 = src1s[instr - 1];
-            const z3::expr pre_src2 = src2s[instr - 1];
+            const z3::expr &pre_src1 = src1s[instr - 1];
+            const z3::expr &pre_src2 = src2s[instr - 1];
             const z3::expr pre_rank = operator_rank_expr(cache, ops[instr - 1]);
             const z3::expr rank = operator_rank_expr(cache, op);
             constraints.push_back(z3::ule(pre_src2, src2));
@@ -262,8 +261,9 @@ std::vector<z3::expr> build_program(z3::context &ctx, const ProgramSpec &spec, c
 
         if (options.force_useful) {
             z3::expr_vector useful(ctx);
-            z3::expr idx_bv = bv_val(cache, static_cast<uint64_t>(idx), spec.idx_bits());
-            for (const auto &selector : output_selectors) useful.push_back(selector == idx_bv);
+            const z3::expr idx_bv = bv_val(cache, static_cast<uint64_t>(idx), spec.idx_bits());
+            for (const auto &selector : output_selectors)
+                useful.push_back(selector == idx_bv);
             for (int next = instr + 1; next < spec.program_length; ++next) {
                 useful.push_back(src1s[next] == idx_bv);
                 useful.push_back(src2s[next] == idx_bv);
@@ -273,8 +273,10 @@ std::vector<z3::expr> build_program(z3::context &ctx, const ProgramSpec &spec, c
 
         if (options.encode_boolean) {
             for (int source_idx = 0; source_idx <= max_idx; ++source_idx) {
-                const z3::expr s1_bool = ctx.bool_const(("S1_" + std::to_string(instr) + "_eq_" + std::to_string(source_idx)).c_str());
-                const z3::expr s2_bool = ctx.bool_const(("S2_" + std::to_string(instr) + "_eq_" + std::to_string(source_idx)).c_str());
+                const z3::expr s1_bool =
+                    ctx.bool_const(("S1_" + std::to_string(instr) + "_eq_" + std::to_string(source_idx)).c_str());
+                const z3::expr s2_bool =
+                    ctx.bool_const(("S2_" + std::to_string(instr) + "_eq_" + std::to_string(source_idx)).c_str());
                 const z3::expr source_bv = bv_val(cache, static_cast<uint64_t>(source_idx), spec.idx_bits());
                 constraints.push_back(s1_bool == (src1 == source_bv));
                 constraints.push_back(s2_bool == (src2 == source_bv));
@@ -287,14 +289,16 @@ std::vector<z3::expr> build_program(z3::context &ctx, const ProgramSpec &spec, c
         constraints.push_back(z3::ult(src1, src2) || ((op == op_code_expr(cache, kOpXor)) && (src1 == src2)));
     }
 
-    z3::expr max_total_idx = bv_val(cache, static_cast<uint64_t>(spec.total_sources() - 1), spec.idx_bits());
+    const z3::expr max_total_idx = bv_val(cache, static_cast<uint64_t>(spec.total_sources() - 1), spec.idx_bits());
     for (int out_idx = 0; out_idx < spec.num_outputs; ++out_idx) {
-        z3::expr selector = output_selectors[out_idx];
+        const z3::expr &selector = output_selectors[out_idx];
         constraints.push_back(z3::ule(selector, max_total_idx));
         if (options.encode_boolean) {
             for (int source_idx = 0; source_idx < spec.total_sources(); ++source_idx) {
-                z3::expr selector_bool = ctx.bool_const(("OUT_" + std::to_string(out_idx) + "_eq_" + std::to_string(source_idx)).c_str());
-                constraints.push_back(selector_bool == (selector == bv_val(cache, static_cast<uint64_t>(source_idx), spec.idx_bits())));
+                const z3::expr selector_bool =
+                    ctx.bool_const(("OUT_" + std::to_string(out_idx) + "_eq_" + std::to_string(source_idx)).c_str());
+                constraints.push_back(selector_bool ==
+                                      (selector == bv_val(cache, static_cast<uint64_t>(source_idx), spec.idx_bits())));
             }
         }
     }
@@ -305,38 +309,32 @@ std::vector<z3::expr> build_program(z3::context &ctx, const ProgramSpec &spec, c
     return constraints;
 }
 
-std::vector<z3::expr> build_assumption_constraints(z3::context &ctx, const ProgramSpec &spec, const Assumptions &assumptions) {
+std::vector<z3::expr> build_assumption_constraints(z3::context &ctx, const ProgramSpec &spec,
+                                                   const Assumptions &assumptions) {
     std::vector<z3::expr> constraints;
     for (const auto &instr : assumptions.instructions) {
-        constraints.push_back(bv_const(ctx, bv_name("OP", instr.instr_idx), 2) == bv_val(ctx, static_cast<uint64_t>(instr.op), 2));
-        constraints.push_back(
-            bv_const(ctx, bv_name("S1", instr.instr_idx), spec.idx_bits()) ==
-            bv_val(ctx, static_cast<uint64_t>(instr.s1), spec.idx_bits()));
-        constraints.push_back(
-            bv_const(ctx, bv_name("S2", instr.instr_idx), spec.idx_bits()) ==
-            bv_val(ctx, static_cast<uint64_t>(instr.s2), spec.idx_bits()));
+        constraints.push_back(bv_const(ctx, bv_name("OP", instr.instr_idx), 2) ==
+                              bv_val(ctx, static_cast<uint64_t>(instr.op), 2));
+        constraints.push_back(bv_const(ctx, bv_name("S1", instr.instr_idx), spec.idx_bits()) ==
+                              bv_val(ctx, static_cast<uint64_t>(instr.s1), spec.idx_bits()));
+        constraints.push_back(bv_const(ctx, bv_name("S2", instr.instr_idx), spec.idx_bits()) ==
+                              bv_val(ctx, static_cast<uint64_t>(instr.s2), spec.idx_bits()));
     }
     for (const auto &output : assumptions.outputs) {
-        constraints.push_back(
-            bv_const(ctx, "OUT_" + std::to_string(output.out_idx) + "_idx", spec.idx_bits()) ==
-            bv_val(ctx, static_cast<uint64_t>(output.source), spec.idx_bits()));
+        constraints.push_back(bv_const(ctx, "OUT_" + std::to_string(output.out_idx) + "_idx", spec.idx_bits()) ==
+                              bv_val(ctx, static_cast<uint64_t>(output.source), spec.idx_bits()));
     }
     return constraints;
 }
 
 void add_exprs(z3::solver &solver, std::span<const z3::expr> exprs) {
-    for (const auto &expr : exprs) solver.add(expr);
+    for (const auto &expr : exprs)
+        solver.add(expr);
 }
 
-void add_example_constraints(
-    z3::context &ctx,
-    z3::solver &solver,
-    std::span<const Example> examples,
-    const std::string &tag,
-    const ProgramSpec &spec,
-    const EncodingOptions &options,
-    ProfileData *profile
-) {
+void add_example_constraints(z3::context &ctx, z3::solver &solver, std::span<const Example> examples,
+                             const std::string &tag, const ProgramSpec &spec, const EncodingOptions &options,
+                             ProfileData *profile) {
     const auto packing_start = Clock::now();
     PackedExamples packed = pack_examples(examples, spec.num_inputs, spec.num_outputs);
     if (profile != nullptr) {
@@ -349,9 +347,9 @@ void add_example_constraints(
     auto [constraints, outputs] = build_test(ctx, cache, packed, tag, spec, options);
     add_exprs(solver, constraints);
     for (int out_idx = 0; out_idx < spec.num_outputs; ++out_idx) {
-        z3::expr expected = bv_val(cache, packed.output_values[out_idx]);
+        const z3::expr expected = bv_val(cache, packed.output_values[out_idx]);
         if (!packed.output_dont_care_masks[out_idx].is_zero()) {
-            z3::expr dont_care = bv_val(cache, packed.output_dont_care_masks[out_idx]);
+            const z3::expr dont_care = bv_val(cache, packed.output_dont_care_masks[out_idx]);
             solver.add((outputs[out_idx] | dont_care) == (expected | dont_care));
         } else {
             solver.add(outputs[out_idx] == expected);
@@ -367,16 +365,18 @@ void add_example_constraints(
 Program extract_program(z3::context &ctx, const z3::model &model, const ProgramSpec &spec) {
     Program program;
     for (int instr = 0; instr < spec.program_length; ++instr) {
-        int op = static_cast<int>(model_bv_uint64(model, bv_const(ctx, bv_name("OP", instr), 2), "OP_" + std::to_string(instr)));
-        int s1 = static_cast<int>(model_bv_uint64(model, bv_const(ctx, bv_name("S1", instr), spec.idx_bits()), "S1_" + std::to_string(instr)));
-        int s2 = static_cast<int>(model_bv_uint64(model, bv_const(ctx, bv_name("S2", instr), spec.idx_bits()), "S2_" + std::to_string(instr)));
+        const int op = static_cast<int>(
+            model_bv_uint64(model, bv_const(ctx, bv_name("OP", instr), 2), "OP_" + std::to_string(instr)));
+        const int s1 = static_cast<int>(model_bv_uint64(model, bv_const(ctx, bv_name("S1", instr), spec.idx_bits()),
+                                                        "S1_" + std::to_string(instr)));
+        const int s2 = static_cast<int>(model_bv_uint64(model, bv_const(ctx, bv_name("S2", instr), spec.idx_bits()),
+                                                        "S2_" + std::to_string(instr)));
         program.instrs.push_back({known_op(op) ? op : -1, s1, s2});
     }
     for (int out_idx = 0; out_idx < spec.num_outputs; ++out_idx) {
-        program.outputs.push_back(static_cast<int>(model_bv_uint64(
-            model,
-            bv_const(ctx, "OUT_" + std::to_string(out_idx) + "_idx", spec.idx_bits()),
-            "OUT_" + std::to_string(out_idx) + "_idx")));
+        program.outputs.push_back(static_cast<int>(
+            model_bv_uint64(model, bv_const(ctx, "OUT_" + std::to_string(out_idx) + "_idx", spec.idx_bits()),
+                            "OUT_" + std::to_string(out_idx) + "_idx")));
     }
     return program;
 }
@@ -386,13 +386,13 @@ z3::solver make_solver(z3::context &ctx, const std::string &solver_choice) {
         return z3::solver(ctx, "QF_BV");
     }
     if (solver_choice == "simple-tactic") {
-        z3::tactic tactic = z3::tactic(ctx, "simplify") & z3::tactic(ctx, "propagate-values") &
-                            z3::tactic(ctx, "bit-blast") & z3::tactic(ctx, "sat");
+        const z3::tactic tactic = z3::tactic(ctx, "simplify") & z3::tactic(ctx, "propagate-values") &
+                                  z3::tactic(ctx, "bit-blast") & z3::tactic(ctx, "sat");
         return tactic.mk_solver();
     }
     if (solver_choice == "ctx-simplify-tactic") {
-        z3::tactic tactic = z3::tactic(ctx, "ctx-simplify") & z3::tactic(ctx, "propagate-values") &
-                            z3::tactic(ctx, "bit-blast") & z3::tactic(ctx, "sat");
+        const z3::tactic tactic = z3::tactic(ctx, "ctx-simplify") & z3::tactic(ctx, "propagate-values") &
+                                  z3::tactic(ctx, "bit-blast") & z3::tactic(ctx, "sat");
         return tactic.mk_solver();
     }
     throw std::runtime_error("Unsupported solver: " + solver_choice);

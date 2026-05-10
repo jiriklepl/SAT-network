@@ -7,10 +7,12 @@
 #include "program.hpp"
 
 #include <cstddef>
+#include <cstdint>
+
 #include <optional>
 #include <string>
 
-enum class SolveStatus {
+enum class SolveStatus : std::uint8_t {
     Sat,
     Unsat,
     Unknown,

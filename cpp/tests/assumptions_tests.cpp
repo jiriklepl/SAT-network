@@ -17,12 +17,11 @@ Assumptions parse_text(const std::string &text, const ProgramSpec &spec) {
 
 TEST_CASE("assumption parser accepts instructions outputs comments and blanks") {
     ProgramSpec spec{2, 1, 1};
-    Assumptions assumptions = parse_text(
-        "# fixed xor\n"
-        "\n"
-        "T0: XOR(I0, I1)\n"
-        "OUT0: T0\n",
-        spec);
+    Assumptions assumptions = parse_text("# fixed xor\n"
+                                         "\n"
+                                         "T0: XOR(I0, I1)\n"
+                                         "OUT0: T0\n",
+                                         spec);
 
     REQUIRE(assumptions.instructions.size() == 1);
     REQUIRE(assumptions.instructions[0].instr_idx == 0);

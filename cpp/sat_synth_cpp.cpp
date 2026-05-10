@@ -2,6 +2,7 @@
 #include "cli.hpp"
 #include "config.hpp"
 #include "datasets.hpp"
+#include "profile.hpp"
 #include "program.hpp"
 #include "solver.hpp"
 
@@ -24,9 +25,8 @@ double elapsed_seconds(Clock::time_point start) {
 }
 
 Config load_requested_config(const CliOptions &cli) {
-    Config cfg = cli.config_path.empty()
-        ? build_dataset_from_config(default_dataset_config(cli.dataset_name))
-        : load_config(cli.config_path);
+    Config cfg = cli.config_path.empty() ? build_dataset_from_config(default_dataset_config(cli.dataset_name))
+                                         : load_config(cli.config_path);
     if (cli.instructions.has_value()) cfg.instructions = *cli.instructions;
     if (cfg.instructions < 0) throw std::runtime_error("--instructions must be non-negative");
     return cfg;
@@ -35,17 +35,22 @@ Config load_requested_config(const CliOptions &cli) {
 SolveOptions make_solve_options(const CliOptions &cli) {
     return {
         .solver = cli.solver,
-        .encoding = {cli.encode_boolean, cli.force_ordered, cli.force_useful, cli.balanced_select},
+        .encoding = {.encode_boolean = cli.encode_boolean,
+                     .force_ordered = cli.force_ordered,
+                     .force_useful = cli.force_useful,
+                     .balanced_select = cli.balanced_select},
+        .assumptions = {},
         .batch_size = cli.batch_size,
         .cegis = cli.cegis,
         .cegis_initial_size = cli.cegis_initial_size,
         .cegis_counterexamples = cli.cegis_counterexamples,
-        .postprocess = {
-            .enabled = cli.post_process,
-            .beam_width = cli.post_process_beam_width,
-            .beam_rounds = cli.post_process_beam_rounds,
-            .beam_candidates = cli.post_process_beam_candidates,
-        },
+        .postprocess =
+            {
+                .enabled = cli.post_process,
+                .beam_width = cli.post_process_beam_width,
+                .beam_rounds = cli.post_process_beam_rounds,
+                .beam_candidates = cli.post_process_beam_candidates,
+            },
     };
 }
 
@@ -78,7 +83,8 @@ Assumptions load_assumptions(const CliOptions &cli, const Config &cfg) {
         return {};
     }
 
-    ProgramSpec spec{cfg.num_inputs, cfg.num_outputs, cfg.instructions};
+    const ProgramSpec spec{
+        .num_inputs = cfg.num_inputs, .num_outputs = cfg.num_outputs, .program_length = cfg.instructions};
     if (cli.assume_path == "-") {
         return parse_assumptions(std::cin, spec);
     }

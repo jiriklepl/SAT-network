@@ -42,7 +42,8 @@ TEST_CASE("spec BLIF export emits truth table and rejects don't-cares") {
     };
     std::ostringstream emitted;
     export_spec_blif(emitted, examples, 2, 1);
-    REQUIRE(emitted.str() == ".model synth_program\n.inputs I0 I1\n.outputs OUT0\n.names I0 I1 OUT0\n01 1\n10 1\n.end\n");
+    REQUIRE(emitted.str() ==
+            ".model synth_program\n.inputs I0 I1\n.outputs OUT0\n.names I0 I1 OUT0\n01 1\n10 1\n.end\n");
 
     std::vector<Example> dont_care = {{{false}, {std::nullopt}}};
     REQUIRE_THROWS(export_spec_blif(emitted, dont_care, 1, 1));

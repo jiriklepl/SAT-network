@@ -4,6 +4,7 @@
 #include "program.hpp"
 
 #include <cstddef>
+
 #include <span>
 
 struct PostProcessOptions {
@@ -13,9 +14,5 @@ struct PostProcessOptions {
     std::size_t beam_candidates = 0;
 };
 
-Program post_process_program(
-    const Program &program,
-    std::span<const Example> examples,
-    int num_inputs,
-    int num_outputs,
-    const PostProcessOptions &options);
+Program post_process_program(const Program &program, std::span<const Example> examples, int num_inputs, int num_outputs,
+                             const PostProcessOptions &options);

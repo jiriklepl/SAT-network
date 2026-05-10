@@ -1,9 +1,18 @@
 #include "program.hpp"
 
+#include "datasets.hpp"
+#include "mask.hpp"
+
+#include <algorithm>
+#include <cstddef>
+
 #include <algorithm>
 #include <bit>
 #include <ostream>
+#include <span>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 int ProgramSpec::total_sources() const {
     return temp_source(program_length, num_inputs);
@@ -12,7 +21,7 @@ int ProgramSpec::total_sources() const {
 unsigned ProgramSpec::idx_bits() const {
     const int max_idx = std::max(0, total_sources() - 1);
     const unsigned bits = std::bit_width(static_cast<unsigned>(max_idx));
-    return std::max(1u, bits);
+    return std::max(1U, bits);
 }
 
 int input_source(int input_idx) {
@@ -34,9 +43,9 @@ bool is_temp_source(int source, int num_inputs, int program_length) {
 
 const std::vector<LogicOperator> &logic_operators() {
     static const std::vector<LogicOperator> operators{
-        {kOpAnd, "AND", 1},
-        {kOpXor, "XOR", 0},
-        {kOpOr, "OR", 2},
+        {.code = kOpAnd, .label = "AND", .canonical_rank = 1},
+        {.code = kOpXor, .label = "XOR", .canonical_rank = 0},
+        {.code = kOpOr, .label = "OR", .canonical_rank = 2},
     };
     return operators;
 }
@@ -76,17 +85,15 @@ const std::vector<const char *> &op_blif_rows(int code) {
     static const std::vector<const char *> and_rows = {"11 1"};
     static const std::vector<const char *> xor_rows = {"10 1", "01 1"};
     static const std::vector<const char *> or_rows = {"10 1", "01 1", "11 1"};
-    if (code == 0) return and_rows;
-    if (code == 1) return xor_rows;
-    if (code == 2) return or_rows;
+    if (code == kOpAnd) return and_rows;
+    if (code == kOpXor) return xor_rows;
+    if (code == kOpOr) return or_rows;
     throw std::runtime_error("Unsupported operation in BLIF output");
 }
 
 bool known_op(int code) {
     const auto &operators = logic_operators();
-    return std::any_of(operators.begin(), operators.end(), [&](const LogicOperator &op) {
-        return op.code == code;
-    });
+    return std::ranges::any_of(operators, [&](const LogicOperator &op) { return op.code == code; });
 }
 
 PackedMask apply_operator_mask(int code, const PackedMask &left, const PackedMask &right) {
@@ -117,7 +124,7 @@ PackedExamples pack_examples(std::span<const Example> examples, int num_inputs, 
             }
         }
         for (int output_idx = 0; output_idx < num_outputs; ++output_idx) {
-            const std::size_t idx = static_cast<std::size_t>(output_idx);
+            const auto idx = static_cast<std::size_t>(output_idx);
             if (ex.output_dont_care[idx]) {
                 packed.output_dont_care_masks[output_idx].set(ex_idx);
             } else if (ex.output_values[idx]) {
@@ -128,40 +135,34 @@ PackedExamples pack_examples(std::span<const Example> examples, int num_inputs, 
     return packed;
 }
 
-std::vector<PackedMask> evaluate_program_masks(
-    const Program &program,
-    std::span<const PackedMask> input_masks,
-    const PackedMask &all_examples_mask
-) {
+std::vector<PackedMask> evaluate_program_masks(const Program &program, std::span<const PackedMask> input_masks,
+                                               const PackedMask &all_examples_mask) {
     std::vector<PackedMask> values;
     values.push_back(all_examples_mask);
     values.insert(values.end(), input_masks.begin(), input_masks.end());
     for (const auto &instr : program.instrs) {
-        PackedMask value = instr.op < 0
-            ? PackedMask(all_examples_mask.width())
-            : (apply_operator_mask(instr.op, values[instr.s1], values[instr.s2]) & all_examples_mask);
+        const PackedMask value =
+            instr.op < 0 ? PackedMask(all_examples_mask.width())
+                         : (apply_operator_mask(instr.op, values[instr.s1], values[instr.s2]) & all_examples_mask);
         values.push_back(value);
     }
     std::vector<PackedMask> outputs;
-    for (int selector : program.outputs) {
+    outputs.reserve(program.outputs.size());
+    for (const int selector : program.outputs) {
         outputs.push_back(values[selector]);
     }
     return outputs;
 }
 
-std::vector<std::size_t> verify_program(
-    const Program &program,
-    std::span<const Example> examples,
-    int num_inputs,
-    int num_outputs
-) {
+std::vector<std::size_t> verify_program(const Program &program, std::span<const Example> examples, int num_inputs,
+                                        int num_outputs) {
     if (examples.empty()) return {};
     PackedExamples packed = pack_examples(examples, num_inputs, num_outputs);
-    PackedMask full_mask = all_ones(packed.width);
+    const PackedMask full_mask = all_ones(packed.width);
     std::vector<PackedMask> actual = evaluate_program_masks(program, packed.input_masks, full_mask);
     PackedMask mismatch_mask(packed.width);
     for (int out_idx = 0; out_idx < num_outputs; ++out_idx) {
-        PackedMask care_mask = full_mask ^ packed.output_dont_care_masks[out_idx];
+        const PackedMask care_mask = full_mask ^ packed.output_dont_care_masks[out_idx];
         mismatch_mask = mismatch_mask | ((actual[out_idx] ^ packed.output_values[out_idx]) & care_mask);
     }
     return mismatch_mask.set_bit_indices();
@@ -170,8 +171,7 @@ std::vector<std::size_t> verify_program(
 void emit_program(std::ostream &out, const Program &program, int num_inputs) {
     for (std::size_t instr_idx = 0; instr_idx < program.instrs.size(); ++instr_idx) {
         const auto &instr = program.instrs[instr_idx];
-        out << "T" << instr_idx << ": " << op_label(instr.op) << "("
-            << format_source(instr.s1, num_inputs) << ", "
+        out << "T" << instr_idx << ": " << op_label(instr.op) << "(" << format_source(instr.s1, num_inputs) << ", "
             << format_source(instr.s2, num_inputs) << ")\n";
     }
     for (std::size_t out_idx = 0; out_idx < program.outputs.size(); ++out_idx) {
@@ -202,8 +202,8 @@ void emit_program_blif(std::ostream &out, const Program &program, int num_inputs
             }
             out << ".names T" << instr_idx << "\n";
         } else {
-            out << ".names " << format_source(instr.s1, num_inputs) << " "
-                << format_source(instr.s2, num_inputs) << " T" << instr_idx << "\n";
+            out << ".names " << format_source(instr.s1, num_inputs) << " " << format_source(instr.s2, num_inputs)
+                << " T" << instr_idx << "\n";
             for (const char *row : op_blif_rows(instr.op)) {
                 out << row << "\n";
             }

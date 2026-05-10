@@ -9,8 +9,8 @@ TEST_CASE("explicit configs parse and dump don't-care outputs") {
         {"num_outputs", 1},
         {"instructions", 0},
         {"examples", nlohmann::json::array({
-            {{"inputs", nlohmann::json::array({false})}, {"outputs", nlohmann::json::array({nullptr})}},
-        })},
+                         {{"inputs", nlohmann::json::array({false})}, {"outputs", nlohmann::json::array({nullptr})}},
+                     })},
     };
 
     Config cfg = load_explicit_examples(raw);
@@ -30,8 +30,8 @@ TEST_CASE("explicit config parser rejects invalid shapes and values") {
         {"num_inputs", 1},
         {"num_outputs", 1},
         {"examples", nlohmann::json::array({
-            {{"inputs", nlohmann::json::array({false})}, {"outputs", nlohmann::json::array({true})}},
-        })},
+                         {{"inputs", nlohmann::json::array({false})}, {"outputs", nlohmann::json::array({true})}},
+                     })},
     };
 
     nlohmann::json bad_dims = valid;

@@ -1,22 +1,27 @@
 #include "assumptions.hpp"
 
-#include <algorithm>
+#include "program.hpp"
+
 #include <cctype>
+#include <cstddef>
+
+#include <algorithm>
+#include <exception>
 #include <istream>
+#include <ranges>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace {
 
 std::string trim(const std::string &value) {
-    const auto begin = std::find_if_not(value.begin(), value.end(), [](unsigned char ch) {
-        return std::isspace(ch) != 0;
-    });
-    const auto end = std::find_if_not(value.rbegin(), value.rend(), [](unsigned char ch) {
-        return std::isspace(ch) != 0;
-    }).base();
+    const auto begin = std::ranges::find_if_not(value, [](unsigned char ch) { return std::isspace(ch) != 0; });
+    const auto end = std::ranges::find_if_not(std::ranges::reverse_view(value), [](unsigned char ch) {
+                         return std::isspace(ch) != 0;
+                     }).base();
     if (begin >= end) return "";
-    return std::string(begin, end);
+    return {begin, end};
 }
 
 int parse_index(const std::string &kind, const std::string &raw) {
@@ -93,19 +98,19 @@ InstructionAssumption parse_instruction(const std::string &lhs, const std::strin
     }
 
     return {
-        instr_idx,
-        op,
-        translate_source(args.substr(0, comma), spec),
-        translate_source(args.substr(comma + 1), spec),
+        .instr_idx = instr_idx,
+        .op = op,
+        .s1 = translate_source(args.substr(0, comma), spec),
+        .s2 = translate_source(args.substr(comma + 1), spec),
     };
 }
 
 OutputAssumption parse_output(const std::string &lhs, const std::string &rhs, const ProgramSpec &spec) {
-    int out_idx = parse_index("OUT", lhs.substr(3));
+    const int out_idx = parse_index("OUT", lhs.substr(3));
     if (out_idx < 0 || out_idx >= spec.num_outputs) {
         throw std::runtime_error("Output index out of range in assumption: " + lhs);
     }
-    return {out_idx, translate_source(rhs, spec)};
+    return {.out_idx = out_idx, .source = translate_source(rhs, spec)};
 }
 
 }  // namespace

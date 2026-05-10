@@ -60,7 +60,8 @@ TEST_CASE("CLI parses supported solver options") {
 }
 
 TEST_CASE("CLI parses SMT2 export option") {
-    const char *argv[] = {"sat_synth_cpp", "--dataset", "adder", "--make-smt2", "--make-dimacs", "--make-blif", "--output-blif"};
+    const char *argv[] = {"sat_synth_cpp", "--dataset",   "adder",        "--make-smt2",
+                          "--make-dimacs", "--make-blif", "--output-blif"};
     CliOptions options = parse_args(static_cast<int>(std::size(argv)), const_cast<char **>(argv));
     REQUIRE(options.dataset_name == "adder");
     REQUIRE(options.make_smt2);
@@ -83,7 +84,8 @@ TEST_CASE("CLI validation rejects invalid combinations and counts") {
     REQUIRE_THROWS(parse_args(static_cast<int>(std::size(zero_initial)), const_cast<char **>(zero_initial)));
 
     const char *zero_counterexamples[] = {"sat_synth_cpp", "--dataset", "adder", "--cegis-counterexamples", "0"};
-    REQUIRE_THROWS(parse_args(static_cast<int>(std::size(zero_counterexamples)), const_cast<char **>(zero_counterexamples)));
+    REQUIRE_THROWS(
+        parse_args(static_cast<int>(std::size(zero_counterexamples)), const_cast<char **>(zero_counterexamples)));
 
     const char *cegis_smt2[] = {"sat_synth_cpp", "--dataset", "adder", "--cegis", "--make-smt2"};
     REQUIRE_THROWS(parse_args(static_cast<int>(std::size(cegis_smt2)), const_cast<char **>(cegis_smt2)));
@@ -95,7 +97,8 @@ TEST_CASE("CLI validation rejects invalid combinations and counts") {
     REQUIRE_THROWS(parse_args(static_cast<int>(std::size(zero_beam_width)), const_cast<char **>(zero_beam_width)));
 
     const char *negative_beam_rounds[] = {"sat_synth_cpp", "--dataset", "adder", "--post-process-beam-rounds", "-1"};
-    REQUIRE_THROWS(parse_args(static_cast<int>(std::size(negative_beam_rounds)), const_cast<char **>(negative_beam_rounds)));
+    REQUIRE_THROWS(
+        parse_args(static_cast<int>(std::size(negative_beam_rounds)), const_cast<char **>(negative_beam_rounds)));
 }
 
 TEST_CASE("CLI list-datasets works without config or dataset") {

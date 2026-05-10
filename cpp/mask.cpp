@@ -1,8 +1,14 @@
 #include "mask.hpp"
 
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+
 #include <bit>
+#include <span>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -26,8 +32,7 @@ void require_same_width(const PackedMask &left, const PackedMask &right) {
 
 PackedMask::PackedMask(unsigned width) : width_(width), words_(word_count(width), 0) {}
 
-PackedMask::PackedMask(unsigned width, std::vector<std::uint64_t> words)
-    : width_(width), words_(std::move(words)) {
+PackedMask::PackedMask(unsigned width, std::vector<std::uint64_t> words) : width_(width), words_(std::move(words)) {
     if (words_.size() != word_count(width_)) {
         throw std::runtime_error("PackedMask word count does not match width");
     }
@@ -43,10 +48,7 @@ std::span<const std::uint64_t> PackedMask::words() const {
 }
 
 bool PackedMask::is_zero() const {
-    for (std::uint64_t word : words_) {
-        if (word != 0) return false;
-    }
-    return true;
+    return std::ranges::all_of(words_, [](std::uint64_t word) { return word == 0; });
 }
 
 bool PackedMask::test(std::size_t idx) const {
@@ -122,9 +124,9 @@ PackedMask operator^(const PackedMask &left, const PackedMask &right) {
 }
 
 PackedMask all_ones(unsigned width) {
-    PackedMask result(width);
+    const PackedMask result(width);
     std::vector<std::uint64_t> words(word_count(width), ~std::uint64_t{0});
-    return PackedMask(width, std::move(words));
+    return {width, std::move(words)};
 }
 
 PackedMask single_bit(std::size_t idx, unsigned width) {

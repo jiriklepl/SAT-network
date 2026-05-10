@@ -3,7 +3,6 @@
 #include "program.hpp"
 
 #include <iosfwd>
-#include <optional>
 #include <vector>
 
 struct InstructionAssumption {

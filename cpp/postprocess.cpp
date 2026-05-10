@@ -1,16 +1,19 @@
 #include "postprocess.hpp"
 
+#include "datasets.hpp"
 #include "mask.hpp"
+#include "program.hpp"
+
+#include <cstddef>
 
 #include <algorithm>
-#include <cstddef>
-#include <cstdint>
 #include <limits>
-#include <map>
 #include <set>
 #include <span>
+#include <stack>
 #include <string>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -34,20 +37,26 @@ std::string program_key(const Program &program) {
         key += "T:" + std::to_string(instr.op) + "," + std::to_string(instr.s1) + "," + std::to_string(instr.s2) + ";";
     }
     key += "O:";
-    for (int output : program.outputs) {
+    for (const int output : program.outputs) {
         key += std::to_string(output) + ",";
     }
     return key;
 }
 
 void mark_reachable(int source, const Program &program, int num_inputs, std::vector<bool> &reachable) {
-    if (!is_temp_source(source, num_inputs, static_cast<int>(program.instrs.size()))) return;
-    const std::size_t idx = static_cast<std::size_t>(temp_index_from_source(source, num_inputs));
-    if (reachable[idx]) return;
-    reachable[idx] = true;
-    const Instruction &instr = program.instrs[idx];
-    mark_reachable(instr.s1, program, num_inputs, reachable);
-    mark_reachable(instr.s2, program, num_inputs, reachable);
+    std::stack<int> to_visit;
+    to_visit.push(source);
+    while (!to_visit.empty()) {
+        const int current = to_visit.top();
+        to_visit.pop();
+        if (!is_temp_source(current, num_inputs, static_cast<int>(program.instrs.size()))) continue;
+        const auto idx = static_cast<std::size_t>(temp_index_from_source(current, num_inputs));
+        if (reachable[idx]) continue;
+        reachable[idx] = true;
+        const Instruction &instr = program.instrs[idx];
+        to_visit.push(instr.s2);
+        to_visit.push(instr.s1);
+    }
 }
 
 int remap_source(int source, int num_inputs, const std::vector<int> &temp_remap) {
@@ -59,7 +68,7 @@ int remap_source(int source, int num_inputs, const std::vector<int> &temp_remap)
 
 Program prune_dead_nodes(const Program &program, int num_inputs) {
     std::vector<bool> reachable(program.instrs.size(), false);
-    for (int output : program.outputs) {
+    for (const int output : program.outputs) {
         mark_reachable(output, program, num_inputs, reachable);
     }
 
@@ -88,29 +97,28 @@ ProgramScore score_program(const Program &program, int num_inputs) {
     std::vector<int> depths(static_cast<std::size_t>(num_inputs + 1), 0);
     score.instr_key.reserve(program.instrs.size() * 3);
     for (const auto &instr : program.instrs) {
-        const int depth = std::max(depths[static_cast<std::size_t>(instr.s1)], depths[static_cast<std::size_t>(instr.s2)]) + 1;
+        const int depth =
+            std::max(depths[static_cast<std::size_t>(instr.s1)], depths[static_cast<std::size_t>(instr.s2)]) + 1;
         depths.push_back(depth);
         score.operator_cost += instr.op == kOpXor ? kXorOperatorCost : kDefaultOperatorCost;
         score.instr_key.push_back(instr.op);
         score.instr_key.push_back(instr.s1);
         score.instr_key.push_back(instr.s2);
     }
-    for (int output : program.outputs) {
+    for (const int output : program.outputs) {
         score.max_output_depth = std::max(score.max_output_depth, depths[static_cast<std::size_t>(output)]);
     }
     return score;
 }
 
-std::vector<PackedMask> evaluate_all_sources(
-    const Program &program,
-    std::span<const PackedMask> input_masks,
-    const PackedMask &all_examples_mask
-) {
+std::vector<PackedMask> evaluate_all_sources(const Program &program, std::span<const PackedMask> input_masks,
+                                             const PackedMask &all_examples_mask) {
     std::vector<PackedMask> values;
     values.push_back(all_examples_mask);
     values.insert(values.end(), input_masks.begin(), input_masks.end());
     for (const auto &instr : program.instrs) {
-        values.push_back(apply_operator_mask(instr.op, values[static_cast<std::size_t>(instr.s1)], values[static_cast<std::size_t>(instr.s2)]) &
+        values.push_back(apply_operator_mask(instr.op, values[static_cast<std::size_t>(instr.s1)],
+                                             values[static_cast<std::size_t>(instr.s2)]) &
                          all_examples_mask);
     }
     return values;
@@ -137,7 +145,8 @@ bool op_source_contains(const Program &program, int source, int num_inputs, int 
 int xor_cancellation_replacement(const Program &program, const Instruction &instr, int num_inputs) {
     auto check_nested = [&](int nested_source, int other_source) -> int {
         if (!source_is_operator(program, nested_source, num_inputs, kOpXor)) return -1;
-        const Instruction &nested = program.instrs[static_cast<std::size_t>(temp_index_from_source(nested_source, num_inputs))];
+        const Instruction &nested =
+            program.instrs[static_cast<std::size_t>(temp_index_from_source(nested_source, num_inputs))];
         if (nested.s1 == other_source) return nested.s2;
         if (nested.s2 == other_source) return nested.s1;
         return -1;
@@ -154,10 +163,12 @@ int algebraic_replacement(const Program &program, std::size_t instr_idx, int num
         if (instr.s1 == 0) return instr.s2;
         if (instr.s2 == 0) return instr.s1;
         if (false_source >= 0 && (instr.s1 == false_source || instr.s2 == false_source)) return false_source;
-        if (source_is_operator(program, instr.s2, num_inputs, kOpOr) && op_source_contains(program, instr.s2, num_inputs, instr.s1)) {
+        if (source_is_operator(program, instr.s2, num_inputs, kOpOr) &&
+            op_source_contains(program, instr.s2, num_inputs, instr.s1)) {
             return instr.s1;
         }
-        if (source_is_operator(program, instr.s1, num_inputs, kOpOr) && op_source_contains(program, instr.s1, num_inputs, instr.s2)) {
+        if (source_is_operator(program, instr.s1, num_inputs, kOpOr) &&
+            op_source_contains(program, instr.s1, num_inputs, instr.s2)) {
             return instr.s2;
         }
     } else if (instr.op == kOpOr) {
@@ -165,10 +176,12 @@ int algebraic_replacement(const Program &program, std::size_t instr_idx, int num
         if (false_source >= 0 && instr.s1 == false_source) return instr.s2;
         if (false_source >= 0 && instr.s2 == false_source) return instr.s1;
         if (instr.s1 == kSourceConstantOne || instr.s2 == kSourceConstantOne) return kSourceConstantOne;
-        if (source_is_operator(program, instr.s2, num_inputs, kOpAnd) && op_source_contains(program, instr.s2, num_inputs, instr.s1)) {
+        if (source_is_operator(program, instr.s2, num_inputs, kOpAnd) &&
+            op_source_contains(program, instr.s2, num_inputs, instr.s1)) {
             return instr.s1;
         }
-        if (source_is_operator(program, instr.s1, num_inputs, kOpAnd) && op_source_contains(program, instr.s1, num_inputs, instr.s2)) {
+        if (source_is_operator(program, instr.s1, num_inputs, kOpAnd) &&
+            op_source_contains(program, instr.s1, num_inputs, instr.s2)) {
             return instr.s2;
         }
     } else if (instr.op == kOpXor) {
@@ -196,32 +209,20 @@ bool cares_match(const PackedMask &left, const PackedMask &right, const PackedMa
     return ((left ^ right) & care_mask).is_zero();
 }
 
-void push_unique_candidate(
-    std::vector<Program> &candidates,
-    std::set<std::string> &seen,
-    const Program &candidate,
-    const std::string &base_key,
-    std::span<const Example> examples,
-    int num_inputs,
-    int num_outputs
-) {
+void push_unique_candidate(std::vector<Program> &candidates, std::set<std::string> &seen, const Program &candidate,
+                           const std::string &base_key, std::span<const Example> examples, int num_inputs,
+                           int num_outputs) {
     const std::string key = program_key(candidate);
     if (key == base_key || !seen.insert(key).second) return;
     if (!verify_program(candidate, examples, num_inputs, num_outputs).empty()) return;
     candidates.push_back(candidate);
 }
 
-std::vector<Program> generate_candidates(
-    const Program &program,
-    std::span<const Example> examples,
-    int num_inputs,
-    int num_outputs,
-    const PackedExamples &packed,
-    std::size_t max_candidates
-) {
+std::vector<Program> generate_candidates(const Program &program, std::span<const Example> examples, int num_inputs,
+                                         int num_outputs, const PackedExamples &packed, std::size_t max_candidates) {
     const Program base = prune_dead_nodes(program, num_inputs);
     const std::string base_key = program_key(base);
-    PackedMask all_mask = all_ones(packed.width);
+    const PackedMask all_mask = all_ones(packed.width);
     const std::vector<PackedMask> values = evaluate_all_sources(base, packed.input_masks, all_mask);
     const int false_source = first_zero_source(values);
 
@@ -248,11 +249,12 @@ std::vector<Program> generate_candidates(
     }
 
     for (int output_idx = 0; output_idx < num_outputs; ++output_idx) {
-        PackedMask care_mask = all_mask ^ packed.output_dont_care_masks[static_cast<std::size_t>(output_idx)];
+        const PackedMask care_mask = all_mask ^ packed.output_dont_care_masks[static_cast<std::size_t>(output_idx)];
         int upper = base.outputs[static_cast<std::size_t>(output_idx)];
         if (upper < 0 || static_cast<std::size_t>(upper) > values.size()) upper = static_cast<int>(values.size());
         for (int source = 0; source < upper; ++source) {
-            if (!cares_match(values[static_cast<std::size_t>(source)], packed.output_values[static_cast<std::size_t>(output_idx)], care_mask)) {
+            if (!cares_match(values[static_cast<std::size_t>(source)],
+                             packed.output_values[static_cast<std::size_t>(output_idx)], care_mask)) {
                 continue;
             }
             Program candidate = base;
@@ -269,28 +271,24 @@ std::vector<Program> generate_candidates(
 
 }  // namespace
 
-Program post_process_program(
-    const Program &program,
-    std::span<const Example> examples,
-    int num_inputs,
-    int num_outputs,
-    const PostProcessOptions &options
-) {
+Program post_process_program(const Program &program, std::span<const Example> examples, int num_inputs, int num_outputs,
+                             const PostProcessOptions &options) {
     if (!options.enabled || examples.empty()) return program;
 
-    PackedExamples packed = pack_examples(examples, num_inputs, num_outputs);
+    const PackedExamples packed = pack_examples(examples, num_inputs, num_outputs);
     Program best = prune_dead_nodes(program, num_inputs);
     if (!verify_program(best, examples, num_inputs, num_outputs).empty()) return program;
 
     ProgramScore best_score = score_program(best, num_inputs);
     std::vector<Program> beam{best};
     std::set<std::string> globally_seen{program_key(best)};
-    const std::size_t max_rounds = options.beam_rounds == 0 ? std::numeric_limits<std::size_t>::max() : options.beam_rounds;
+    const std::size_t max_rounds =
+        options.beam_rounds == 0 ? std::numeric_limits<std::size_t>::max() : options.beam_rounds;
 
     for (std::size_t round = 0; round < max_rounds; ++round) {
         std::vector<Program> next;
         for (const Program &state : beam) {
-            std::vector<Program> candidates =
+            const std::vector<Program> candidates =
                 generate_candidates(state, examples, num_inputs, num_outputs, packed, options.beam_candidates);
             for (const Program &candidate : candidates) {
                 if (globally_seen.insert(program_key(candidate)).second) {
