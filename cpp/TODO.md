@@ -15,7 +15,7 @@
 ## Solver Feature Parity
 
 - Keep quantified synthesis deferred until the explicit-example path is fully stable.
-- Keep Python-compatible multi-phase post-process scoring deferred until the C++ candidate set is broader.
+- Maintain Python-compatible multi-phase post-process scoring as new metrics or candidate generators are added.
 
 ## Post-Processing Port
 

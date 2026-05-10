@@ -1,11 +1,13 @@
 #include "postprocess.hpp"
 
 #include "datasets.hpp"
+#include "postprocess_internal.hpp"
 #include "profile.hpp"
 #include "program.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cmath>
 #include <cstddef>
 #include <span>
 #include <stdexcept>
@@ -58,6 +60,86 @@ std::vector<Example> all_examples(int num_inputs, bool (*output_fn)(const std::v
 }
 
 }  // namespace
+
+TEST_CASE("post-process score metrics compute expected structural values") {
+    std::vector<Example> examples = {
+        {{false, false}, {false}},
+        {{true, false}, {true}},
+        {{false, true}, {false}},
+        {{true, true}, {false}},
+    };
+    Program program{{Instruction{kOpAnd, 1, 2}, Instruction{kOpXor, 3, 1}}, {4}};
+    const PackedExamples packed = pack_examples(examples, 2, 1);
+    const PostProcessScorePhase phase{
+        {.metric = PostProcessScoreMetric::ProgramLength, .descending = false},
+        {.metric = PostProcessScoreMetric::OutputDepth, .descending = false},
+        {.metric = PostProcessScoreMetric::MaxOutputDepth, .descending = false},
+        {.metric = PostProcessScoreMetric::SumOutputDepth, .descending = false},
+        {.metric = PostProcessScoreMetric::TotalNodeDepth, .descending = false},
+        {.metric = PostProcessScoreMetric::TotalTreeSize, .descending = false},
+        {.metric = PostProcessScoreMetric::OperatorCost, .descending = false},
+        {.metric = PostProcessScoreMetric::XorCount, .descending = false},
+        {.metric = PostProcessScoreMetric::OutputConeSize, .descending = false},
+        {.metric = PostProcessScoreMetric::MaxOutputConeSize, .descending = false},
+        {.metric = PostProcessScoreMetric::SumOutputConeSize, .descending = false},
+        {.metric = PostProcessScoreMetric::Fanout, .descending = false},
+        {.metric = PostProcessScoreMetric::MaxFanout, .descending = false},
+        {.metric = PostProcessScoreMetric::SumFanout, .descending = false},
+        {.metric = PostProcessScoreMetric::OneFanoutCount, .descending = false},
+        {.metric = PostProcessScoreMetric::IndependentPairs, .descending = false},
+        {.metric = PostProcessScoreMetric::Entropy, .descending = false},
+    };
+    ProgramScore score = score_program(program, 2, packed, phase, 0);
+    REQUIRE(score.parts.size() == 18);
+    REQUIRE(score.parts[0] == 2.0);
+    REQUIRE(score.parts[1] == 2.0);
+    REQUIRE(score.parts[2] == 2.0);
+    REQUIRE(score.parts[3] == 2.0);
+    REQUIRE(score.parts[4] == 3.0);
+    REQUIRE(score.parts[5] == 3.0);
+    REQUIRE(score.parts[6] == 3.0);
+    REQUIRE(score.parts[7] == 1.0);
+    REQUIRE(score.parts[8] == 2.0);
+    REQUIRE(score.parts[9] == 2.0);
+    REQUIRE(score.parts[10] == 2.0);
+    REQUIRE(score.parts[11] == 1.0);
+    REQUIRE(score.parts[12] == 1.0);
+    REQUIRE(score.parts[13] == 1.0);
+    REQUIRE(score.parts[14] == 2.0);
+    REQUIRE(score.parts[15] == 2.0);
+    REQUIRE(score.parts[16] == 0.0);
+    REQUIRE(std::abs(score.parts[17] - 0.811278) < 0.0001);
+}
+
+TEST_CASE("post-process score descending metrics reverse ordering") {
+    const std::vector<Example> examples = identity_examples();
+    const PackedExamples packed = pack_examples(examples, 1, 1);
+    const Program short_program{{Instruction{kOpAnd, kSourceConstantOne, 1}}, {2}};
+    const Program long_program{{Instruction{kOpAnd, kSourceConstantOne, 1}, Instruction{kOpOr, 2, 1}}, {3}};
+    const PostProcessScorePhase phase{{PostProcessScoreMetric::ProgramLength, true}};
+    REQUIRE(score_program(long_program, 1, packed, phase, 0) < score_program(short_program, 1, packed, phase, 0));
+}
+
+TEST_CASE("post-process score random metric is seed deterministic") {
+    const std::vector<Example> examples = identity_examples();
+    const PackedExamples packed = pack_examples(examples, 1, 1);
+    const Program program{{Instruction{kOpAnd, kSourceConstantOne, 1}}, {2}};
+    const PostProcessScorePhase phase{{PostProcessScoreMetric::Random, false}};
+    REQUIRE(score_program(program, 1, packed, phase, 17).parts == score_program(program, 1, packed, phase, 17).parts);
+    REQUIRE(score_program(program, 1, packed, phase, 17).parts != score_program(program, 1, packed, phase, 18).parts);
+}
+
+TEST_CASE("post-process score phases can accept improvement from a later phase") {
+    Program program{{Instruction{kOpAnd, kSourceConstantOne, 1}}, {2}};
+    PostProcessOptions options = enabled_options();
+    options.score_phases = {
+        {{PostProcessScoreMetric::ProgramLength, true}},
+        {{PostProcessScoreMetric::ProgramLength, false}},
+    };
+    Program simplified = post_process_program(program, identity_examples(), 1, 1, options);
+    REQUIRE(simplified.instrs.empty());
+    REQUIRE(simplified.outputs == std::vector<int>{1});
+}
 
 TEST_CASE("post-process leaves an already minimal correct program equivalent") {
     Program program{{Instruction{kOpXor, 1, 2}}, {3}};

@@ -15,9 +15,7 @@
 #include <vector>
 
 struct ProgramScore {
-    std::size_t length = 0;
-    int max_output_depth = 0;
-    int operator_cost = 0;
+    std::vector<double> parts;
     std::vector<int> outputs;
     std::vector<int> instr_key;
 };
@@ -29,7 +27,8 @@ std::optional<std::string> validate_program_invariants(const Program &program, i
 void require_valid_program(const Program &program, int num_inputs, int num_outputs, const std::string &context);
 
 Program prune_dead_nodes(const Program &program, int num_inputs);
-ProgramScore score_program(const Program &program, int num_inputs);
+ProgramScore score_program(const Program &program, int num_inputs, const PackedExamples &packed,
+                           const PostProcessScorePhase &phase, unsigned random_seed);
 std::vector<PackedMask> evaluate_all_sources(const Program &program, std::span<const PackedMask> input_masks,
                                              const PackedMask &all_examples_mask);
 

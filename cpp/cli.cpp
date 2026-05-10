@@ -1,17 +1,78 @@
 #include "cli.hpp"
 
+#include "postprocess.hpp"
+
 #include <cxxopts.hpp>
 
+#include <cctype>
 #include <cstdlib>
 
+#include <exception>
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace {
 
 [[noreturn]] void usage_error(const std::string &message) {
     throw std::runtime_error(message);
+}
+
+std::string trim(std::string value) {
+    auto first = value.begin();
+    while (first != value.end() && std::isspace(static_cast<unsigned char>(*first)) != 0) {
+        ++first;
+    }
+    auto last = value.end();
+    while (last != first && std::isspace(static_cast<unsigned char>(*(last - 1))) != 0) {
+        --last;
+    }
+    return {first, last};
+}
+
+std::vector<std::string> split_preserving_empty(const std::string &value, char delimiter) {
+    std::vector<std::string> parts;
+    std::size_t start = 0;
+    while (true) {
+        const std::size_t pos = value.find(delimiter, start);
+        if (pos == std::string::npos) {
+            parts.push_back(value.substr(start));
+            break;
+        }
+        parts.push_back(value.substr(start, pos - start));
+        start = pos + 1;
+    }
+    return parts;
+}
+
+std::vector<PostProcessScorePhase> parse_post_process_score(const std::string &value) {
+    std::vector<PostProcessScorePhase> phases;
+    for (const std::string &raw_phase : split_preserving_empty(value, ';')) {
+        const std::string phase_text = trim(raw_phase);
+        if (phase_text.empty()) usage_error("--post-process-score contains an empty phase");
+        PostProcessScorePhase phase;
+        for (const std::string &raw_metric : split_preserving_empty(phase_text, ',')) {
+            std::string metric_text = trim(raw_metric);
+            if (metric_text.empty()) usage_error("--post-process-score contains an empty metric");
+            bool descending = false;
+            if (metric_text.front() == '-') {
+                descending = true;
+                metric_text.erase(metric_text.begin());
+                metric_text = trim(metric_text);
+            }
+            if (metric_text.empty()) usage_error("--post-process-score contains an empty metric");
+            try {
+                phase.push_back({post_process_score_metric_by_name(metric_text), descending});
+            } catch (const std::exception &) {
+                usage_error("Unsupported --post-process-score metric: " + metric_text);
+            }
+        }
+        phases.push_back(std::move(phase));
+    }
+    if (phases.empty()) usage_error("--post-process-score must specify at least one metric");
+    return phases;
 }
 
 cxxopts::Options make_options() {
@@ -31,6 +92,7 @@ cxxopts::Options make_options() {
         ("post-process-beam-width", "Maximum post-processing beam width", cxxopts::value<int>()->default_value("1"))
         ("post-process-beam-rounds", "Post-processing beam rounds; 0 means until no improvement", cxxopts::value<int>()->default_value("0"))
         ("post-process-beam-candidates", "Maximum neighbor candidates per beam state; 0 means unlimited", cxxopts::value<int>()->default_value("0"))
+        ("post-process-score", "Comma-separated post-processing score metrics; use ; for phases and -metric for descending", cxxopts::value<std::string>()->default_value("program-length"))
         ("post-process-resynthesis-maxnodes", "Maximum local SAT resynthesis window size", cxxopts::value<int>()->default_value("5"))
         ("post-process-resynthesis-patience", "Maximum SAT resynthesis results per beam state; 0 means unlimited", cxxopts::value<int>()->default_value("1"))
         ("generator-timeout", "Maximum seconds spent in each post-process candidate generator; 0 means unlimited", cxxopts::value<double>()->default_value("0"))
@@ -98,6 +160,7 @@ CliOptions parse_args(int argc, char **argv) {
     const int post_process_beam_width = parsed["post-process-beam-width"].as<int>();
     const int post_process_beam_rounds = parsed["post-process-beam-rounds"].as<int>();
     const int post_process_beam_candidates = parsed["post-process-beam-candidates"].as<int>();
+    const std::string post_process_score = parsed["post-process-score"].as<std::string>();
     const int post_process_resynthesis_maxnodes = parsed["post-process-resynthesis-maxnodes"].as<int>();
     const int post_process_resynthesis_patience = parsed["post-process-resynthesis-patience"].as<int>();
     const double generator_timeout = parsed["generator-timeout"].as<double>();
@@ -115,6 +178,7 @@ CliOptions parse_args(int argc, char **argv) {
     if (post_process_beam_width < 1) usage_error("--post-process-beam-width must be at least 1");
     if (post_process_beam_rounds < 0) usage_error("--post-process-beam-rounds must be non-negative");
     if (post_process_beam_candidates < 0) usage_error("--post-process-beam-candidates must be non-negative");
+    options.post_process_score_phases = parse_post_process_score(post_process_score);
     if (post_process_resynthesis_maxnodes < 2) usage_error("--post-process-resynthesis-maxnodes must be at least 2");
     if (post_process_resynthesis_patience < 0) usage_error("--post-process-resynthesis-patience must be non-negative");
     if (generator_timeout < 0.0) usage_error("--generator-timeout must be non-negative");

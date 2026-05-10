@@ -528,11 +528,77 @@ class CppSolverIntegrationTests(unittest.TestCase):
                 "--post-process-resynthesis-patience must be non-negative",
             ),
             (["--generator-timeout", "-1"], "--generator-timeout must be non-negative"),
+            (["--post-process-score", "not-a-metric"], "Unsupported --post-process-score metric"),
+            (["--post-process-score", "program-length;"], "--post-process-score contains an empty phase"),
+            (["--post-process-score", "program-length,,entropy"], "--post-process-score contains an empty metric"),
+            (["--post-process-score", "-"], "--post-process-score contains an empty metric"),
         ]:
             with self.subTest(args=args):
                 proc = self.run_cpp(config, *args)
                 self.assertEqual(proc.returncode, 2)
                 self.assertIn(message, proc.stderr)
+
+    def test_post_process_score_phases_emit_correct_program(self) -> None:
+        config = {
+            "num_inputs": 1,
+            "num_outputs": 1,
+            "instructions": 1,
+            "examples": [
+                {"inputs": [False], "outputs": [False]},
+                {"inputs": [True], "outputs": [True]},
+            ],
+        }
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".txt") as assume_file:
+            assume_file.write("T0: AND(1, I0)\nOUT0: T0\n")
+            assume_file.flush()
+            proc = self.run_cpp(
+                config,
+                "--assume",
+                assume_file.name,
+                "--post-process",
+                "--post-process-score",
+                "-program-length;program-length",
+                "--no-shuffle",
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        instrs, outputs = _parse_program(proc.stdout, config["num_inputs"], config["num_outputs"])
+        self.assertEqual(len(instrs), 0)
+        self.assertEqual(_verify_program(instrs, outputs, config["examples"], config["num_outputs"]), [])
+
+    def test_post_process_score_random_is_seed_reproducible(self) -> None:
+        config = {
+            "num_inputs": 2,
+            "num_outputs": 1,
+            "instructions": 2,
+            "examples": [
+                {"inputs": [False, False], "outputs": [False]},
+                {"inputs": [False, True], "outputs": [True]},
+                {"inputs": [True, False], "outputs": [True]},
+                {"inputs": [True, True], "outputs": [False]},
+            ],
+        }
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".txt") as assume_file:
+            assume_file.write("T0: XOR(I0, I1)\nT1: AND(1, T0)\nOUT0: T1\n")
+            assume_file.flush()
+            args = [
+                "--assume",
+                assume_file.name,
+                "--post-process",
+                "--post-process-score",
+                "random",
+                "--post-process-beam-rounds",
+                "1",
+                "--seed",
+                "19",
+                "--no-shuffle",
+            ]
+            first = self.run_cpp(config, *args)
+            second = self.run_cpp(config, *args)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(first.stdout, second.stdout)
+        instrs, outputs = _parse_program(first.stdout, config["num_inputs"], config["num_outputs"])
+        self.assertEqual(_verify_program(instrs, outputs, config["examples"], config["num_outputs"]), [])
 
     def test_dataset_flag_uses_builtin_config(self) -> None:
         cfg = get_plugin_config("adder")

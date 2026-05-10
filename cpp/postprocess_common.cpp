@@ -5,21 +5,90 @@
 #include "profile.hpp"
 #include "program.hpp"
 
+#include <cmath>
 #include <cstddef>
+#include <cstdint>
 
 #include <algorithm>
+#include <bit>
+#include <map>
 #include <optional>
+#include <random>
 #include <set>
 #include <span>
 #include <stack>
 #include <stdexcept>
 #include <string>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 bool operator<(const ProgramScore &left, const ProgramScore &right) {
-    return std::tie(left.length, left.max_output_depth, left.operator_cost, left.outputs, left.instr_key) <
-           std::tie(right.length, right.max_output_depth, right.operator_cost, right.outputs, right.instr_key);
+    return std::tie(left.parts, left.outputs, left.instr_key) < std::tie(right.parts, right.outputs, right.instr_key);
+}
+
+PostProcessScoreMetric post_process_score_metric_by_name(const std::string &name) {
+    if (name == "program-length") return PostProcessScoreMetric::ProgramLength;
+    if (name == "output-depth") return PostProcessScoreMetric::OutputDepth;
+    if (name == "max-output-depth") return PostProcessScoreMetric::MaxOutputDepth;
+    if (name == "sum-output-depth") return PostProcessScoreMetric::SumOutputDepth;
+    if (name == "total-node-depth") return PostProcessScoreMetric::TotalNodeDepth;
+    if (name == "total-tree-size") return PostProcessScoreMetric::TotalTreeSize;
+    if (name == "operator-cost") return PostProcessScoreMetric::OperatorCost;
+    if (name == "xor-count") return PostProcessScoreMetric::XorCount;
+    if (name == "output-cone-size") return PostProcessScoreMetric::OutputConeSize;
+    if (name == "max-output-cone-size") return PostProcessScoreMetric::MaxOutputConeSize;
+    if (name == "sum-output-cone-size") return PostProcessScoreMetric::SumOutputConeSize;
+    if (name == "fanout") return PostProcessScoreMetric::Fanout;
+    if (name == "max-fanout") return PostProcessScoreMetric::MaxFanout;
+    if (name == "sum-fanout") return PostProcessScoreMetric::SumFanout;
+    if (name == "one-fanout-count") return PostProcessScoreMetric::OneFanoutCount;
+    if (name == "independent-pairs") return PostProcessScoreMetric::IndependentPairs;
+    if (name == "entropy") return PostProcessScoreMetric::Entropy;
+    if (name == "random") return PostProcessScoreMetric::Random;
+    throw std::runtime_error("unsupported post-process score metric");
+}
+
+std::string post_process_score_metric_name(PostProcessScoreMetric metric) {
+    switch (metric) {
+    case PostProcessScoreMetric::ProgramLength:
+        return "program-length";
+    case PostProcessScoreMetric::OutputDepth:
+        return "output-depth";
+    case PostProcessScoreMetric::MaxOutputDepth:
+        return "max-output-depth";
+    case PostProcessScoreMetric::SumOutputDepth:
+        return "sum-output-depth";
+    case PostProcessScoreMetric::TotalNodeDepth:
+        return "total-node-depth";
+    case PostProcessScoreMetric::TotalTreeSize:
+        return "total-tree-size";
+    case PostProcessScoreMetric::OperatorCost:
+        return "operator-cost";
+    case PostProcessScoreMetric::XorCount:
+        return "xor-count";
+    case PostProcessScoreMetric::OutputConeSize:
+        return "output-cone-size";
+    case PostProcessScoreMetric::MaxOutputConeSize:
+        return "max-output-cone-size";
+    case PostProcessScoreMetric::SumOutputConeSize:
+        return "sum-output-cone-size";
+    case PostProcessScoreMetric::Fanout:
+        return "fanout";
+    case PostProcessScoreMetric::MaxFanout:
+        return "max-fanout";
+    case PostProcessScoreMetric::SumFanout:
+        return "sum-fanout";
+    case PostProcessScoreMetric::OneFanoutCount:
+        return "one-fanout-count";
+    case PostProcessScoreMetric::IndependentPairs:
+        return "independent-pairs";
+    case PostProcessScoreMetric::Entropy:
+        return "entropy";
+    case PostProcessScoreMetric::Random:
+        return "random";
+    }
+    throw std::runtime_error("unsupported post-process score metric");
 }
 
 std::string program_key(const Program &program) {
@@ -83,6 +152,163 @@ int remap_source(int source, int num_inputs, const std::vector<int> &temp_remap)
     return temp_remap[static_cast<std::size_t>(idx)];
 }
 
+std::vector<int> instruction_depths(const Program &program, int num_inputs) {
+    std::vector<int> depths(static_cast<std::size_t>(num_inputs + 1), 0);
+    for (const auto &instr : program.instrs) {
+        depths.push_back(
+            std::max(depths[static_cast<std::size_t>(instr.s1)], depths[static_cast<std::size_t>(instr.s2)]) + 1);
+    }
+    return depths;
+}
+
+std::vector<int> instruction_tree_sizes(const Program &program, int num_inputs) {
+    std::vector<int> sizes(static_cast<std::size_t>(num_inputs + 1), 0);
+    for (const auto &instr : program.instrs) {
+        sizes.push_back(sizes[static_cast<std::size_t>(instr.s1)] + sizes[static_cast<std::size_t>(instr.s2)] + 1);
+    }
+    return sizes;
+}
+
+std::vector<int> output_depths(const Program &program, int num_inputs) {
+    const std::vector<int> depths = instruction_depths(program, num_inputs);
+    std::vector<int> result;
+    result.reserve(program.outputs.size());
+    for (const int output : program.outputs) {
+        result.push_back(depths[static_cast<std::size_t>(output)]);
+    }
+    return result;
+}
+
+std::vector<int> output_cone_sizes(const Program &program, int num_inputs) {
+    auto collect = [&](auto &self, int source, std::set<int> &cone) -> void {
+        if (!is_temp_source(source, num_inputs, static_cast<int>(program.instrs.size())) || cone.contains(source)) {
+            return;
+        }
+        cone.insert(source);
+        const Instruction &instr = program.instrs[static_cast<std::size_t>(temp_index_from_source(source, num_inputs))];
+        self(self, instr.s1, cone);
+        self(self, instr.s2, cone);
+    };
+
+    std::vector<int> sizes;
+    sizes.reserve(program.outputs.size());
+    for (const int output : program.outputs) {
+        std::set<int> cone;
+        collect(collect, output, cone);
+        sizes.push_back(static_cast<int>(cone.size()));
+    }
+    return sizes;
+}
+
+std::vector<int> instruction_fanouts(const Program &program, int num_inputs) {
+    std::vector<int> fanouts(program.instrs.size(), 0);
+    auto increment = [&](int source) {
+        if (!is_temp_source(source, num_inputs, static_cast<int>(program.instrs.size()))) return;
+        ++fanouts[static_cast<std::size_t>(temp_index_from_source(source, num_inputs))];
+    };
+    for (const auto &instr : program.instrs) {
+        increment(instr.s1);
+        increment(instr.s2);
+    }
+    for (const int output : program.outputs) {
+        increment(output);
+    }
+    return fanouts;
+}
+
+int sum_values(const std::vector<int> &values) {
+    int total = 0;
+    for (const int value : values) {
+        total += value;
+    }
+    return total;
+}
+
+int independent_instruction_pairs(const Program &program, int num_inputs) {
+    std::map<std::pair<int, int>, bool> dependency_cache;
+    auto depends_on = [&](auto &self, int source, int target) -> bool {
+        const auto key = std::make_pair(source, target);
+        if (const auto it = dependency_cache.find(key); it != dependency_cache.end()) return it->second;
+        if (source == target) {
+            dependency_cache[key] = true;
+            return true;
+        }
+        if (!is_temp_source(source, num_inputs, static_cast<int>(program.instrs.size()))) {
+            dependency_cache[key] = false;
+            return false;
+        }
+        const Instruction &instr = program.instrs[static_cast<std::size_t>(temp_index_from_source(source, num_inputs))];
+        const bool result = self(self, instr.s1, target) || self(self, instr.s2, target);
+        dependency_cache[key] = result;
+        return result;
+    };
+
+    int count = 0;
+    for (std::size_t left_idx = 0; left_idx < program.instrs.size(); ++left_idx) {
+        const int left_source = temp_source(static_cast<int>(left_idx), num_inputs);
+        for (std::size_t right_idx = left_idx + 1; right_idx < program.instrs.size(); ++right_idx) {
+            const int right_source = temp_source(static_cast<int>(right_idx), num_inputs);
+            if (!depends_on(depends_on, left_source, right_source) &&
+                !depends_on(depends_on, right_source, left_source)) {
+                ++count;
+            }
+        }
+    }
+    return count;
+}
+
+int operator_cost(const Program &program) {
+    int total = 0;
+    for (const auto &instr : program.instrs) {
+        total += instr.op == kOpXor ? kXorOperatorCost : kDefaultOperatorCost;
+    }
+    return total;
+}
+
+std::size_t popcount(const PackedMask &mask) {
+    std::size_t count = 0;
+    for (const std::uint64_t word : mask.words()) {
+        count += static_cast<std::size_t>(std::popcount(word));
+    }
+    return count;
+}
+
+double node_value_entropy(const Program &program, const PackedExamples &packed) {
+    const std::size_t sample_count = program.instrs.size() * static_cast<std::size_t>(packed.width);
+    if (sample_count == 0) return 0.0;
+
+    const std::vector<PackedMask> values = evaluate_all_sources(program, packed.input_masks, all_ones(packed.width));
+    std::size_t true_count = 0;
+    const auto first_temp = static_cast<std::size_t>(packed.input_masks.size() + 1);
+    for (std::size_t idx = first_temp; idx < values.size(); ++idx) {
+        true_count += popcount(values[idx]);
+    }
+    const std::size_t false_count = sample_count - true_count;
+    double entropy = 0.0;
+    for (const std::size_t count : {false_count, true_count}) {
+        if (count == 0) continue;
+        const double probability = static_cast<double>(count) / static_cast<double>(sample_count);
+        entropy -= probability * std::log2(probability);
+    }
+    return entropy;
+}
+
+double deterministic_random_score(unsigned random_seed) {
+    static thread_local std::mt19937_64 rng(random_seed);
+    static thread_local std::uniform_real_distribution<double> dist(0.0, 1.0);
+    return dist(rng);
+}
+
+void append_score_value(ProgramScore &score, const std::vector<int> &values, bool descending) {
+    for (const int value : values) {
+        score.parts.push_back(descending ? -static_cast<double>(value) : static_cast<double>(value));
+    }
+}
+
+void append_score_value(ProgramScore &score, double value, bool descending) {
+    score.parts.push_back(descending ? -value : value);
+}
+
 }  // namespace
 
 Program prune_dead_nodes(const Program &program, int num_inputs) {
@@ -109,23 +335,134 @@ Program prune_dead_nodes(const Program &program, int num_inputs) {
     return result;
 }
 
-ProgramScore score_program(const Program &program, int num_inputs) {
+ProgramScore score_program(const Program &program, int num_inputs, const PackedExamples &packed,
+                           const PostProcessScorePhase &phase, unsigned random_seed) {
     ProgramScore score;
-    score.length = program.instrs.size();
     score.outputs = program.outputs;
-    std::vector<int> depths(static_cast<std::size_t>(num_inputs + 1), 0);
     score.instr_key.reserve(program.instrs.size() * 3);
+    std::optional<std::vector<int>> cached_instruction_depths;
+    std::optional<std::vector<int>> cached_output_depths;
+    std::optional<std::vector<int>> cached_tree_sizes;
+    std::optional<std::vector<int>> cached_cone_sizes;
+    std::optional<std::vector<int>> cached_fanouts;
+
+    auto get_instruction_depths = [&]() -> const std::vector<int> & {
+        if (!cached_instruction_depths.has_value()) cached_instruction_depths = instruction_depths(program, num_inputs);
+        return *cached_instruction_depths;
+    };
+    auto get_output_depths = [&]() -> const std::vector<int> & {
+        if (!cached_output_depths.has_value()) cached_output_depths = output_depths(program, num_inputs);
+        return *cached_output_depths;
+    };
+    auto get_tree_sizes = [&]() -> const std::vector<int> & {
+        if (!cached_tree_sizes.has_value()) cached_tree_sizes = instruction_tree_sizes(program, num_inputs);
+        return *cached_tree_sizes;
+    };
+    auto get_cone_sizes = [&]() -> const std::vector<int> & {
+        if (!cached_cone_sizes.has_value()) cached_cone_sizes = output_cone_sizes(program, num_inputs);
+        return *cached_cone_sizes;
+    };
+    auto get_fanouts = [&]() -> const std::vector<int> & {
+        if (!cached_fanouts.has_value()) cached_fanouts = instruction_fanouts(program, num_inputs);
+        return *cached_fanouts;
+    };
+
+    for (const PostProcessScoreMetricSpec &metric : phase) {
+        switch (metric.metric) {
+        case PostProcessScoreMetric::ProgramLength:
+            append_score_value(score, static_cast<double>(program.instrs.size()), metric.descending);
+            break;
+        case PostProcessScoreMetric::OutputDepth:
+            append_score_value(score, get_output_depths(), metric.descending);
+            break;
+        case PostProcessScoreMetric::MaxOutputDepth: {
+            const std::vector<int> &depths = get_output_depths();
+            append_score_value(score, depths.empty() ? 0.0 : static_cast<double>(*std::ranges::max_element(depths)),
+                               metric.descending);
+            break;
+        }
+        case PostProcessScoreMetric::SumOutputDepth: {
+            const std::vector<int> &depths = get_output_depths();
+            append_score_value(score, static_cast<double>(sum_values(depths)), metric.descending);
+            break;
+        }
+        case PostProcessScoreMetric::TotalNodeDepth: {
+            const std::vector<int> &depths = get_instruction_depths();
+            int total = 0;
+            for (auto idx = static_cast<std::size_t>(num_inputs + 1); idx < depths.size(); ++idx) {
+                total += depths[idx];
+            }
+            append_score_value(score, static_cast<double>(total), metric.descending);
+            break;
+        }
+        case PostProcessScoreMetric::TotalTreeSize: {
+            const std::vector<int> &sizes = get_tree_sizes();
+            int total = 0;
+            for (auto idx = static_cast<std::size_t>(num_inputs + 1); idx < sizes.size(); ++idx) {
+                total += sizes[idx];
+            }
+            append_score_value(score, static_cast<double>(total), metric.descending);
+            break;
+        }
+        case PostProcessScoreMetric::OperatorCost:
+            append_score_value(score, static_cast<double>(operator_cost(program)), metric.descending);
+            break;
+        case PostProcessScoreMetric::XorCount:
+            append_score_value(score,
+                               static_cast<double>(std::ranges::count_if(
+                                   program.instrs, [](const Instruction &instr) { return instr.op == kOpXor; })),
+                               metric.descending);
+            break;
+        case PostProcessScoreMetric::OutputConeSize:
+            append_score_value(score, get_cone_sizes(), metric.descending);
+            break;
+        case PostProcessScoreMetric::MaxOutputConeSize: {
+            const std::vector<int> &sizes = get_cone_sizes();
+            append_score_value(score, sizes.empty() ? 0.0 : static_cast<double>(*std::ranges::max_element(sizes)),
+                               metric.descending);
+            break;
+        }
+        case PostProcessScoreMetric::SumOutputConeSize: {
+            const std::vector<int> &sizes = get_cone_sizes();
+            append_score_value(score, static_cast<double>(sum_values(sizes)), metric.descending);
+            break;
+        }
+        case PostProcessScoreMetric::Fanout:
+            append_score_value(score, get_fanouts(), metric.descending);
+            break;
+        case PostProcessScoreMetric::MaxFanout: {
+            const std::vector<int> &fanouts = get_fanouts();
+            append_score_value(score, fanouts.empty() ? 0.0 : static_cast<double>(*std::ranges::max_element(fanouts)),
+                               metric.descending);
+            break;
+        }
+        case PostProcessScoreMetric::SumFanout: {
+            const std::vector<int> &fanouts = get_fanouts();
+            append_score_value(score, static_cast<double>(sum_values(fanouts)), metric.descending);
+            break;
+        }
+        case PostProcessScoreMetric::OneFanoutCount: {
+            const std::vector<int> &fanouts = get_fanouts();
+            append_score_value(score, static_cast<double>(std::ranges::count(fanouts, 1)), metric.descending);
+            break;
+        }
+        case PostProcessScoreMetric::IndependentPairs:
+            append_score_value(score, static_cast<double>(independent_instruction_pairs(program, num_inputs)),
+                               metric.descending);
+            break;
+        case PostProcessScoreMetric::Entropy:
+            append_score_value(score, node_value_entropy(program, packed), metric.descending);
+            break;
+        case PostProcessScoreMetric::Random:
+            append_score_value(score, deterministic_random_score(random_seed), metric.descending);
+            break;
+        }
+    }
+
     for (const auto &instr : program.instrs) {
-        const int depth =
-            std::max(depths[static_cast<std::size_t>(instr.s1)], depths[static_cast<std::size_t>(instr.s2)]) + 1;
-        depths.push_back(depth);
-        score.operator_cost += instr.op == kOpXor ? kXorOperatorCost : kDefaultOperatorCost;
         score.instr_key.push_back(instr.op);
         score.instr_key.push_back(instr.s1);
         score.instr_key.push_back(instr.s2);
-    }
-    for (const int output : program.outputs) {
-        score.max_output_depth = std::max(score.max_output_depth, depths[static_cast<std::size_t>(output)]);
     }
     return score;
 }

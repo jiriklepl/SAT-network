@@ -36,7 +36,10 @@ for now because the C++ generator does not reproduce Python's RNG sampling.
 - `config.*`: JSON config loading and dataset dumping.
 - `datasets.*`: C++ built-in dataset generators.
 - `program.*`: program/data model, operator table, text emission, and packed verifier.
-- `postprocess.*`: mask-only program simplification and dead-node pruning.
+- `postprocess.*`: post-processing beam orchestration and public options.
+- `postprocess_common.*`, `postprocess_mask.*`, `postprocess_resynthesis.*`:
+  scoring, shared candidate utilities, mask-only simplification, and local SAT
+  resynthesis.
 - `encoding.*`: Z3 structure/example encoding, solver construction, and model extraction.
 - `solver.*`: solver orchestration, CEGIS, batching, timing, and verification result packaging.
 - `tests/`: modular Catch2 unit tests for core modules.
@@ -53,6 +56,7 @@ build/sat_synth_cpp --config path/to/config.json --make-dimacs
 build/sat_synth_cpp --config path/to/config.json --make-blif
 build/sat_synth_cpp --config path/to/config.json --output-blif
 build/sat_synth_cpp --config path/to/config.json --post-process --post-process-resynthesis-maxnodes 5
+build/sat_synth_cpp --config path/to/config.json --post-process --post-process-score 'program-length;max-output-depth,operator-cost'
 build/sat_synth_cpp --config path/to/config.json --profile
 build/sat_synth_cpp --list-datasets
 ```
@@ -79,6 +83,15 @@ instructions, redirect equivalent masks to earlier sources, apply simple
 It also tries local SAT resynthesis for closed one-fanout windows. Use
 `--post-process-resynthesis-maxnodes`, `--post-process-resynthesis-patience`,
 and `--generator-timeout` to control that search.
+
+`--post-process-score` selects lexicographic score metrics. Separate metrics in
+one phase with commas and phases with semicolons. Prefix a metric with `-` for
+descending order. Supported metrics are `program-length`, `output-depth`,
+`max-output-depth`, `sum-output-depth`, `total-node-depth`, `total-tree-size`,
+`operator-cost`, `xor-count`, `output-cone-size`, `max-output-cone-size`,
+`sum-output-cone-size`, `fanout`, `max-fanout`, `sum-fanout`,
+`one-fanout-count`, `independent-pairs`, `entropy`, and `random`. The C++
+`random` metric is deterministic for a fixed `--seed`.
 
 ## Test
 

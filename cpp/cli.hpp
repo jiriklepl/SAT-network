@@ -1,5 +1,7 @@
 #pragma once
 
+#include "postprocess.hpp"
+
 #include <cstddef>
 #include <iosfwd>
 #include <optional>
@@ -33,6 +35,8 @@ struct CliOptions {
     std::size_t post_process_beam_width = 1;
     std::size_t post_process_beam_rounds = 0;
     std::size_t post_process_beam_candidates = 0;
+    std::vector<PostProcessScorePhase> post_process_score_phases = {
+        {{.metric = PostProcessScoreMetric::ProgramLength, .descending = false}}};
     std::size_t post_process_resynthesis_maxnodes = 5;
     std::size_t post_process_resynthesis_patience = 1;
     double generator_timeout = 0.0;
