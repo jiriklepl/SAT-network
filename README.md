@@ -48,7 +48,19 @@ python3 main.py --dataset life-compressed --assume /tmp/life-compressed.assume
 
 # Use the plain Z3 QF_BV solver
 python3 main.py --solver z3
+
+# Use quantified synthesis instead of example batches
+python3 quantified_synth.py --dataset adder --instructions 5
 ```
 
 `build_assumptions.py` emits a complete program in the `--assume` file format accepted by `main.py`.
 The default `circuit` strategy uses generated gate networks for supported cellular automata datasets and falls back to exact DNF for other datasets. Use `--strategy dnf` to force the truth-table construction. If the header reports `required-instructions`, pass that value to `main.py` with `--instructions` when it differs from the dataset default.
+
+## Adding Datasets
+
+Add new datasets as modules in `dataset_plugins/` and call `register_plugin(...)`.
+The example builder is used by `main.py`. `quantified_synth.py` uses an optional
+`quantified_builder=` from the same registry; if a dataset does not provide one,
+it falls back to a quantified DNF relation built from the example builder. Native
+quantified builders are preferred for large state spaces because they avoid
+materializing the full example table.

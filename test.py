@@ -25,9 +25,11 @@ from main import (
     main,
     _operator_sort_key,
     _post_process_program,
+    _verify_program,
 )
 from build_assumptions import build_assumption_lines
-from dataset_plugins import available_plugins, get_plugin, get_plugin_config
+from dataset_plugins import available_plugins, available_quantified_plugins, get_plugin, get_plugin_config
+from quantified_synth import synthesize_quantified
 
 
 def _bits(value: int, width: int) -> list[bool]:
@@ -164,6 +166,26 @@ class MainEncodingTests(unittest.TestCase):
         self.assertIn("OUT0:", stdout.getvalue())
         self.assertIn("CEGIS iteration", stderr.getvalue())
         self.assertIn("All examples matched successfully", stderr.getvalue())
+
+    def test_quantified_synthesizes_adder_without_examples(self) -> None:
+        cfg = {"type": "adder", "num_inputs": 3, "instructions": 5}
+        spec = ProgramSpec(num_inputs=3, num_outputs=2, program_length=5)
+
+        result, instrs, outputs, _elapsed = synthesize_quantified(cfg, spec, EncodingOptions())
+
+        self.assertEqual(result, "sat")
+        self.assertIsNotNone(instrs)
+        self.assertIsNotNone(outputs)
+        examples, _num_inputs, num_outputs = get_plugin("adder")(get_plugin_config("adder"))
+        self.assertEqual(_verify_program(instrs or [], outputs or [], examples, num_outputs), [])
+
+    def test_adder_registers_native_quantified_builder(self) -> None:
+        quantified_plugins = available_quantified_plugins()
+
+        self.assertIn("adder", quantified_plugins)
+        num_inputs, num_outputs, outputs = quantified_plugins["adder"](get_plugin_config("adder"))
+        self.assertEqual((num_inputs, num_outputs), (3, 2))
+        self.assertEqual(outputs, ["COUNT_BIT(I0, I1, I2, 0)", "COUNT_BIT(I0, I1, I2, 1)"])
 
     def test_explicit_examples_preserve_output_dont_cares(self) -> None:
         examples, num_inputs, num_outputs, instructions = _build_dataset_from_config({

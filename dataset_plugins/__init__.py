@@ -12,6 +12,8 @@ IOList = List[Optional[bool]]
 Example = Dict[str, IOList]
 DatasetResult = Tuple[List[Example], int, int]
 PluginBuilder = Callable[[Dict[str, Any]], DatasetResult]
+QuantifiedDatasetResult = Tuple[int, int, List[str]]
+QuantifiedPluginBuilder = Callable[[Dict[str, Any]], QuantifiedDatasetResult]
 
 
 @dataclass(frozen=True)
@@ -19,12 +21,18 @@ class DatasetPlugin:
     name: str
     builder: PluginBuilder
     default_config: Dict[str, Any]
+    quantified_builder: Optional[QuantifiedPluginBuilder] = None
 
 
 _REGISTRY: Dict[str, DatasetPlugin] = {}
 
 
-def register_plugin(name: str, builder: PluginBuilder, default_config: Dict[str, Any]) -> None:
+def register_plugin(
+    name: str,
+    builder: PluginBuilder,
+    default_config: Dict[str, Any],
+    quantified_builder: Optional[QuantifiedPluginBuilder] = None,
+) -> None:
     """Register a dataset builder under a given name."""
     if name in _REGISTRY:
         raise ValueError(f"Dataset plugin already registered: {name}")
@@ -34,7 +42,12 @@ def register_plugin(name: str, builder: PluginBuilder, default_config: Dict[str,
     if config["type"] != name:
         raise ValueError(f"Default config for {name!r} must use the same type")
 
-    _REGISTRY[name] = DatasetPlugin(name=name, builder=builder, default_config=config)
+    _REGISTRY[name] = DatasetPlugin(
+        name=name,
+        builder=builder,
+        default_config=config,
+        quantified_builder=quantified_builder,
+    )
 
 
 def get_plugin(name: str) -> PluginBuilder:
@@ -43,6 +56,17 @@ def get_plugin(name: str) -> PluginBuilder:
         return _REGISTRY[name].builder
     except KeyError as exc:
         raise KeyError(f"Unknown dataset plugin '{name}'") from exc
+
+
+def get_quantified_plugin(name: str) -> QuantifiedPluginBuilder:
+    """Return the quantified plugin builder for ``name``."""
+    try:
+        builder = _REGISTRY[name].quantified_builder
+    except KeyError as exc:
+        raise KeyError(f"Unknown dataset plugin '{name}'") from exc
+    if builder is None:
+        raise KeyError(f"Dataset plugin '{name}' does not provide a quantified builder")
+    return builder
 
 
 def get_plugin_config(name: str) -> Dict[str, Any]:
@@ -56,6 +80,15 @@ def get_plugin_config(name: str) -> Dict[str, Any]:
 def available_plugins() -> Dict[str, PluginBuilder]:
     """Return a copy of the registered plugins."""
     return {name: plugin.builder for name, plugin in _REGISTRY.items()}
+
+
+def available_quantified_plugins() -> Dict[str, QuantifiedPluginBuilder]:
+    """Return plugins that provide native quantified specs."""
+    return {
+        name: plugin.quantified_builder
+        for name, plugin in _REGISTRY.items()
+        if plugin.quantified_builder is not None
+    }
 
 
 def _load_builtin_plugins() -> None:
