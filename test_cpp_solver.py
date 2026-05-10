@@ -522,6 +522,7 @@ class CppSolverIntegrationTests(unittest.TestCase):
             (["--post-process-beam-width", "0"], "--post-process-beam-width must be at least 1"),
             (["--post-process-beam-rounds", "-1"], "--post-process-beam-rounds must be non-negative"),
             (["--post-process-beam-candidates", "-1"], "--post-process-beam-candidates must be non-negative"),
+            (["--post-process-replace-patience", "-1"], "--post-process-replace-patience must be non-negative"),
             (["--post-process-resynthesis-maxnodes", "1"], "--post-process-resynthesis-maxnodes must be at least 2"),
             (
                 ["--post-process-resynthesis-patience", "-1"],
@@ -563,6 +564,39 @@ class CppSolverIntegrationTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         instrs, outputs = _parse_program(proc.stdout, config["num_inputs"], config["num_outputs"])
         self.assertEqual(len(instrs), 0)
+        self.assertEqual(_verify_program(instrs, outputs, config["examples"], config["num_outputs"]), [])
+
+    def test_post_process_replace_patience_solves_and_is_reproducible(self) -> None:
+        config = {
+            "num_inputs": 2,
+            "num_outputs": 1,
+            "instructions": 1,
+            "examples": [
+                {"inputs": [False, False], "outputs": [False]},
+                {"inputs": [False, True], "outputs": [True]},
+                {"inputs": [True, False], "outputs": [True]},
+                {"inputs": [True, True], "outputs": [True]},
+            ],
+        }
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".txt") as assume_file:
+            assume_file.write("T0: OR(I0, I1)\nOUT0: T0\n")
+            assume_file.flush()
+            args = [
+                "--assume",
+                assume_file.name,
+                "--post-process",
+                "--post-process-replace-patience",
+                "0",
+                "--seed",
+                "23",
+                "--no-shuffle",
+            ]
+            first = self.run_cpp(config, *args)
+            second = self.run_cpp(config, *args)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(first.stdout, second.stdout)
+        instrs, outputs = _parse_program(first.stdout, config["num_inputs"], config["num_outputs"])
         self.assertEqual(_verify_program(instrs, outputs, config["examples"], config["num_outputs"]), [])
 
     def test_post_process_score_random_is_seed_reproducible(self) -> None:

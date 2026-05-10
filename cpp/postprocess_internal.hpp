@@ -36,12 +36,10 @@ bool push_unique_candidate(std::vector<Program> &candidates, std::set<std::strin
                            const std::string &base_key, std::span<const Example> examples, int num_inputs,
                            int num_outputs, ProfileData *profile = nullptr);
 
-std::vector<Program> generate_mask_simplification_candidates(const Program &base, std::span<const Example> examples,
-                                                             int num_inputs, int num_outputs,
-                                                             const PackedExamples &packed,
-                                                             std::span<const PackedMask> values,
-                                                             const std::string &base_key, std::set<std::string> &seen,
-                                                             std::size_t max_candidates);
+std::vector<Program> generate_mask_simplification_candidates(
+    const Program &base, std::span<const Example> examples, int num_inputs, int num_outputs,
+    const PackedExamples &packed, std::span<const PackedMask> values, const std::string &base_key,
+    std::set<std::string> &seen, std::size_t max_candidates, const PostProcessOptions &options);
 
 std::vector<Program> generate_resynthesis_candidates(const Program &base, std::span<const Example> examples,
                                                      int num_inputs, int num_outputs, const PackedExamples &packed,

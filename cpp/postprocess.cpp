@@ -31,7 +31,7 @@ std::vector<Program> generate_candidates(const Program &program, std::span<const
 
     std::set<std::string> seen;
     std::vector<Program> candidates = generate_mask_simplification_candidates(
-        base, examples, num_inputs, num_outputs, packed, values, base_key, seen, max_candidates);
+        base, examples, num_inputs, num_outputs, packed, values, base_key, seen, max_candidates, options);
     if (max_candidates == 0 || candidates.size() < max_candidates) {
         std::vector<Program> resynth_candidates = generate_resynthesis_candidates(
             base, examples, num_inputs, num_outputs, packed, values, options, base_key, seen,

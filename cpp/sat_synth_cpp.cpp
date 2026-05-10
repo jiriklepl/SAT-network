@@ -52,6 +52,7 @@ SolveOptions make_solve_options(const CliOptions &cli) {
                 .beam_candidates = cli.post_process_beam_candidates,
                 .score_phases = cli.post_process_score_phases,
                 .random_seed = cli.seed,
+                .replace_patience = cli.post_process_replace_patience,
                 .resynthesis_maxnodes = cli.post_process_resynthesis_maxnodes,
                 .resynthesis_patience = cli.post_process_resynthesis_patience,
                 .generator_timeout_seconds = cli.generator_timeout,

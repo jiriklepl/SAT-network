@@ -93,6 +93,7 @@ cxxopts::Options make_options() {
         ("post-process-beam-rounds", "Post-processing beam rounds; 0 means until no improvement", cxxopts::value<int>()->default_value("0"))
         ("post-process-beam-candidates", "Maximum neighbor candidates per beam state; 0 means unlimited", cxxopts::value<int>()->default_value("0"))
         ("post-process-score", "Comma-separated post-processing score metrics; use ; for phases and -metric for descending", cxxopts::value<std::string>()->default_value("program-length"))
+        ("post-process-replace-patience", "Accepted replacement-search candidates per instruction; 0 means unlimited", cxxopts::value<int>()->default_value("50"))
         ("post-process-resynthesis-maxnodes", "Maximum local SAT resynthesis window size", cxxopts::value<int>()->default_value("5"))
         ("post-process-resynthesis-patience", "Maximum SAT resynthesis results per beam state; 0 means unlimited", cxxopts::value<int>()->default_value("1"))
         ("generator-timeout", "Maximum seconds spent in each post-process candidate generator; 0 means unlimited", cxxopts::value<double>()->default_value("0"))
@@ -161,6 +162,7 @@ CliOptions parse_args(int argc, char **argv) {
     const int post_process_beam_rounds = parsed["post-process-beam-rounds"].as<int>();
     const int post_process_beam_candidates = parsed["post-process-beam-candidates"].as<int>();
     const std::string post_process_score = parsed["post-process-score"].as<std::string>();
+    const int post_process_replace_patience = parsed["post-process-replace-patience"].as<int>();
     const int post_process_resynthesis_maxnodes = parsed["post-process-resynthesis-maxnodes"].as<int>();
     const int post_process_resynthesis_patience = parsed["post-process-resynthesis-patience"].as<int>();
     const double generator_timeout = parsed["generator-timeout"].as<double>();
@@ -179,12 +181,14 @@ CliOptions parse_args(int argc, char **argv) {
     if (post_process_beam_rounds < 0) usage_error("--post-process-beam-rounds must be non-negative");
     if (post_process_beam_candidates < 0) usage_error("--post-process-beam-candidates must be non-negative");
     options.post_process_score_phases = parse_post_process_score(post_process_score);
+    if (post_process_replace_patience < 0) usage_error("--post-process-replace-patience must be non-negative");
     if (post_process_resynthesis_maxnodes < 2) usage_error("--post-process-resynthesis-maxnodes must be at least 2");
     if (post_process_resynthesis_patience < 0) usage_error("--post-process-resynthesis-patience must be non-negative");
     if (generator_timeout < 0.0) usage_error("--generator-timeout must be non-negative");
     options.post_process_beam_width = static_cast<std::size_t>(post_process_beam_width);
     options.post_process_beam_rounds = static_cast<std::size_t>(post_process_beam_rounds);
     options.post_process_beam_candidates = static_cast<std::size_t>(post_process_beam_candidates);
+    options.post_process_replace_patience = static_cast<std::size_t>(post_process_replace_patience);
     options.post_process_resynthesis_maxnodes = static_cast<std::size_t>(post_process_resynthesis_maxnodes);
     options.post_process_resynthesis_patience = static_cast<std::size_t>(post_process_resynthesis_patience);
     options.generator_timeout = generator_timeout;

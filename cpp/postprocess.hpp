@@ -45,6 +45,7 @@ struct PostProcessOptions {
     std::size_t beam_candidates = 0;
     std::vector<PostProcessScorePhase> score_phases = {{{PostProcessScoreMetric::ProgramLength, false}}};
     unsigned random_seed = 0;
+    std::size_t replace_patience = 50;
     std::size_t resynthesis_maxnodes = 5;
     std::size_t resynthesis_patience = 1;
     double generator_timeout_seconds = 0.0;

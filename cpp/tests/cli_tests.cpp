@@ -38,6 +38,8 @@ TEST_CASE("CLI parses supported solver options") {
         "5",
         "--post-process-score",
         "output-depth;-fanout,entropy",
+        "--post-process-replace-patience",
+        "8",
         "--post-process-resynthesis-maxnodes",
         "6",
         "--post-process-resynthesis-patience",
@@ -74,6 +76,7 @@ TEST_CASE("CLI parses supported solver options") {
     REQUIRE(options.post_process_score_phases[1][0].descending);
     REQUIRE(options.post_process_score_phases[1][1].metric == PostProcessScoreMetric::Entropy);
     REQUIRE_FALSE(options.post_process_score_phases[1][1].descending);
+    REQUIRE(options.post_process_replace_patience == 8);
     REQUIRE(options.post_process_resynthesis_maxnodes == 6);
     REQUIRE(options.post_process_resynthesis_patience == 7);
     REQUIRE(options.generator_timeout == 0.25);
@@ -134,6 +137,11 @@ TEST_CASE("CLI validation rejects invalid combinations and counts") {
     REQUIRE_THROWS(parse_args(static_cast<int>(std::size(negative_generator_timeout)),
                               const_cast<char **>(negative_generator_timeout)));
 
+    const char *negative_replace_patience[] = {"sat_synth_cpp", "--dataset", "adder", "--post-process-replace-patience",
+                                               "-1"};
+    REQUIRE_THROWS(parse_args(static_cast<int>(std::size(negative_replace_patience)),
+                              const_cast<char **>(negative_replace_patience)));
+
     const char *bad_score_metric[] = {"sat_synth_cpp", "--dataset", "adder", "--post-process-score", "not-a-metric"};
     REQUIRE_THROWS(parse_args(static_cast<int>(std::size(bad_score_metric)), const_cast<char **>(bad_score_metric)));
 
@@ -169,6 +177,7 @@ TEST_CASE("usage text mentions main input modes") {
     REQUIRE(out.str().find("--post-process") != std::string::npos);
     REQUIRE(out.str().find("--post-process-resynthesis-maxnodes") != std::string::npos);
     REQUIRE(out.str().find("--post-process-score") != std::string::npos);
+    REQUIRE(out.str().find("--post-process-replace-patience") != std::string::npos);
     REQUIRE(out.str().find("--generator-timeout") != std::string::npos);
     REQUIRE(out.str().find("--list-datasets") != std::string::npos);
 }

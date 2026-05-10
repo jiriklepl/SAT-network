@@ -57,6 +57,7 @@ build/sat_synth_cpp --config path/to/config.json --make-blif
 build/sat_synth_cpp --config path/to/config.json --output-blif
 build/sat_synth_cpp --config path/to/config.json --post-process --post-process-resynthesis-maxnodes 5
 build/sat_synth_cpp --config path/to/config.json --post-process --post-process-score 'program-length;max-output-depth,operator-cost'
+build/sat_synth_cpp --config path/to/config.json --post-process --post-process-replace-patience 50
 build/sat_synth_cpp --config path/to/config.json --profile
 build/sat_synth_cpp --list-datasets
 ```
@@ -80,9 +81,11 @@ cache hits/misses.
 extraction and before text or BLIF emission. It can remove unreachable
 instructions, redirect equivalent masks to earlier sources, apply simple
 `AND`/`OR`/`XOR` algebra, and simplify output selectors under don't-care masks.
-It also tries local SAT resynthesis for closed one-fanout windows. Use
-`--post-process-resynthesis-maxnodes`, `--post-process-resynthesis-patience`,
-and `--generator-timeout` to control that search.
+It also tries structural regrouping/bypass generators, deterministic replacement
+search, and local SAT resynthesis for closed one-fanout windows. Use
+`--post-process-replace-patience`, `--post-process-resynthesis-maxnodes`,
+`--post-process-resynthesis-patience`, and `--generator-timeout` to control
+that search.
 
 `--post-process-score` selects lexicographic score metrics. Separate metrics in
 one phase with commas and phases with semicolons. Prefix a metric with `-` for

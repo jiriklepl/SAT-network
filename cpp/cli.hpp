@@ -37,6 +37,7 @@ struct CliOptions {
     std::size_t post_process_beam_candidates = 0;
     std::vector<PostProcessScorePhase> post_process_score_phases = {
         {{.metric = PostProcessScoreMetric::ProgramLength, .descending = false}}};
+    std::size_t post_process_replace_patience = 50;
     std::size_t post_process_resynthesis_maxnodes = 5;
     std::size_t post_process_resynthesis_patience = 1;
     double generator_timeout = 0.0;

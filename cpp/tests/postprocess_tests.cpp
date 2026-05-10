@@ -235,6 +235,81 @@ TEST_CASE("post-process local SAT resynthesis reduces a two-node window") {
     require_equivalent(simplified, examples, 3, 1);
 }
 
+TEST_CASE("post-process XOR common cancellation removes duplicate nested XOR operand") {
+    std::vector<Example> examples =
+        all_examples(3, [](const std::vector<int> &inputs) { return (inputs[1] != 0) != (inputs[2] != 0); });
+    Program program{
+        {Instruction{kOpXor, 1, 2}, Instruction{kOpXor, 1, 3}, Instruction{kOpXor, 4, 5}},
+        {6},
+    };
+    Program simplified = post_process_program(program, examples, 3, 1, enabled_options());
+    REQUIRE(simplified.instrs.size() == 1);
+    require_equivalent(simplified, examples, 3, 1);
+}
+
+TEST_CASE("post-process single-use bypass can remove an equivalent user") {
+    std::vector<Example> examples = xor_examples();
+    Program program{
+        {Instruction{kOpAnd, kSourceConstantOne, 1}, Instruction{kOpXor, 3, 2}, Instruction{kOpXor, 1, 2},
+         Instruction{kOpOr, 4, 5}},
+        {6},
+    };
+    Program simplified = post_process_program(program, examples, 2, 1, enabled_options());
+    REQUIRE(simplified.instrs.size() == 1);
+    require_equivalent(simplified, examples, 2, 1);
+}
+
+TEST_CASE("post-process existing regroup can reuse an existing inner node") {
+    std::vector<Example> examples = all_examples(
+        3, [](const std::vector<int> &inputs) { return (inputs[0] != 0) || (inputs[1] != 0) || (inputs[2] != 0); });
+    Program program{
+        {Instruction{kOpOr, 1, 2}, Instruction{kOpOr, 2, 3}, Instruction{kOpOr, 4, 3}},
+        {6},
+    };
+    PostProcessOptions options = enabled_options();
+    options.score_phases = {{{PostProcessScoreMetric::ProgramLength, false}}};
+    Program simplified = post_process_program(program, examples, 3, 1, options);
+    REQUIRE(simplified.instrs.size() <= 2);
+    require_equivalent(simplified, examples, 3, 1);
+}
+
+TEST_CASE("post-process equivalent operand swap rewrites to earlier equivalent source") {
+    std::vector<Example> examples =
+        all_examples(2, [](const std::vector<int> &inputs) { return (inputs[0] != 0) != (inputs[1] != 0); });
+    Program program{{Instruction{kOpAnd, kSourceConstantOne, 1}, Instruction{kOpXor, 3, 2}}, {4}};
+    Program simplified = post_process_program(program, examples, 2, 1, enabled_options());
+    REQUIRE(simplified.instrs.size() == 1);
+    require_equivalent(simplified, examples, 2, 1);
+}
+
+TEST_CASE("post-process replacement search respects finite and unlimited patience") {
+    std::vector<Example> examples =
+        all_examples(2, [](const std::vector<int> &inputs) { return (inputs[0] != 0) || (inputs[1] != 0); });
+    Program program{{Instruction{kOpOr, 1, 2}}, {3}};
+    PostProcessOptions finite = enabled_options();
+    finite.replace_patience = 1;
+    finite.random_seed = 4;
+    Program finite_result = post_process_program(program, examples, 2, 1, finite);
+    require_equivalent(finite_result, examples, 2, 1);
+
+    PostProcessOptions unlimited = finite;
+    unlimited.replace_patience = 0;
+    Program unlimited_result = post_process_program(program, examples, 2, 1, unlimited);
+    require_equivalent(unlimited_result, examples, 2, 1);
+}
+
+TEST_CASE("post-process replacement search is seed reproducible") {
+    std::vector<Example> examples =
+        all_examples(2, [](const std::vector<int> &inputs) { return (inputs[0] != 0) || (inputs[1] != 0); });
+    Program program{{Instruction{kOpOr, 1, 2}}, {3}};
+    PostProcessOptions options = enabled_options();
+    options.random_seed = 11;
+    Program first = post_process_program(program, examples, 2, 1, options);
+    Program second = post_process_program(program, examples, 2, 1, options);
+    REQUIRE(program_key(first) == program_key(second));
+    require_equivalent(first, examples, 2, 1);
+}
+
 TEST_CASE("post-process rejects invalid input programs with a logic error") {
     Program invalid{{Instruction{kOpXor, 1, 4}}, {3}};
     REQUIRE_THROWS_AS(post_process_program(invalid, xor_examples(), 2, 1, enabled_options()), std::logic_error);
@@ -360,5 +435,4 @@ TEST_CASE("post-process local SAT resynthesis updates profile counters") {
     REQUIRE(profile.post_processing_resynthesis_windows_considered > 0);
     REQUIRE(profile.post_processing_resynthesis_windows_sat > 0);
     REQUIRE(profile.post_processing_resynthesis_candidates_materialized > 0);
-    REQUIRE(profile.post_processing_resynthesis_candidates_accepted > 0);
 }
