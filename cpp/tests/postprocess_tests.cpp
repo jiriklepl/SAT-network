@@ -432,7 +432,19 @@ TEST_CASE("post-process local SAT resynthesis updates profile counters") {
     ProfileData profile;
     Program simplified = post_process_program(program, examples, 3, 1, options, &profile);
     require_equivalent(simplified, examples, 3, 1);
+    REQUIRE(profile.post_processing_mask_generator_seconds >= 0.0);
+    REQUIRE(profile.post_processing_replacement_generator_seconds >= 0.0);
+    REQUIRE(profile.post_processing_resynthesis_generator_seconds >= 0.0);
+    REQUIRE(profile.post_processing_mask_candidates_considered >= profile.post_processing_mask_candidates_accepted);
+    REQUIRE(profile.post_processing_mask_candidates_materialized >= profile.post_processing_mask_candidates_accepted);
     REQUIRE(profile.post_processing_resynthesis_windows_considered > 0);
+    REQUIRE(profile.post_processing_resynthesis_candidates_considered ==
+            profile.post_processing_resynthesis_windows_considered);
     REQUIRE(profile.post_processing_resynthesis_windows_sat > 0);
     REQUIRE(profile.post_processing_resynthesis_candidates_materialized > 0);
+    REQUIRE(profile.post_processing_resynthesis_candidates_materialized >=
+            profile.post_processing_resynthesis_candidates_accepted);
+    REQUIRE(profile.post_processing_mask_timeout_exits == 0);
+    REQUIRE(profile.post_processing_replacement_timeout_exits == 0);
+    REQUIRE(profile.post_processing_resynthesis_timeout_exits == 0);
 }

@@ -11,9 +11,9 @@
 
 #include <algorithm>
 #include <bit>
+#include <chrono>
 #include <map>
 #include <optional>
-#include <random>
 #include <set>
 #include <span>
 #include <stack>
@@ -25,6 +25,136 @@
 
 bool operator<(const ProgramScore &left, const ProgramScore &right) {
     return std::tie(left.parts, left.outputs, left.instr_key) < std::tie(right.parts, right.outputs, right.instr_key);
+}
+
+namespace {
+
+double elapsed_seconds(std::chrono::steady_clock::time_point start) {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+}
+
+void add_generator_seconds(ProfileData &profile, PostProcessGeneratorKind kind, double seconds) {
+    switch (kind) {
+    case PostProcessGeneratorKind::Mask:
+        profile.post_processing_mask_generator_seconds += seconds;
+        break;
+    case PostProcessGeneratorKind::Replacement:
+        profile.post_processing_replacement_generator_seconds += seconds;
+        break;
+    case PostProcessGeneratorKind::Resynthesis:
+        profile.post_processing_resynthesis_generator_seconds += seconds;
+        break;
+    }
+}
+
+void increment_timeout_exits(ProfileData &profile, PostProcessGeneratorKind kind) {
+    switch (kind) {
+    case PostProcessGeneratorKind::Mask:
+        ++profile.post_processing_mask_timeout_exits;
+        break;
+    case PostProcessGeneratorKind::Replacement:
+        ++profile.post_processing_replacement_timeout_exits;
+        break;
+    case PostProcessGeneratorKind::Resynthesis:
+        ++profile.post_processing_resynthesis_timeout_exits;
+        break;
+    }
+}
+
+}  // namespace
+
+PostProcessGeneratorRun::PostProcessGeneratorRun(ProfileData *profile, PostProcessGeneratorKind kind,
+                                                 double timeout_seconds)
+    : profile_(profile), kind_(kind), timeout_seconds_(timeout_seconds), start_(std::chrono::steady_clock::now()) {}
+
+bool PostProcessGeneratorRun::timed_out() {
+    if (timeout_seconds_ <= 0.0) return false;
+    const bool expired = elapsed_seconds(start_) >= timeout_seconds_;
+    if (expired && profile_ != nullptr && !timeout_recorded_) {
+        increment_timeout_exits(*profile_, kind_);
+        timeout_recorded_ = true;
+    }
+    return expired;
+}
+
+std::optional<int> PostProcessGeneratorRun::remaining_timeout_ms() {
+    if (timeout_seconds_ <= 0.0) return std::nullopt;
+    const double remaining = timeout_seconds_ - elapsed_seconds(start_);
+    if (remaining <= 0.0) {
+        if (profile_ != nullptr && !timeout_recorded_) {
+            increment_timeout_exits(*profile_, kind_);
+            timeout_recorded_ = true;
+        }
+        return 0;
+    }
+    return std::max(1, static_cast<int>(remaining * 1000.0));
+}
+
+void PostProcessGeneratorRun::finish() {
+    if (profile_ == nullptr || finished_) return;
+    add_generator_seconds(*profile_, kind_, elapsed_seconds(start_));
+    finished_ = true;
+}
+
+void PostProcessGeneratorRun::candidate_considered() {
+    if (profile_ == nullptr) return;
+    switch (kind_) {
+    case PostProcessGeneratorKind::Mask:
+        ++profile_->post_processing_mask_candidates_considered;
+        break;
+    case PostProcessGeneratorKind::Replacement:
+        ++profile_->post_processing_replacement_candidates_considered;
+        break;
+    case PostProcessGeneratorKind::Resynthesis:
+        ++profile_->post_processing_resynthesis_candidates_considered;
+        ++profile_->post_processing_resynthesis_windows_considered;
+        break;
+    }
+}
+
+void PostProcessGeneratorRun::candidate_materialized() {
+    if (profile_ == nullptr) return;
+    switch (kind_) {
+    case PostProcessGeneratorKind::Mask:
+        ++profile_->post_processing_mask_candidates_materialized;
+        break;
+    case PostProcessGeneratorKind::Replacement:
+        ++profile_->post_processing_replacement_candidates_materialized;
+        break;
+    case PostProcessGeneratorKind::Resynthesis:
+        ++profile_->post_processing_resynthesis_candidates_materialized;
+        break;
+    }
+}
+
+void PostProcessGeneratorRun::candidate_accepted() {
+    if (profile_ == nullptr) return;
+    switch (kind_) {
+    case PostProcessGeneratorKind::Mask:
+        ++profile_->post_processing_mask_candidates_accepted;
+        break;
+    case PostProcessGeneratorKind::Replacement:
+        ++profile_->post_processing_replacement_candidates_accepted;
+        break;
+    case PostProcessGeneratorKind::Resynthesis:
+        ++profile_->post_processing_resynthesis_candidates_accepted;
+        break;
+    }
+}
+
+void PostProcessGeneratorRun::invalid_candidate() {
+    if (profile_ == nullptr) return;
+    switch (kind_) {
+    case PostProcessGeneratorKind::Mask:
+        ++profile_->post_processing_mask_invalid_candidates;
+        break;
+    case PostProcessGeneratorKind::Replacement:
+        ++profile_->post_processing_replacement_invalid_candidates;
+        break;
+    case PostProcessGeneratorKind::Resynthesis:
+        ++profile_->post_processing_resynthesis_invalid_candidates;
+        break;
+    }
 }
 
 PostProcessScoreMetric post_process_score_metric_by_name(const std::string &name) {
@@ -293,10 +423,13 @@ double node_value_entropy(const Program &program, const PackedExamples &packed) 
     return entropy;
 }
 
-double deterministic_random_score(unsigned random_seed) {
-    static thread_local std::mt19937_64 rng(random_seed);
-    static thread_local std::uniform_real_distribution<double> dist(0.0, 1.0);
-    return dist(rng);
+double deterministic_random_score(const Program &program, unsigned random_seed) {
+    std::uint64_t hash = static_cast<std::uint64_t>(random_seed) ^ 0x9e3779b97f4a7c15ULL;
+    for (const char ch : program_key(program)) {
+        hash ^= static_cast<unsigned char>(ch);
+        hash *= 1099511628211ULL;
+    }
+    return static_cast<double>(hash >> 11U) / static_cast<double>(std::uint64_t{1} << 53U);
 }
 
 void append_score_value(ProgramScore &score, const std::vector<int> &values, bool descending) {
@@ -454,7 +587,7 @@ ProgramScore score_program(const Program &program, int num_inputs, const PackedE
             append_score_value(score, node_value_entropy(program, packed), metric.descending);
             break;
         case PostProcessScoreMetric::Random:
-            append_score_value(score, deterministic_random_score(random_seed), metric.descending);
+            append_score_value(score, deterministic_random_score(program, random_seed), metric.descending);
             break;
         }
     }
@@ -482,14 +615,15 @@ std::vector<PackedMask> evaluate_all_sources(const Program &program, std::span<c
 
 bool push_unique_candidate(std::vector<Program> &candidates, std::set<std::string> &seen, const Program &candidate,
                            const std::string &base_key, std::span<const Example> examples, int num_inputs,
-                           int num_outputs, ProfileData *profile) {
+                           int num_outputs, PostProcessGeneratorRun &generator) {
     const std::string key = program_key(candidate);
     if (key == base_key || !seen.insert(key).second) return false;
     if (const std::optional<std::string> error = validate_program_invariants(candidate, num_inputs, num_outputs)) {
-        if (profile != nullptr) ++profile->post_processing_resynthesis_invalid_candidates;
+        generator.invalid_candidate();
         throw std::logic_error("post-process generated an invalid candidate program: " + *error);
     }
     if (!verify_program(candidate, examples, num_inputs, num_outputs).empty()) return false;
     candidates.push_back(candidate);
+    generator.candidate_accepted();
     return true;
 }

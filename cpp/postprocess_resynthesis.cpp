@@ -11,7 +11,6 @@
 #include <cstddef>
 
 #include <algorithm>
-#include <chrono>
 #include <map>
 #include <optional>
 #include <set>
@@ -22,21 +21,6 @@
 #include <vector>
 
 namespace {
-
-using Clock = std::chrono::steady_clock;
-
-std::optional<int> remaining_timeout_ms(Clock::time_point start, double timeout_seconds) {
-    if (timeout_seconds <= 0.0) return std::nullopt;
-    const double elapsed = std::chrono::duration<double>(Clock::now() - start).count();
-    const double remaining = timeout_seconds - elapsed;
-    if (remaining <= 0.0) return 0;
-    return std::max(1, static_cast<int>(remaining * 1000.0));
-}
-
-bool generator_timed_out(Clock::time_point start, double timeout_seconds) {
-    if (timeout_seconds <= 0.0) return false;
-    return std::chrono::duration<double>(Clock::now() - start).count() >= timeout_seconds;
-}
 
 std::vector<std::set<int>> build_users(const Program &program, int num_inputs) {
     std::vector<std::set<int>> users(num_inputs + 1 + program.instrs.size());
@@ -247,7 +231,12 @@ std::vector<Program> generate_resynthesis_candidates(const Program &base, std::s
                                                      std::set<std::string> &seen, std::size_t max_candidates,
                                                      ProfileData *profile) {
     std::vector<Program> candidates;
-    if (base.instrs.size() < 2 || packed.width == 0 || options.resynthesis_maxnodes < 2) return candidates;
+    PostProcessGeneratorRun generator(profile, PostProcessGeneratorKind::Resynthesis,
+                                      options.generator_timeout_seconds);
+    if (base.instrs.size() < 2 || packed.width == 0 || options.resynthesis_maxnodes < 2) {
+        generator.finish();
+        return candidates;
+    }
 
     const std::vector<std::set<int>> users = build_users(base, num_inputs);
     const std::map<int, int> output_uses = build_output_uses(base);
@@ -264,7 +253,7 @@ std::vector<Program> generate_resynthesis_candidates(const Program &base, std::s
         if (seen_windows.insert(key).second) windows.push_back(std::move(key));
     };
 
-    for (std::size_t instr_idx = 0; instr_idx < base.instrs.size(); ++instr_idx) {
+    for (std::size_t instr_idx = 0; instr_idx < base.instrs.size() && !generator.timed_out(); ++instr_idx) {
         const int root = temp_source(static_cast<int>(instr_idx), num_inputs);
         std::set<int> full_set = closed_dependency_closure(root, base, num_inputs, users);
         full_set.insert(root);
@@ -273,21 +262,18 @@ std::vector<Program> generate_resynthesis_candidates(const Program &base, std::s
         } else {
             for (const std::vector<int> &nodes :
                  closed_rooted_subcomponents(root, full_set, base, num_inputs, users, options.resynthesis_maxnodes)) {
+                if (generator.timed_out()) break;
                 add_window(nodes);
             }
         }
     }
 
-    const Clock::time_point generator_start = Clock::now();
     std::size_t sat_results = 0;
     for (std::size_t window_idx = 0; window_idx < windows.size(); ++window_idx) {
         if (max_candidates != 0 && candidates.size() >= max_candidates) break;
         if (options.resynthesis_patience > 0 && sat_results >= options.resynthesis_patience) break;
-        if (generator_timed_out(generator_start, options.generator_timeout_seconds)) {
-            if (profile != nullptr) ++profile->post_processing_resynthesis_timeout_exits;
-            break;
-        }
-        if (profile != nullptr) ++profile->post_processing_resynthesis_windows_considered;
+        if (generator.timed_out()) break;
+        generator.candidate_considered();
 
         const std::vector<int> &window_nodes = windows[window_idx].first;
         const std::vector<int> &window_outputs = windows[window_idx].second;
@@ -320,12 +306,9 @@ std::vector<Program> generate_resynthesis_candidates(const Program &base, std::s
             solver.add(test.outputs[out_idx] ==
                        packed_mask_value(ctx, values[static_cast<std::size_t>(window_outputs[out_idx])]));
         }
-        const std::optional<int> timeout_ms = remaining_timeout_ms(generator_start, options.generator_timeout_seconds);
+        const std::optional<int> timeout_ms = generator.remaining_timeout_ms();
         if (timeout_ms.has_value()) {
-            if (*timeout_ms <= 0) {
-                if (profile != nullptr) ++profile->post_processing_resynthesis_timeout_exits;
-                break;
-            }
+            if (*timeout_ms <= 0) break;
             solver.set("timeout", static_cast<unsigned>(*timeout_ms));
         }
         if (solver.check() != z3::sat) continue;
@@ -334,11 +317,9 @@ std::vector<Program> generate_resynthesis_candidates(const Program &base, std::s
         const Program local_program = extract_program(ctx, solver.get_model(), local_spec);
         const Program candidate =
             apply_resynthesized_window(base, num_inputs, window_outputs, external_sources, local_program);
-        if (profile != nullptr) ++profile->post_processing_resynthesis_candidates_materialized;
-        if (push_unique_candidate(candidates, seen, candidate, base_key, examples, num_inputs, num_outputs, profile) &&
-            profile != nullptr) {
-            ++profile->post_processing_resynthesis_candidates_accepted;
-        }
+        generator.candidate_materialized();
+        push_unique_candidate(candidates, seen, candidate, base_key, examples, num_inputs, num_outputs, generator);
     }
+    generator.finish();
     return candidates;
 }

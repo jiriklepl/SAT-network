@@ -69,6 +69,12 @@ void print_profile(const ProfileData &profile) {
     std::cerr << "PROFILE z3_solve_seconds=" << profile.z3_solve_seconds << "\n";
     std::cerr << "PROFILE model_extraction_seconds=" << profile.model_extraction_seconds << "\n";
     std::cerr << "PROFILE post_processing_seconds=" << profile.post_processing_seconds << "\n";
+    std::cerr << "PROFILE post_processing_mask_generator_seconds=" << profile.post_processing_mask_generator_seconds
+              << "\n";
+    std::cerr << "PROFILE post_processing_replacement_generator_seconds="
+              << profile.post_processing_replacement_generator_seconds << "\n";
+    std::cerr << "PROFILE post_processing_resynthesis_generator_seconds="
+              << profile.post_processing_resynthesis_generator_seconds << "\n";
     std::cerr << "PROFILE packed_verification_seconds=" << profile.packed_verification_seconds << "\n";
     std::cerr << "PROFILE structure_constraints=" << profile.structure_constraints << "\n";
     std::cerr << "PROFILE example_constraints=" << profile.example_constraints << "\n";
@@ -79,10 +85,31 @@ void print_profile(const ProfileData &profile) {
     std::cerr << "PROFILE post_processing_runs=" << profile.post_processing_runs << "\n";
     std::cerr << "PROFILE post_processing_input_instructions=" << profile.post_processing_input_instructions << "\n";
     std::cerr << "PROFILE post_processing_output_instructions=" << profile.post_processing_output_instructions << "\n";
+    std::cerr << "PROFILE post_processing_mask_candidates_considered="
+              << profile.post_processing_mask_candidates_considered << "\n";
+    std::cerr << "PROFILE post_processing_mask_candidates_materialized="
+              << profile.post_processing_mask_candidates_materialized << "\n";
+    std::cerr << "PROFILE post_processing_mask_candidates_accepted=" << profile.post_processing_mask_candidates_accepted
+              << "\n";
+    std::cerr << "PROFILE post_processing_mask_invalid_candidates=" << profile.post_processing_mask_invalid_candidates
+              << "\n";
+    std::cerr << "PROFILE post_processing_mask_timeout_exits=" << profile.post_processing_mask_timeout_exits << "\n";
+    std::cerr << "PROFILE post_processing_replacement_candidates_considered="
+              << profile.post_processing_replacement_candidates_considered << "\n";
+    std::cerr << "PROFILE post_processing_replacement_candidates_materialized="
+              << profile.post_processing_replacement_candidates_materialized << "\n";
+    std::cerr << "PROFILE post_processing_replacement_candidates_accepted="
+              << profile.post_processing_replacement_candidates_accepted << "\n";
+    std::cerr << "PROFILE post_processing_replacement_invalid_candidates="
+              << profile.post_processing_replacement_invalid_candidates << "\n";
+    std::cerr << "PROFILE post_processing_replacement_timeout_exits="
+              << profile.post_processing_replacement_timeout_exits << "\n";
     std::cerr << "PROFILE post_processing_resynthesis_windows_considered="
               << profile.post_processing_resynthesis_windows_considered << "\n";
     std::cerr << "PROFILE post_processing_resynthesis_windows_sat=" << profile.post_processing_resynthesis_windows_sat
               << "\n";
+    std::cerr << "PROFILE post_processing_resynthesis_candidates_considered="
+              << profile.post_processing_resynthesis_candidates_considered << "\n";
     std::cerr << "PROFILE post_processing_resynthesis_candidates_materialized="
               << profile.post_processing_resynthesis_candidates_materialized << "\n";
     std::cerr << "PROFILE post_processing_resynthesis_invalid_candidates="

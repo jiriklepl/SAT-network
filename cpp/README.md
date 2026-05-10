@@ -74,8 +74,8 @@ Assumption files use the same text format. Blank lines and lines starting with
 
 `--profile` prints phase timings and counters to stderr. It covers dataset
 generation, structure encoding, example packing/encoding, Z3 solve time, model
-extraction, post-processing, packed verification, and Z3 bit-vector literal
-cache hits/misses.
+extraction, post-processing, per-generator post-processing counters, packed
+verification, and Z3 bit-vector literal cache hits/misses.
 
 `--post-process` runs deterministic mask-only simplifications after model
 extraction and before text or BLIF emission. It can remove unreachable
@@ -85,7 +85,8 @@ It also tries structural regrouping/bypass generators, deterministic replacement
 search, and local SAT resynthesis for closed one-fanout windows. Use
 `--post-process-replace-patience`, `--post-process-resynthesis-maxnodes`,
 `--post-process-resynthesis-patience`, and `--generator-timeout` to control
-that search.
+that search. `--generator-timeout` is applied independently to the cheap
+mask/structural generator, replacement search, and local SAT resynthesis.
 
 `--post-process-score` selects lexicographic score metrics. Separate metrics in
 one phase with commas and phases with semicolons. Prefix a metric with `-` for
