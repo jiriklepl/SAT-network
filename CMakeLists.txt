@@ -43,6 +43,9 @@ add_library(sat_synth_core
   cpp/encoding.cpp
   cpp/mask.cpp
   cpp/postprocess.cpp
+  cpp/postprocess_common.cpp
+  cpp/postprocess_mask.cpp
+  cpp/postprocess_resynthesis.cpp
   cpp/program.cpp
   cpp/solver.cpp
 )
