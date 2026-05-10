@@ -2,6 +2,7 @@
 
 #include "assumptions.hpp"
 #include "datasets.hpp"
+#include "mask.hpp"
 #include "profile.hpp"
 #include "program.hpp"
 

@@ -3,9 +3,11 @@
 #include "postprocess.hpp"
 
 #include <cstddef>
+
 #include <iosfwd>
 #include <optional>
 #include <string>
+#include <vector>
 
 struct CliOptions {
     std::string config_path;
