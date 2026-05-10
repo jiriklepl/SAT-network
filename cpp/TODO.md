@@ -4,6 +4,7 @@
 
 - Continue expanding Catch2 edge-case coverage as new C++ modules and features are added.
 - Maintain GitHub Actions coverage as C++ dependencies and test targets change.
+- Optionally add sanitizer CI coverage once local sanitizer runs are stable enough.
 - Add macOS CI once the Linux C++ baseline is stable.
 
 ## Dataset Parity
@@ -26,7 +27,6 @@
 
 ## Developer UX
 
-- Add sanitizer CMake presets.
 - Add dependency setup notes for common Linux/macOS environments.
 - Add formatting/linting guidance if the C++ surface keeps growing.
 - Keep `cpp/README.md` current as module boundaries change.

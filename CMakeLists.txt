@@ -6,6 +6,8 @@ set(CMAKE_CXX_STANDARD 26)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+option(SAT_SYNTH_ENABLE_SANITIZERS "Build project targets with AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+
 include(FetchContent)
 
 FetchContent_Declare(
@@ -35,6 +37,16 @@ if(NOT Z3_INCLUDE_DIR OR NOT Z3_LIBRARY)
   message(FATAL_ERROR "Could not find Z3 headers/library")
 endif()
 
+if(SAT_SYNTH_ENABLE_SANITIZERS)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_library(sat_synth_sanitizers INTERFACE)
+    target_compile_options(sat_synth_sanitizers INTERFACE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(sat_synth_sanitizers INTERFACE -fsanitize=address,undefined)
+  else()
+    message(FATAL_ERROR "SAT_SYNTH_ENABLE_SANITIZERS requires GCC or Clang")
+  endif()
+endif()
+
 add_library(sat_synth_core
   cpp/assumptions.cpp
   cpp/cli.cpp
@@ -51,6 +63,9 @@ add_library(sat_synth_core
 )
 target_include_directories(sat_synth_core PUBLIC cpp ${Z3_INCLUDE_DIR})
 target_link_libraries(sat_synth_core PUBLIC ${Z3_LIBRARY} cxxopts::cxxopts nlohmann_json::nlohmann_json)
+if(SAT_SYNTH_ENABLE_SANITIZERS)
+  target_link_libraries(sat_synth_core PUBLIC sat_synth_sanitizers)
+endif()
 
 add_executable(sat_synth_cpp cpp/sat_synth_cpp.cpp)
 target_link_libraries(sat_synth_cpp PRIVATE sat_synth_core)
@@ -69,6 +84,9 @@ if(BUILD_TESTING)
     cpp/tests/solver_tests.cpp
   )
   target_link_libraries(cpp_unit_tests PRIVATE sat_synth_core Catch2::Catch2WithMain)
+  if(SAT_SYNTH_ENABLE_SANITIZERS)
+    target_link_libraries(cpp_unit_tests PRIVATE sat_synth_sanitizers)
+  endif()
   add_test(NAME cpp_unit_tests COMMAND cpp_unit_tests)
 
   find_package(Python3 COMPONENTS Interpreter)
@@ -79,11 +97,12 @@ if(BUILD_TESTING)
     set(SAT_NETWORK_TEST_PYTHON ${Python3_EXECUTABLE})
   endif()
   if(SAT_NETWORK_TEST_PYTHON)
+    set(SAT_NETWORK_INTEGRATION_TEST_ENV SAT_SYNTH_CPP=$<TARGET_FILE:sat_synth_cpp>)
     add_test(
       NAME cpp_solver_integration
       COMMAND
         ${CMAKE_COMMAND} -E env
-        SAT_SYNTH_CPP=$<TARGET_FILE:sat_synth_cpp>
+        ${SAT_NETWORK_INTEGRATION_TEST_ENV}
         ${SAT_NETWORK_TEST_PYTHON} -m unittest test_cpp_solver
       WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     )

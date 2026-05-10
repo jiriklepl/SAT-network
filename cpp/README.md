@@ -20,6 +20,17 @@ Clang 17 or newer, and system Z3 headers/library. CMake finds Z3 and fetches
 `nlohmann/json`, `cxxopts`, and Catch2 with `FetchContent`.
 Boost.DynamicBitset is header-only.
 
+For local sanitizer validation with AddressSanitizer and UndefinedBehaviorSanitizer:
+
+```bash
+cmake --preset debug-sanitize
+cmake --build --preset debug-sanitize -j2
+ctest --test-dir build/debug-sanitize --output-on-failure
+```
+
+The sanitizer CTest preset disables LeakSanitizer leak detection because some
+developer runners execute tests under tracing tools where LSan cannot run.
+
 ## Dataset Support
 
 C++ built-in dataset generation is intended to match Python plugin output

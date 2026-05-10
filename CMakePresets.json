@@ -25,6 +25,17 @@
         "CMAKE_BUILD_TYPE": "Release",
         "BUILD_TESTING": "ON"
       }
+    },
+    {
+      "name": "debug-sanitize",
+      "displayName": "Debug ASan+UBSan",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/debug-sanitize",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "BUILD_TESTING": "ON",
+        "SAT_SYNTH_ENABLE_SANITIZERS": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -35,6 +46,10 @@
     {
       "name": "release",
       "configurePreset": "release"
+    },
+    {
+      "name": "debug-sanitize",
+      "configurePreset": "debug-sanitize"
     }
   ]
 }
