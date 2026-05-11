@@ -4,7 +4,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
-#include <stdexcept>
+#include <exception>
 #include <string>
 #include <vector>
 
@@ -19,11 +19,13 @@ void require_throws_message(const nlohmann::json &config, const std::string &mes
 }
 
 TEST_CASE("available datasets include the expected built-ins") {
+    using namespace std::string_literals;
+
     std::vector<std::string> names = available_dataset_names();
-    REQUIRE(std::find(names.begin(), names.end(), "adder") != names.end());
-    REQUIRE(std::find(names.begin(), names.end(), "gol") != names.end());
-    REQUIRE(std::find(names.begin(), names.end(), "traffic") != names.end());
-    REQUIRE(std::find(names.begin(), names.end(), "life-compressed") != names.end());
+    REQUIRE(std::ranges::find(names, "adder"s) != names.end());
+    REQUIRE(std::ranges::find(names, "gol"s) != names.end());
+    REQUIRE(std::ranges::find(names, "traffic"s) != names.end());
+    REQUIRE(std::ranges::find(names, "life-compressed"s) != names.end());
 }
 
 TEST_CASE("built-in datasets generate expected basic shapes") {

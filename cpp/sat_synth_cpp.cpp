@@ -2,6 +2,7 @@
 #include "cli.hpp"
 #include "config.hpp"
 #include "datasets.hpp"
+#include "logging.hpp"
 #include "profile.hpp"
 #include "program.hpp"
 #include "solver.hpp"
@@ -32,7 +33,7 @@ Config load_requested_config(const CliOptions &cli) {
     return cfg;
 }
 
-SolveOptions make_solve_options(const CliOptions &cli) {
+SolveOptions make_solve_options(const CliOptions &cli, const Logger &logger) {
     return {
         .solver = cli.solver,
         .encoding = {.encode_boolean = cli.encode_boolean,
@@ -56,7 +57,9 @@ SolveOptions make_solve_options(const CliOptions &cli) {
                 .resynthesis_maxnodes = cli.post_process_resynthesis_maxnodes,
                 .resynthesis_patience = cli.post_process_resynthesis_patience,
                 .generator_timeout_seconds = cli.generator_timeout,
+                .logger = &logger,
             },
+        .logger = &logger,
     };
 }
 
@@ -146,6 +149,7 @@ Assumptions load_assumptions(const CliOptions &cli, const Config &cfg) {
 int main(int argc, char **argv) {
     try {
         const CliOptions cli = parse_args(argc, argv);
+        const Logger logger(cli.verbosity, std::cerr);
         if (cli.list_datasets) {
             for (const auto &name : available_dataset_names()) {
                 std::cout << name << "\n";
@@ -157,6 +161,9 @@ int main(int argc, char **argv) {
         const auto dataset_start = Clock::now();
         Config cfg = load_requested_config(cli);
         if (cli.profile) profile.dataset_generation_seconds = elapsed_seconds(dataset_start);
+        logger.log(2, "Loaded configuration with " + std::to_string(cfg.examples.size()) + " examples, " +
+                          std::to_string(cfg.num_inputs) + " inputs, " + std::to_string(cfg.num_outputs) +
+                          " outputs, and " + std::to_string(cfg.instructions) + " instructions");
         if (cli.dump_dataset) {
             std::cout << config_to_json(cfg).dump(2) << "\n";
             if (cli.profile) print_profile(profile);
@@ -173,7 +180,7 @@ int main(int argc, char **argv) {
             std::shuffle(cfg.examples.begin(), cfg.examples.end(), rng);
         }
 
-        SolveOptions solve_options = make_solve_options(cli);
+        SolveOptions solve_options = make_solve_options(cli, logger);
         if (cli.profile) solve_options.profile = &profile;
         solve_options.assumptions = load_assumptions(cli, cfg);
 
@@ -188,7 +195,7 @@ int main(int argc, char **argv) {
             return 0;
         }
 
-        log_info(cli, "Built program structure with " + std::to_string(cfg.instructions) + " instructions");
+        logger.log(1, "Built program structure with " + std::to_string(cfg.instructions) + " instructions");
         const SolveResult result = solve_config(cfg, solve_options);
         if (result.status == SolveStatus::Sat) {
             if (cli.output_blif) {
@@ -196,7 +203,7 @@ int main(int argc, char **argv) {
             } else {
                 emit_program(std::cout, *result.program, cfg.num_inputs);
             }
-            log_info(cli, "SAT in " + std::to_string(result.elapsed_seconds) + " seconds");
+            logger.log(1, "SAT in " + std::to_string(result.elapsed_seconds) + " seconds");
             if (cli.profile) print_profile(profile);
             return 0;
         }
@@ -213,11 +220,11 @@ int main(int argc, char **argv) {
             return 1;
         }
         if (result.status == SolveStatus::Unsat) {
-            log_info(cli, "UNSAT in " + std::to_string(result.elapsed_seconds) + " seconds");
+            logger.log(1, "UNSAT in " + std::to_string(result.elapsed_seconds) + " seconds");
             if (cli.profile) print_profile(profile);
             return 1;
         }
-        log_info(cli, "UNKNOWN in " + std::to_string(result.elapsed_seconds) + " seconds");
+        logger.log(1, "UNKNOWN in " + std::to_string(result.elapsed_seconds) + " seconds");
         if (cli.profile) print_profile(profile);
         return 1;
     } catch (const std::exception &exc) {

@@ -767,6 +767,92 @@ class CppSolverIntegrationTests(unittest.TestCase):
         self.assertIn("PROFILE bv_cache_hits=", proc.stderr)
         self.assertIn("PROFILE bv_cache_misses=", proc.stderr)
 
+    def test_verbosity_controls_lifecycle_and_profile_output(self) -> None:
+        config = {
+            "num_inputs": 2,
+            "num_outputs": 1,
+            "instructions": 1,
+            "examples": [
+                {"inputs": [False, False], "outputs": [False]},
+                {"inputs": [False, True], "outputs": [True]},
+                {"inputs": [True, False], "outputs": [True]},
+                {"inputs": [True, True], "outputs": [False]},
+            ],
+        }
+        default_proc = self.run_cpp(config, "--no-shuffle")
+        self.assertEqual(default_proc.returncode, 0, default_proc.stderr)
+        self.assertIn("Built program structure with 1 instructions", default_proc.stderr)
+        self.assertIn("SAT in ", default_proc.stderr)
+        _parse_program(default_proc.stdout, 2, 1)
+
+        quiet_proc = self.run_cpp(config, "--quiet", "--profile", "--no-shuffle")
+        self.assertEqual(quiet_proc.returncode, 0, quiet_proc.stderr)
+        self.assertNotIn("Built program structure", quiet_proc.stderr)
+        self.assertNotIn("SAT in ", quiet_proc.stderr)
+        self.assertIn("PROFILE dataset_generation_seconds=", quiet_proc.stderr)
+        _parse_program(quiet_proc.stdout, 2, 1)
+
+    def test_verbose_logs_solver_progress(self) -> None:
+        config = {
+            "num_inputs": 2,
+            "num_outputs": 1,
+            "instructions": 1,
+            "examples": [
+                {"inputs": [False, False], "outputs": [False]},
+                {"inputs": [False, True], "outputs": [True]},
+                {"inputs": [True, False], "outputs": [True]},
+                {"inputs": [True, True], "outputs": [False]},
+            ],
+        }
+        proc = self.run_cpp(
+            config,
+            "-v",
+            "--cegis",
+            "--cegis-initial-size",
+            "1",
+            "--cegis-counterexamples",
+            "1",
+            "--no-shuffle",
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("Loaded configuration with 4 examples", proc.stderr)
+        self.assertIn("Solving with solver=", proc.stderr)
+        self.assertIn("CEGIS starting with 1/4 examples", proc.stderr)
+        self.assertIn("CEGIS added ", proc.stderr)
+        _parse_program(proc.stdout, 2, 1)
+
+    def test_trace_logs_post_process_rounds_without_polluting_stdout(self) -> None:
+        config = {
+            "num_inputs": 2,
+            "num_outputs": 1,
+            "instructions": 2,
+            "examples": [
+                {"inputs": [False, False], "outputs": [False]},
+                {"inputs": [False, True], "outputs": [True]},
+                {"inputs": [True, False], "outputs": [True]},
+                {"inputs": [True, True], "outputs": [False]},
+            ],
+        }
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".txt") as assume_file:
+            assume_file.write("T0: XOR(I0, I1)\nT1: AND(1, T0)\nOUT0: T1\n")
+            assume_file.flush()
+            proc = self.run_cpp(
+                config,
+                "-vv",
+                "--assume",
+                assume_file.name,
+                "--post-process",
+                "--post-process-resynthesis-maxnodes",
+                "2",
+                "--no-shuffle",
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("Post-process phase 1/1", proc.stderr)
+        self.assertIn("Post-process round 1", proc.stderr)
+        self.assertIn("Post-process mask/replacement generators accepted", proc.stderr)
+        self.assertIn("Post-process resynthesis generator accepted", proc.stderr)
+        _parse_program(proc.stdout, 2, 1)
+
     def test_profile_reports_post_processing_run(self) -> None:
         config = {
             "num_inputs": 2,

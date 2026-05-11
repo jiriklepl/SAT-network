@@ -62,6 +62,7 @@ TEST_CASE("CLI parses supported solver options") {
     REQUIRE(options.cegis_counterexamples == 2);
     REQUIRE(options.no_shuffle);
     REQUIRE(options.quiet);
+    REQUIRE(options.verbosity == 0);
     REQUIRE(options.profile);
     REQUIRE(options.post_process);
     REQUIRE(options.post_process_beam_width == 3);
@@ -80,6 +81,33 @@ TEST_CASE("CLI parses supported solver options") {
     REQUIRE(options.post_process_resynthesis_maxnodes == 6);
     REQUIRE(options.post_process_resynthesis_patience == 7);
     REQUIRE(options.generator_timeout == 0.25);
+}
+
+TEST_CASE("CLI parses verbosity levels") {
+    const char *default_args[] = {"sat_synth_cpp", "--dataset", "adder"};
+    CliOptions default_options =
+        parse_args(static_cast<int>(std::size(default_args)), const_cast<char **>(default_args));
+    REQUIRE(default_options.verbosity == 1);
+
+    const char *short_verbose[] = {"sat_synth_cpp", "--dataset", "adder", "-v"};
+    CliOptions short_options =
+        parse_args(static_cast<int>(std::size(short_verbose)), const_cast<char **>(short_verbose));
+    REQUIRE(short_options.verbosity == 2);
+
+    const char *double_verbose[] = {"sat_synth_cpp", "--dataset", "adder", "-vv"};
+    CliOptions double_options =
+        parse_args(static_cast<int>(std::size(double_verbose)), const_cast<char **>(double_verbose));
+    REQUIRE(double_options.verbosity == 3);
+
+    const char *repeated_verbose[] = {"sat_synth_cpp", "--dataset", "adder", "--verbose", "--verbose"};
+    CliOptions repeated_options =
+        parse_args(static_cast<int>(std::size(repeated_verbose)), const_cast<char **>(repeated_verbose));
+    REQUIRE(repeated_options.verbosity == 3);
+
+    const char *quiet_verbose[] = {"sat_synth_cpp", "--dataset", "adder", "--quiet", "-vv"};
+    CliOptions quiet_options =
+        parse_args(static_cast<int>(std::size(quiet_verbose)), const_cast<char **>(quiet_verbose));
+    REQUIRE(quiet_options.verbosity == 0);
 }
 
 TEST_CASE("CLI parses SMT2 export option") {
@@ -174,6 +202,7 @@ TEST_CASE("usage text mentions main input modes") {
     REQUIRE(out.str().find("--make-blif") != std::string::npos);
     REQUIRE(out.str().find("--output-blif") != std::string::npos);
     REQUIRE(out.str().find("--profile") != std::string::npos);
+    REQUIRE(out.str().find("--verbose") != std::string::npos);
     REQUIRE(out.str().find("--post-process") != std::string::npos);
     REQUIRE(out.str().find("--post-process-resynthesis-maxnodes") != std::string::npos);
     REQUIRE(out.str().find("--post-process-score") != std::string::npos);

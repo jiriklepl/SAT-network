@@ -26,6 +26,7 @@ struct CliOptions {
     bool no_shuffle = false;
     unsigned seed = 0;
     bool quiet = false;
+    int verbosity = 1;
     bool list_datasets = false;
     bool dump_dataset = false;
     bool make_smt2 = false;
@@ -47,4 +48,3 @@ struct CliOptions {
 
 void print_usage(std::ostream &out);
 CliOptions parse_args(int argc, char **argv);
-void log_info(const CliOptions &options, const std::string &message);

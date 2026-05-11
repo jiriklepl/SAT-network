@@ -69,6 +69,7 @@ build/sat_synth_cpp --config path/to/config.json --output-blif
 build/sat_synth_cpp --config path/to/config.json --post-process --post-process-resynthesis-maxnodes 5
 build/sat_synth_cpp --config path/to/config.json --post-process --post-process-score 'program-length;max-output-depth,operator-cost'
 build/sat_synth_cpp --config path/to/config.json --post-process --post-process-replace-patience 50
+build/sat_synth_cpp --config path/to/config.json -vv
 build/sat_synth_cpp --config path/to/config.json --profile
 build/sat_synth_cpp --list-datasets
 ```
@@ -82,6 +83,12 @@ OUT0: T0
 
 Assumption files use the same text format. Blank lines and lines starting with
 `#` are ignored. Use `--assume -` to read assumptions from stdin.
+
+Human-readable progress logs go to stderr. By default, the solver prints
+high-level lifecycle messages. Use `-v`/`--verbose` for detailed solver progress
+and repeat it, for example `-vv`, for trace-level batch and post-processing
+round summaries. `--quiet` suppresses these progress logs but does not suppress
+errors or `--profile`.
 
 `--profile` prints phase timings and counters to stderr. It covers dataset
 generation, structure encoding, example packing/encoding, Z3 solve time, model

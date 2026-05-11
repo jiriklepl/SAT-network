@@ -53,6 +53,7 @@ add_library(sat_synth_core
   cpp/config.cpp
   cpp/datasets.cpp
   cpp/encoding.cpp
+  cpp/logging.cpp
   cpp/mask.cpp
   cpp/postprocess.cpp
   cpp/postprocess_common.cpp

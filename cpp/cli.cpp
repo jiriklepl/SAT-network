@@ -110,6 +110,7 @@ cxxopts::Options make_options() {
         ("no-shuffle", "Disable shuffling of examples")
         ("seed", "Seed for shuffling examples", cxxopts::value<unsigned>()->default_value("0"))
         ("quiet", "Suppress informational output")
+        ("v,verbose", "Increase human-readable progress logging; repeat for trace output")
         ("profile", "Print C++ phase timings and counters to stderr")
         ("h,help", "Print usage");
     // clang-format on
@@ -150,6 +151,8 @@ CliOptions parse_args(int argc, char **argv) {
     options.no_shuffle = parsed.contains("no-shuffle");
     options.seed = parsed["seed"].as<unsigned>();
     options.quiet = parsed.contains("quiet");
+    options.verbosity = 1 + static_cast<int>(parsed.count("verbose"));
+    if (options.quiet) options.verbosity = 0;
     options.list_datasets = parsed.contains("list-datasets");
     options.dump_dataset = parsed.contains("dump-dataset");
     options.make_smt2 = parsed.contains("make-smt2");
@@ -193,8 +196,4 @@ CliOptions parse_args(int argc, char **argv) {
     options.post_process_resynthesis_patience = static_cast<std::size_t>(post_process_resynthesis_patience);
     options.generator_timeout = generator_timeout;
     return options;
-}
-
-void log_info(const CliOptions &options, const std::string &message) {
-    if (!options.quiet) std::cerr << message << "\n";
 }

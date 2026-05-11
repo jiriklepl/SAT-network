@@ -1,6 +1,7 @@
 #pragma once
 
 #include "datasets.hpp"
+#include "logging.hpp"
 #include "profile.hpp"
 #include "program.hpp"
 
@@ -50,6 +51,7 @@ struct PostProcessOptions {
     std::size_t resynthesis_maxnodes = 5;
     std::size_t resynthesis_patience = 1;
     double generator_timeout_seconds = 0.0;
+    const Logger *logger = nullptr;
 };
 
 PostProcessScoreMetric post_process_score_metric_by_name(const std::string &name);

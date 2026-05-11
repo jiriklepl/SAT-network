@@ -2,6 +2,7 @@
 
 #include "assumptions.hpp"
 #include "datasets.hpp"
+#include "logging.hpp"
 #include "postprocess.hpp"
 #include "profile.hpp"
 #include "program.hpp"
@@ -29,6 +30,7 @@ struct SolveOptions {
     std::size_t cegis_counterexamples = 1;
     PostProcessOptions postprocess;
     ProfileData *profile = nullptr;
+    const Logger *logger = nullptr;
 };
 
 struct SolveResult {
