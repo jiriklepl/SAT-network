@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <map>
+#include <optional>
 #include <random>
 #include <set>
 #include <span>
@@ -167,6 +168,41 @@ bool candidate_source_depends_on_forbidden_source(const Program &program, int nu
            candidate_source_depends_on_forbidden_source(program, num_inputs, instr.s2, forbidden_source);
 }
 
+bool replacement_preserves_outputs(const Program &program, int num_inputs, const PackedExamples &packed,
+                                   std::span<const PackedMask> values, const PackedMask &all_mask, int modified_source,
+                                   const PackedMask &replacement_mask) {
+    std::vector<std::optional<PackedMask>> memo(values.size());
+    std::set<int> visiting;
+    memo[static_cast<std::size_t>(modified_source)] = replacement_mask;
+
+    auto value = [&](auto &self, int source) -> PackedMask {
+        if (source < 0 || static_cast<std::size_t>(source) >= values.size()) {
+            throw std::logic_error("replacement source out of range");
+        }
+        if (const auto &cached = memo[static_cast<std::size_t>(source)]; cached.has_value()) return *cached;
+        if (!is_temp_source(source, num_inputs, static_cast<int>(program.instrs.size())) ||
+            !candidate_source_depends_on_forbidden_source(program, num_inputs, source, modified_source)) {
+            return values[static_cast<std::size_t>(source)];
+        }
+        if (!visiting.insert(source).second) {
+            throw std::logic_error("cycle while checking replacement output preservation");
+        }
+        const Instruction &instr = program.instrs[static_cast<std::size_t>(temp_index_from_source(source, num_inputs))];
+        PackedMask computed = apply_operator_mask(instr.op, self(self, instr.s1), self(self, instr.s2)) & all_mask;
+        visiting.erase(source);
+        memo[static_cast<std::size_t>(source)] = computed;
+        return computed;
+    };
+
+    for (std::size_t output_idx = 0; output_idx < program.outputs.size(); ++output_idx) {
+        const PackedMask care_mask = all_mask ^ packed.output_dont_care_masks[output_idx];
+        if (!cares_match(value(value, program.outputs[output_idx]), packed.output_values[output_idx], care_mask)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 std::uint64_t stable_seed(unsigned base_seed, const std::string &key, std::size_t salt) {
     std::uint64_t hash = static_cast<std::uint64_t>(base_seed) ^ (salt + 0x9e3779b97f4a7c15ULL);
     for (const char ch : key) {
@@ -186,9 +222,10 @@ std::vector<Program> generate_mask_simplification_candidates(
     const int false_source = first_zero_source(values);
     std::vector<Program> candidates;
 
-    auto at_limit = [&] { return max_candidates != 0 && candidates.size() >= max_candidates; };
     PostProcessGeneratorRun mask_generator(profile, PostProcessGeneratorKind::Mask, options.generator_timeout_seconds);
-    auto mask_done = [&] { return at_limit() || mask_generator.timed_out(); };
+    const std::size_t mask_start = candidates.size();
+    auto mask_at_limit = [&] { return max_candidates != 0 && candidates.size() - mask_start >= max_candidates; };
+    auto mask_done = [&] { return mask_at_limit() || mask_generator.timed_out(); };
     auto add_mask = [&](const Program &candidate) {
         if (mask_done()) return false;
         mask_generator.candidate_considered();
@@ -329,7 +366,11 @@ std::vector<Program> generate_mask_simplification_candidates(
                     const auto [inner_s1, inner_s2] = ordered_pair(sources[static_cast<std::size_t>(inner_a_pos)],
                                                                    sources[static_cast<std::size_t>(inner_b_pos)]);
                     const int outer_source = sources[static_cast<std::size_t>(outer_pos)];
-                    if (inner_s1 >= child_source || inner_s2 >= child_source || outer_source >= source) continue;
+                    if (candidate_source_depends_on_forbidden_source(base, num_inputs, inner_s1, child_source) ||
+                        candidate_source_depends_on_forbidden_source(base, num_inputs, inner_s2, child_source) ||
+                        candidate_source_depends_on_forbidden_source(base, num_inputs, outer_source, source)) {
+                        continue;
+                    }
                     Program adjusted = base;
                     adjusted.instrs[static_cast<std::size_t>(temp_index_from_source(child_source, num_inputs))].s1 =
                         inner_s1;
@@ -338,16 +379,18 @@ std::vector<Program> generate_mask_simplification_candidates(
                     const auto [new_s1, new_s2] = ordered_pair(child_source, outer_source);
                     adjusted.instrs[instr_idx].s1 = new_s1;
                     adjusted.instrs[instr_idx].s2 = new_s2;
-                    add_mask(prune_dead_nodes(adjusted, num_inputs));
+                    add_mask(materialize_program_dag(adjusted, num_inputs));
 
                     const auto existing = existing_nodes.find({node.op, inner_s1, inner_s2});
                     if (existing != existing_nodes.end() && existing->second != child_source &&
-                        existing->second < source && outer_source < source) {
+                        !candidate_source_depends_on_forbidden_source(base, num_inputs, existing->second, source) &&
+                        !candidate_source_depends_on_forbidden_source(base, num_inputs, outer_source, source)) {
                         Program regrouped = base;
                         const auto [regroup_s1, regroup_s2] = ordered_pair(existing->second, outer_source);
+                        if (ordered_pair(regroup_s1, regroup_s2) == ordered_pair(node.s1, node.s2)) continue;
                         regrouped.instrs[instr_idx].s1 = regroup_s1;
                         regrouped.instrs[instr_idx].s2 = regroup_s2;
-                        add_mask(prune_dead_nodes(regrouped, num_inputs));
+                        add_mask(materialize_program_dag(regrouped, num_inputs));
                     }
                 }
             }
@@ -355,11 +398,14 @@ std::vector<Program> generate_mask_simplification_candidates(
     }
 
     mask_generator.finish();
-    if (at_limit()) return candidates;
 
     PostProcessGeneratorRun replacement_generator(profile, PostProcessGeneratorKind::Replacement,
                                                   options.generator_timeout_seconds);
-    auto replacement_done = [&] { return at_limit() || replacement_generator.timed_out(); };
+    const std::size_t replacement_start = candidates.size();
+    auto replacement_at_limit = [&] {
+        return max_candidates != 0 && candidates.size() - replacement_start >= max_candidates;
+    };
+    auto replacement_done = [&] { return replacement_at_limit() || replacement_generator.timed_out(); };
 
     for (std::size_t instr_idx = 0; instr_idx < base.instrs.size() && !replacement_done(); ++instr_idx) {
         const int target_source = temp_source(static_cast<int>(instr_idx), num_inputs);
@@ -385,25 +431,29 @@ std::vector<Program> generate_mask_simplification_candidates(
         std::mt19937_64 rng(stable_seed(options.random_seed, base_key, instr_idx));
         std::shuffle(replacements.begin(), replacements.end(), rng);
 
-        std::size_t accepted_for_node = 0;
+        std::size_t valid_replacements_for_node = 0;
         for (const auto &[op, s1, s2] : replacements) {
             if (replacement_done()) break;
-            if (options.replace_patience > 0 && accepted_for_node >= options.replace_patience) break;
+            if (options.replace_patience > 0 && valid_replacements_for_node >= options.replace_patience) break;
             replacement_generator.candidate_considered();
             const PackedMask candidate_mask =
                 apply_operator_mask(op, values[static_cast<std::size_t>(s1)], values[static_cast<std::size_t>(s2)]) &
                 all_mask;
+            if (!replacement_preserves_outputs(base, num_inputs, packed, values, all_mask, target_source,
+                                               candidate_mask)) {
+                continue;
+            }
             if (candidate_mask == values[static_cast<std::size_t>(target_source)] && op == base.instrs[instr_idx].op &&
                 s1 == base.instrs[instr_idx].s1 && s2 == base.instrs[instr_idx].s2) {
+                ++valid_replacements_for_node;
                 continue;
             }
             Program candidate = base;
             candidate.instrs[instr_idx] = Instruction{op, s1, s2};
             replacement_generator.candidate_materialized();
-            if (push_unique_candidate(candidates, seen, materialize_program_dag(candidate, num_inputs), base_key,
-                                      examples, num_inputs, num_outputs, replacement_generator)) {
-                ++accepted_for_node;
-            }
+            push_unique_candidate(candidates, seen, materialize_program_dag(candidate, num_inputs), base_key, examples,
+                                  num_inputs, num_outputs, replacement_generator);
+            ++valid_replacements_for_node;
         }
     }
 

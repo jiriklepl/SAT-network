@@ -54,25 +54,23 @@ std::vector<Program> generate_candidates(const Program &program, std::span<const
                                    std::to_string(after_mask - before_mask) + "/" +
                                    std::to_string(after_replacement - before_replacement) + " candidates");
     }
-    if (max_candidates == 0 || candidates.size() < max_candidates) {
-        const std::size_t before_resynthesis =
-            profile == nullptr ? 0 : profile->post_processing_resynthesis_candidates_accepted;
-        std::vector<Program> resynth_candidates = generate_resynthesis_candidates(
-            base, examples, num_inputs, num_outputs, packed, values, options, base_key, seen,
-            max_candidates == 0 ? 0 : max_candidates - candidates.size(), profile);
-        candidates.insert(candidates.end(), resynth_candidates.begin(), resynth_candidates.end());
-        const std::size_t after_resynthesis =
-            profile == nullptr ? 0 : profile->post_processing_resynthesis_candidates_accepted;
-        if (options.logger != nullptr) {
-            options.logger->log(3, "Post-process resynthesis generator accepted " +
-                                       std::to_string(after_resynthesis - before_resynthesis) + " candidates");
-        }
+    const std::size_t before_resynthesis =
+        profile == nullptr ? 0 : profile->post_processing_resynthesis_candidates_accepted;
+    std::vector<Program> resynth_candidates = generate_resynthesis_candidates(
+        base, examples, num_inputs, num_outputs, packed, values, options, base_key, seen, max_candidates, profile);
+    candidates.insert(candidates.end(), resynth_candidates.begin(), resynth_candidates.end());
+    const std::size_t after_resynthesis =
+        profile == nullptr ? 0 : profile->post_processing_resynthesis_candidates_accepted;
+    if (options.logger != nullptr) {
+        options.logger->log(3, "Post-process resynthesis generator accepted " +
+                                   std::to_string(after_resynthesis - before_resynthesis) + " candidates");
     }
 
     std::ranges::sort(candidates, [&](const Program &left, const Program &right) {
         return score_program(left, num_inputs, packed, phase, options.random_seed) <
                score_program(right, num_inputs, packed, phase, options.random_seed);
     });
+    if (max_candidates != 0 && candidates.size() > max_candidates) candidates.resize(max_candidates);
     return candidates;
 }
 

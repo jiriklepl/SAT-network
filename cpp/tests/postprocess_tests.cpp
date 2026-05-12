@@ -298,6 +298,44 @@ TEST_CASE("post-process replacement search respects finite and unlimited patienc
     require_equivalent(unlimited_result, examples, 2, 1);
 }
 
+TEST_CASE("post-process replacement search accepts output-preserving internal value changes") {
+    std::vector<Example> examples = {
+        {{false, false, false}, {false}},
+        {{true, true, false}, {true}},
+        {{true, false, true}, {true}},
+        {{false, true, true}, {true}},
+    };
+    Program program{{Instruction{kOpAnd, 1, 2}, Instruction{kOpOr, 4, 3}}, {5}};
+    PostProcessOptions options = enabled_options();
+    options.replace_patience = 0;
+    ProfileData profile;
+    Program simplified = post_process_program(program, examples, 3, 1, options, &profile);
+    require_equivalent(simplified, examples, 3, 1);
+    REQUIRE(profile.post_processing_replacement_candidates_considered > 0);
+    REQUIRE(profile.post_processing_replacement_candidates_materialized > 0);
+}
+
+TEST_CASE("post-process candidate cap does not starve replacement search") {
+    std::vector<Example> examples = {
+        {{false, false, false}, {false}},
+        {{true, true, false}, {true}},
+        {{true, false, true}, {true}},
+        {{false, true, true}, {true}},
+    };
+    Program program{
+        {Instruction{kOpAnd, kSourceConstantOne, 3}, Instruction{kOpAnd, 1, 2}, Instruction{kOpOr, 5, 4}},
+        {6},
+    };
+    PostProcessOptions options = enabled_options();
+    options.beam_candidates = 1;
+    options.replace_patience = 0;
+    ProfileData profile;
+    Program simplified = post_process_program(program, examples, 3, 1, options, &profile);
+    require_equivalent(simplified, examples, 3, 1);
+    REQUIRE(profile.post_processing_mask_candidates_materialized > 0);
+    REQUIRE(profile.post_processing_replacement_candidates_materialized > 0);
+}
+
 TEST_CASE("post-process replacement search is seed reproducible") {
     std::vector<Example> examples =
         all_examples(2, [](const std::vector<int> &inputs) { return (inputs[0] != 0) || (inputs[1] != 0); });
