@@ -116,15 +116,15 @@ Program materialize_program_dag(const Program &program, int num_inputs) {
     std::map<int, int> remap;
     std::set<int> visiting;
 
-    auto visit = [&](auto &self, int source) -> int {
+    auto visit = [&](this auto &self, int source) -> int {
         if (source <= num_inputs) return source;
         if (const auto it = remap.find(source); it != remap.end()) return it->second;
         const auto node = nodes.find(source);
         if (node == nodes.end()) throw std::runtime_error("candidate DAG references missing source");
         if (visiting.contains(source)) throw std::runtime_error("cycle in candidate DAG");
         visiting.insert(source);
-        const int s1 = self(self, node->second.s1);
-        const int s2 = self(self, node->second.s2);
+        const int s1 = self(node->second.s1);
+        const int s2 = self(node->second.s2);
         visiting.erase(source);
         const int new_source = temp_source(static_cast<int>(result.instrs.size()), num_inputs);
         remap[source] = new_source;
@@ -134,7 +134,7 @@ Program materialize_program_dag(const Program &program, int num_inputs) {
 
     result.outputs.reserve(program.outputs.size());
     for (const int output : program.outputs) {
-        result.outputs.push_back(visit(visit, output));
+        result.outputs.push_back(visit(output));
     }
     return result;
 }
@@ -175,7 +175,7 @@ bool replacement_preserves_outputs(const Program &program, int num_inputs, const
     std::set<int> visiting;
     memo[static_cast<std::size_t>(modified_source)] = replacement_mask;
 
-    auto value = [&](auto &self, int source) -> PackedMask {
+    auto value = [&](this auto &self, int source) -> PackedMask {
         if (source < 0 || static_cast<std::size_t>(source) >= values.size()) {
             throw std::logic_error("replacement source out of range");
         }
@@ -188,7 +188,7 @@ bool replacement_preserves_outputs(const Program &program, int num_inputs, const
             throw std::logic_error("cycle while checking replacement output preservation");
         }
         const Instruction &instr = program.instrs[static_cast<std::size_t>(temp_index_from_source(source, num_inputs))];
-        PackedMask computed = apply_operator_mask(instr.op, self(self, instr.s1), self(self, instr.s2)) & all_mask;
+        PackedMask computed = apply_operator_mask(instr.op, self(instr.s1), self(instr.s2)) & all_mask;
         visiting.erase(source);
         memo[static_cast<std::size_t>(source)] = computed;
         return computed;
@@ -196,7 +196,7 @@ bool replacement_preserves_outputs(const Program &program, int num_inputs, const
 
     for (std::size_t output_idx = 0; output_idx < program.outputs.size(); ++output_idx) {
         const PackedMask care_mask = all_mask ^ packed.output_dont_care_masks[output_idx];
-        if (!cares_match(value(value, program.outputs[output_idx]), packed.output_values[output_idx], care_mask)) {
+        if (!cares_match(value(program.outputs[output_idx]), packed.output_values[output_idx], care_mask)) {
             return false;
         }
     }

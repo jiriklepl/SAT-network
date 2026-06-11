@@ -1,6 +1,7 @@
 #include "logging.hpp"
 
 #include <ostream>
+#include <string>
 
 Logger::Logger(int verbosity, std::ostream &out) : verbosity_(verbosity), out_(&out) {}
 

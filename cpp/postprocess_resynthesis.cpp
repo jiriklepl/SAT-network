@@ -141,7 +141,7 @@ Program materialize_dag(const std::map<int, Instruction> &nodes, std::span<const
     std::set<int> visiting;
     std::set<int> visited;
 
-    auto visit = [&](auto &self, int source) -> int {
+    auto visit = [&](this auto &self, int source) -> int {
         if (source <= num_inputs) return source;
         if (const auto it = remap.find(source); it != remap.end()) return it->second;
         const auto node = nodes.find(source);
@@ -150,8 +150,8 @@ Program materialize_dag(const std::map<int, Instruction> &nodes, std::span<const
         if (visited.contains(source)) return remap.at(source);
 
         visiting.insert(source);
-        const int s1 = self(self, node->second.s1);
-        const int s2 = self(self, node->second.s2);
+        const int s1 = self(node->second.s1);
+        const int s2 = self(node->second.s2);
         visiting.erase(source);
         visited.insert(source);
 
@@ -163,7 +163,7 @@ Program materialize_dag(const std::map<int, Instruction> &nodes, std::span<const
 
     result.outputs.reserve(outputs.size());
     for (const int output : outputs) {
-        result.outputs.push_back(visit(visit, output));
+        result.outputs.push_back(visit(output));
     }
     return result;
 }

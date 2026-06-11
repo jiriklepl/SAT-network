@@ -310,21 +310,21 @@ std::vector<int> output_depths(const Program &program, int num_inputs) {
 }
 
 std::vector<int> output_cone_sizes(const Program &program, int num_inputs) {
-    auto collect = [&](auto &self, int source, std::set<int> &cone) -> void {
+    auto collect = [&](this auto &self, int source, std::set<int> &cone) -> void {
         if (!is_temp_source(source, num_inputs, static_cast<int>(program.instrs.size())) || cone.contains(source)) {
             return;
         }
         cone.insert(source);
         const Instruction &instr = program.instrs[static_cast<std::size_t>(temp_index_from_source(source, num_inputs))];
-        self(self, instr.s1, cone);
-        self(self, instr.s2, cone);
+        self(instr.s1, cone);
+        self(instr.s2, cone);
     };
 
     std::vector<int> sizes;
     sizes.reserve(program.outputs.size());
     for (const int output : program.outputs) {
         std::set<int> cone;
-        collect(collect, output, cone);
+        collect(output, cone);
         sizes.push_back(static_cast<int>(cone.size()));
     }
     return sizes;
@@ -356,7 +356,7 @@ int sum_values(const std::vector<int> &values) {
 
 int independent_instruction_pairs(const Program &program, int num_inputs) {
     std::map<std::pair<int, int>, bool> dependency_cache;
-    auto depends_on = [&](auto &self, int source, int target) -> bool {
+    auto depends_on = [&](this auto &self, int source, int target) -> bool {
         const auto key = std::make_pair(source, target);
         if (const auto it = dependency_cache.find(key); it != dependency_cache.end()) return it->second;
         if (source == target) {
@@ -368,7 +368,7 @@ int independent_instruction_pairs(const Program &program, int num_inputs) {
             return false;
         }
         const Instruction &instr = program.instrs[static_cast<std::size_t>(temp_index_from_source(source, num_inputs))];
-        const bool result = self(self, instr.s1, target) || self(self, instr.s2, target);
+        const bool result = self(instr.s1, target) || self(instr.s2, target);
         dependency_cache[key] = result;
         return result;
     };
@@ -378,8 +378,7 @@ int independent_instruction_pairs(const Program &program, int num_inputs) {
         const int left_source = temp_source(static_cast<int>(left_idx), num_inputs);
         for (std::size_t right_idx = left_idx + 1; right_idx < program.instrs.size(); ++right_idx) {
             const int right_source = temp_source(static_cast<int>(right_idx), num_inputs);
-            if (!depends_on(depends_on, left_source, right_source) &&
-                !depends_on(depends_on, right_source, left_source)) {
+            if (!depends_on(left_source, right_source) && !depends_on(right_source, left_source)) {
                 ++count;
             }
         }

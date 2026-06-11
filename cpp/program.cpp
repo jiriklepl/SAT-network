@@ -3,7 +3,6 @@
 #include "datasets.hpp"
 #include "mask.hpp"
 
-#include <algorithm>
 #include <cstddef>
 
 #include <algorithm>
