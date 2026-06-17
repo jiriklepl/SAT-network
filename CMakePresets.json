@@ -27,6 +27,16 @@
       }
     },
     {
+      "name": "release-with-debug-info",
+      "displayName": "Release with Debug Info",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/release-with-debug-info",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "BUILD_TESTING": "ON"
+      }
+    },
+    {
       "name": "debug-sanitize",
       "displayName": "Debug ASan+UBSan",
       "generator": "Unix Makefiles",
@@ -46,6 +56,10 @@
     {
       "name": "release",
       "configurePreset": "release"
+    },
+    {
+      "name": "release-with-debug-info",
+      "configurePreset": "release-with-debug-info"
     },
     {
       "name": "debug-sanitize",
