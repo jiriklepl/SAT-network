@@ -21,7 +21,6 @@
 ## Post-Processing Port
 
 - Extend mask-only simplification coverage as new algebraic opportunities are found.
-- Extend local SAT resynthesis beyond the current closed one-fanout component windows if Python parity requires it.
 - Add fixtures that compare Python and C++ post-processed program behavior, not textual identity.
 - Maintain the modular candidate generator layout as additional Python-only strategies are evaluated.
 
