@@ -8,14 +8,14 @@ jobs:
   build-and-test:
     strategy:
       matrix:
-        compiler: [g++-14, clang++-18]
+        compiler: [g++-14, clang++-20]
         include:
           - compiler: g++-14
             name: "GCC 14"
             install: sudo apt-get install -y g++-14
-          - compiler: clang++-18
-            name: "Clang 18"
-            install: sudo apt-get install -y clang-18
+          - compiler: clang++-20
+            name: "Clang 20"
+            install: sudo apt-get install -y clang-20
     runs-on: ubuntu-24.04
 
     steps:
