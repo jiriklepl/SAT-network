@@ -218,6 +218,7 @@ SolveResult solve_config(const Config &cfg, const SolveOptions &options) {
     }
 
     if (!program.has_value()) program = timed_extract_program(ctx, solver.get_model(), spec, options.profile);
+    program = canonicalize_program(*program, spec.num_inputs);
     if (options.postprocess.enabled) {
         program = timed_post_process_program(*program, cfg.examples, spec.num_inputs, spec.num_outputs,
                                              options.postprocess, options.profile);

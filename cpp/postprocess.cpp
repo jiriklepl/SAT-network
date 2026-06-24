@@ -34,7 +34,7 @@ std::vector<Program> generate_candidates(const Program &program, std::span<const
                                          int num_outputs, const PackedExamples &packed,
                                          const PostProcessOptions &options, const PostProcessScorePhase &phase,
                                          ProfileData *profile) {
-    const Program base = prune_dead_nodes(program, num_inputs);
+    const Program base = canonicalize_program(program, num_inputs);
     const std::string base_key = program_key(base);
     const PackedMask all_mask = all_ones(packed.width);
     const std::vector<PackedMask> values = evaluate_all_sources(base, packed.input_masks, all_mask);
@@ -143,7 +143,7 @@ Program post_process_program(const Program &program, std::span<const Example> ex
     }
 
     const PackedExamples packed = pack_examples(examples, num_inputs, num_outputs);
-    Program best = prune_dead_nodes(program, num_inputs);
+    Program best = canonicalize_program(program, num_inputs);
     require_valid_program(best, num_inputs, num_outputs, "post-process pruned input program");
     if (!verify_program(best, examples, num_inputs, num_outputs).empty()) return program;
 

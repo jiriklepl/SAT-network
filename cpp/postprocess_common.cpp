@@ -282,6 +282,104 @@ int remap_source(int source, int num_inputs, const std::vector<int> &temp_remap)
     return temp_remap[static_cast<std::size_t>(idx)];
 }
 
+bool is_commutative_op(int op) {
+    return op == kOpAnd || op == kOpXor || op == kOpOr;
+}
+
+std::pair<int, int> ordered_sources_for_op(int op, int s1, int s2) {
+    if (is_commutative_op(op) && s2 < s1) return {s2, s1};
+    return {s1, s2};
+}
+
+using CanonicalInstructionKey = std::tuple<int, int, int>;
+
+CanonicalInstructionKey canonical_instruction_key(const Instruction &instr) {
+    return {instr.s2, instr.s1, op_rank(instr.op)};
+}
+
+Program canonicalize_program_once(const Program &program, int num_inputs) {
+    std::map<int, Instruction> nodes;
+    for (std::size_t instr_idx = 0; instr_idx < program.instrs.size(); ++instr_idx) {
+        Instruction instr = program.instrs[instr_idx];
+        const auto [s1, s2] = ordered_sources_for_op(instr.op, instr.s1, instr.s2);
+        instr.s1 = s1;
+        instr.s2 = s2;
+        nodes.insert_or_assign(temp_source(static_cast<int>(instr_idx), num_inputs), instr);
+    }
+
+    std::set<int> reachable;
+    std::set<int> visiting;
+    auto collect = [&](this auto &self, int source) -> void {
+        if (source <= num_inputs) return;
+        const auto node = nodes.find(source);
+        if (node == nodes.end()) throw std::runtime_error("canonical DAG references missing source");
+        if (visiting.contains(source)) throw std::runtime_error("cycle in canonical DAG");
+        if (!reachable.insert(source).second) return;
+        visiting.insert(source);
+        self(node->second.s1);
+        self(node->second.s2);
+        visiting.erase(source);
+    };
+    for (const int output : program.outputs) {
+        collect(output);
+    }
+
+    std::set<int> remaining = std::move(reachable);
+    std::map<int, int> remap;
+    std::map<CanonicalInstructionKey, int> emitted_by_key;
+    Program result;
+
+    auto remapped_source = [&](int source) -> int {
+        if (source <= num_inputs) return source;
+        const auto it = remap.find(source);
+        if (it == remap.end()) throw std::logic_error("canonicalization attempted to remap an unavailable source");
+        return it->second;
+    };
+
+    while (!remaining.empty()) {
+        std::optional<std::tuple<CanonicalInstructionKey, int>> best;
+        Instruction best_instr;
+        for (const int source : remaining) {
+            const Instruction &node = nodes.at(source);
+            auto dependency_ready = [&](int operand) {
+                if (operand <= num_inputs) return true;
+                if (!nodes.contains(operand)) throw std::runtime_error("canonical DAG references missing source");
+                return remap.contains(operand);
+            };
+            if (!dependency_ready(node.s1) || !dependency_ready(node.s2)) continue;
+
+            Instruction remapped{.op = node.op, .s1 = remapped_source(node.s1), .s2 = remapped_source(node.s2)};
+            const auto [s1, s2] = ordered_sources_for_op(remapped.op, remapped.s1, remapped.s2);
+            remapped.s1 = s1;
+            remapped.s2 = s2;
+            const CanonicalInstructionKey key = canonical_instruction_key(remapped);
+            const auto candidate = std::make_tuple(key, source);
+            if (!best.has_value() || candidate < *best) {
+                best = candidate;
+                best_instr = remapped;
+            }
+        }
+        if (!best.has_value()) throw std::runtime_error("cycle in canonical DAG");
+
+        const auto &[key, old_source] = *best;
+        if (const auto emitted = emitted_by_key.find(key); emitted != emitted_by_key.end()) {
+            remap[old_source] = emitted->second;
+        } else {
+            const int new_source = temp_source(static_cast<int>(result.instrs.size()), num_inputs);
+            remap[old_source] = new_source;
+            emitted_by_key[key] = new_source;
+            result.instrs.push_back(best_instr);
+        }
+        remaining.erase(old_source);
+    }
+
+    result.outputs.reserve(program.outputs.size());
+    for (const int output : program.outputs) {
+        result.outputs.push_back(remapped_source(output));
+    }
+    return result;
+}
+
 std::vector<int> instruction_depths(const Program &program, int num_inputs) {
     std::vector<int> depths(static_cast<std::size_t>(num_inputs + 1), 0);
     for (const auto &instr : program.instrs) {
@@ -442,6 +540,21 @@ void append_score_value(ProgramScore &score, double value, bool descending) {
 }
 
 }  // namespace
+
+Program canonicalize_program(const Program &program, int num_inputs) {
+    Program current = program;
+    std::set<std::string> seen;
+    for (;;) {
+        const std::string before = program_key(current);
+        if (!seen.insert(before).second) {
+            // TODO: decide whether to return the current program or throw an error
+            throw std::logic_error("program canonicalization did not converge");
+        }
+        Program next = canonicalize_program_once(current, num_inputs);
+        if (program_key(next) == before) return next;
+        current = std::move(next);
+    }
+}
 
 Program prune_dead_nodes(const Program &program, int num_inputs) {
     std::vector<bool> reachable(program.instrs.size(), false);
@@ -615,14 +728,15 @@ std::vector<PackedMask> evaluate_all_sources(const Program &program, std::span<c
 bool push_unique_candidate(std::vector<Program> &candidates, std::set<std::string> &seen, const Program &candidate,
                            const std::string &base_key, std::span<const Example> examples, int num_inputs,
                            int num_outputs, PostProcessGeneratorRun &generator) {
-    const std::string key = program_key(candidate);
+    const Program canonical = canonicalize_program(candidate, num_inputs);
+    const std::string key = program_key(canonical);
     if (key == base_key || !seen.insert(key).second) return false;
-    if (const std::optional<std::string> error = validate_program_invariants(candidate, num_inputs, num_outputs)) {
+    if (const std::optional<std::string> error = validate_program_invariants(canonical, num_inputs, num_outputs)) {
         generator.invalid_candidate();
         throw std::logic_error("post-process generated an invalid candidate program: " + *error);
     }
-    if (!verify_program(candidate, examples, num_inputs, num_outputs).empty()) return false;
-    candidates.push_back(candidate);
+    if (!verify_program(canonical, examples, num_inputs, num_outputs).empty()) return false;
+    candidates.push_back(canonical);
     generator.candidate_accepted();
     return true;
 }

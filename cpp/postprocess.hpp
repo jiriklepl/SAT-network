@@ -57,5 +57,6 @@ struct PostProcessOptions {
 PostProcessScoreMetric post_process_score_metric_by_name(const std::string &name);
 std::string post_process_score_metric_name(PostProcessScoreMetric metric);
 
+Program canonicalize_program(const Program &program, int num_inputs);
 Program post_process_program(const Program &program, std::span<const Example> examples, int num_inputs, int num_outputs,
                              const PostProcessOptions &options, ProfileData *profile = nullptr);

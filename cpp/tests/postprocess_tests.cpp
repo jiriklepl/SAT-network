@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <span>
 #include <stdexcept>
+#include <tuple>
 #include <vector>
 
 namespace {
@@ -39,6 +40,19 @@ void require_equivalent(const Program &program, std::span<const Example> example
     REQUIRE(verify_program(program, examples, num_inputs, num_outputs).empty());
 }
 
+void require_canonical(const Program &program, int num_inputs) {
+    REQUIRE(program_key(canonicalize_program(program, num_inputs)) == program_key(program));
+    for (const Instruction &instr : program.instrs) {
+        REQUIRE(instr.s1 <= instr.s2);
+    }
+    for (std::size_t idx = 1; idx < program.instrs.size(); ++idx) {
+        const Instruction &prev = program.instrs[idx - 1];
+        const Instruction &curr = program.instrs[idx];
+        REQUIRE(std::make_tuple(prev.s2, prev.s1, op_rank(prev.op)) <
+                std::make_tuple(curr.s2, curr.s1, op_rank(curr.op)));
+    }
+}
+
 std::vector<Example> all_examples(int num_inputs, bool (*output_fn)(const std::vector<int> &)) {
     std::vector<Example> examples;
     const std::size_t count = std::size_t{1} << static_cast<unsigned>(num_inputs);
@@ -60,6 +74,54 @@ std::vector<Example> all_examples(int num_inputs, bool (*output_fn)(const std::v
 }
 
 }  // namespace
+
+TEST_CASE("canonicalization orders operands and structurally sorts ready instructions") {
+    Program program{
+        {Instruction{kOpOr, 2, 1}, Instruction{kOpAnd, 2, 1}, Instruction{kOpXor, 3, 4}},
+        {5},
+    };
+    Program canonical = canonicalize_program(program, 2);
+    REQUIRE(canonical.instrs.size() == 3);
+    REQUIRE(canonical.instrs[0].op == kOpAnd);
+    REQUIRE(canonical.instrs[0].s1 == 1);
+    REQUIRE(canonical.instrs[0].s2 == 2);
+    REQUIRE(canonical.instrs[1].op == kOpOr);
+    REQUIRE(canonical.instrs[1].s1 == 1);
+    REQUIRE(canonical.instrs[1].s2 == 2);
+    REQUIRE(canonical.instrs[2].op == kOpXor);
+    REQUIRE(canonical.instrs[2].s1 == 3);
+    REQUIRE(canonical.instrs[2].s2 == 4);
+    REQUIRE(canonical.outputs == std::vector<int>{5});
+    require_canonical(canonical, 2);
+}
+
+TEST_CASE("canonicalization merges duplicate reachable instructions") {
+    Program program{
+        {Instruction{kOpAnd, 2, 1}, Instruction{kOpAnd, 1, 2}},
+        {3, 4},
+    };
+    Program canonical = canonicalize_program(program, 2);
+    REQUIRE(canonical.instrs.size() == 1);
+    REQUIRE(canonical.instrs[0].op == kOpAnd);
+    REQUIRE(canonical.instrs[0].s1 == 1);
+    REQUIRE(canonical.instrs[0].s2 == 2);
+    REQUIRE(canonical.outputs == std::vector<int>{3, 3});
+    require_canonical(canonical, 2);
+}
+
+TEST_CASE("post-process canonicalizes result without requiring a score improvement") {
+    Program program{
+        {Instruction{kOpOr, 2, 1}, Instruction{kOpAnd, 2, 1}, Instruction{kOpXor, 3, 4}},
+        {5},
+    };
+    std::vector<Example> examples =
+        all_examples(2, [](const std::vector<int> &inputs) { return (inputs[0] != 0) != (inputs[1] != 0); });
+    PostProcessOptions options = enabled_options();
+    options.score_phases = {{{PostProcessScoreMetric::ProgramLength, false}}};
+    Program processed = post_process_program(program, examples, 2, 1, options);
+    require_equivalent(processed, examples, 2, 1);
+    require_canonical(processed, 2);
+}
 
 TEST_CASE("post-process score metrics compute expected structural values") {
     std::vector<Example> examples = {
