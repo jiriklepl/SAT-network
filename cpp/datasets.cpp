@@ -254,11 +254,9 @@ void emit_bits(const Expr &expr, const EvalEnv &env, BitList &out) {
         expr.node);
 }
 
+template <typename VarResolver, typename TupleResolver>
 class ExprParser {
 public:
-    using VarResolver = std::function<std::size_t(const std::string &)>;
-    using TupleResolver = std::function<std::size_t(const std::string &)>;
-
     ExprParser(std::string source, VarResolver resolve_var, TupleResolver resolve_tuple)
         : source_(std::move(source)), resolve_var_(std::move(resolve_var)), resolve_tuple_(std::move(resolve_tuple)) {}
 
@@ -662,7 +660,7 @@ std::shared_ptr<QuantifiedSpec> compile_dataset_spec(const nlohmann::json &spec,
     }
 
     std::set<std::string> compiling_static;
-    std::function<std::size_t(const std::string &)> resolve_static_var = [&](const std::string &name) -> std::size_t {
+    const auto resolve_static_var = [&](this const auto &self, const std::string &name) -> std::size_t {
         if (auto it = env.scalar_slots.find(name); it != env.scalar_slots.end()) {
             return it->second;
         }
@@ -670,7 +668,7 @@ std::shared_ptr<QuantifiedSpec> compile_dataset_spec(const nlohmann::json &spec,
             if (!compiling_static.insert(name).second) {
                 throw std::runtime_error("Cyclic let definition for variable: " + name);
             }
-            ExprParser parser(it->second, resolve_static_var, [](const std::string &t) -> std::size_t {
+            ExprParser parser(it->second, self, [](const std::string &t) -> std::size_t {
                 throw std::runtime_error("Tuple variable '" + t + "' is not available in static context");
             });
             auto ast = parser.parse();
@@ -788,7 +786,7 @@ std::shared_ptr<QuantifiedSpec> compile_dataset_spec(const nlohmann::json &spec,
         throw std::runtime_error("Unknown tuple variable in dataset expression: " + name);
     };
 
-    std::function<std::size_t(const std::string &)> resolve_row_var = [&](const std::string &name) -> std::size_t {
+    const auto resolve_row_var = [&](this const auto &self, const std::string &name) -> std::size_t {
         if (auto it = env.scalar_slots.find(name); it != env.scalar_slots.end()) {
             return it->second;
         }
@@ -796,7 +794,7 @@ std::shared_ptr<QuantifiedSpec> compile_dataset_spec(const nlohmann::json &spec,
             if (!compiling_row.insert(name).second) {
                 throw std::runtime_error("Cyclic let_row definition for variable: " + name);
             }
-            ExprParser parser(it->second, resolve_row_var, resolve_tuple_var);
+            ExprParser parser(it->second, self, resolve_tuple_var);
             auto ast = parser.parse();
             const std::size_t slot = env.ensure_scalar_slot(name);
             compiled->row_lets.emplace_back(slot, std::move(ast));
@@ -908,7 +906,7 @@ std::optional<Example> QuantifiedSpec::evaluate_point(EvalEnv &scratch) const {
 }
 
 void QuantifiedSpec::for_each_point(EvalEnv &scratch, const std::function<void(EvalEnv &)> &visit) const {
-    auto run = [&](this auto &self, std::size_t q_idx) -> void {
+    const auto run = [this, &visit, &scratch](this const auto &self, std::size_t q_idx) -> void {
         if (q_idx == quantifiers.size()) {
             visit(scratch);
             return;
@@ -927,7 +925,7 @@ void QuantifiedSpec::for_each_point(EvalEnv &scratch, const std::function<void(E
                         self(q_idx + 1);
                     }
                 } else {
-                    auto fill = [&](this auto &fill_self, std::size_t cell) -> void {
+                    const auto fill = [&](this auto &fill_self, std::size_t cell) -> void {
                         if (cell == q.size) {
                             self(q_idx + 1);
                             return;
