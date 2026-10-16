@@ -54,6 +54,16 @@ int xor_cancellation_replacement(const Program &program, const Instruction &inst
     return check_nested(instr.s2, instr.s1);
 }
 
+bool candidate_source_depends_on_forbidden_source(const Program &program, int num_inputs, int candidate_source,
+                                                  int forbidden_source) {
+    if (candidate_source == forbidden_source) return true;
+    if (!is_temp_source(candidate_source, num_inputs, static_cast<int>(program.instrs.size()))) return false;
+    const Instruction &instr =
+        program.instrs[static_cast<std::size_t>(temp_index_from_source(candidate_source, num_inputs))];
+    return candidate_source_depends_on_forbidden_source(program, num_inputs, instr.s1, forbidden_source) ||
+           candidate_source_depends_on_forbidden_source(program, num_inputs, instr.s2, forbidden_source);
+}
+
 int algebraic_replacement(const Program &program, std::size_t instr_idx, int num_inputs, int false_source) {
     const Instruction &instr = program.instrs[instr_idx];
     if (instr.op == kOpAnd) {
@@ -83,7 +93,14 @@ int algebraic_replacement(const Program &program, std::size_t instr_idx, int num
             return instr.s2;
         }
     } else if (instr.op == kOpXor) {
-        if (instr.s1 == instr.s2) return false_source;
+        if (instr.s1 == instr.s2) {
+            const int current_source = temp_source(static_cast<int>(instr_idx), num_inputs);
+            if (false_source >= 0 && false_source < current_source &&
+                !candidate_source_depends_on_forbidden_source(program, num_inputs, false_source, current_source)) {
+                return false_source;
+            }
+            return -1;
+        }
         if (false_source >= 0 && instr.s1 == false_source) return instr.s2;
         if (false_source >= 0 && instr.s2 == false_source) return instr.s1;
         return xor_cancellation_replacement(program, instr, num_inputs);
@@ -156,16 +173,6 @@ std::set<int> output_sources(const Program &program) {
 
 std::pair<int, int> ordered_pair(int left, int right) {
     return left <= right ? std::make_pair(left, right) : std::make_pair(right, left);
-}
-
-bool candidate_source_depends_on_forbidden_source(const Program &program, int num_inputs, int candidate_source,
-                                                  int forbidden_source) {
-    if (candidate_source == forbidden_source) return true;
-    if (!is_temp_source(candidate_source, num_inputs, static_cast<int>(program.instrs.size()))) return false;
-    const Instruction &instr =
-        program.instrs[static_cast<std::size_t>(temp_index_from_source(candidate_source, num_inputs))];
-    return candidate_source_depends_on_forbidden_source(program, num_inputs, instr.s1, forbidden_source) ||
-           candidate_source_depends_on_forbidden_source(program, num_inputs, instr.s2, forbidden_source);
 }
 
 bool replacement_preserves_outputs(const Program &program, int num_inputs, const PackedExamples &packed,

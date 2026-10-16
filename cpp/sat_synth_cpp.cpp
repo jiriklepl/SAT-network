@@ -42,6 +42,7 @@ SolveOptions make_solve_options(const CliOptions &cli, const Logger &logger) {
                      .balanced_select = cli.balanced_select},
         .assumptions = {},
         .batch_size = cli.batch_size,
+        .do_all = cli.do_all,
         .cegis = cli.cegis,
         .cegis_initial_size = cli.cegis_initial_size,
         .cegis_counterexamples = cli.cegis_counterexamples,

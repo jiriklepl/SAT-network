@@ -20,6 +20,7 @@ struct CliOptions {
     bool force_ordered = false;
     bool force_useful = false;
     std::optional<std::size_t> batch_size;
+    bool do_all = false;
     bool cegis = false;
     std::size_t cegis_initial_size = 64;
     std::size_t cegis_counterexamples = 1;

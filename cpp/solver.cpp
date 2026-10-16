@@ -160,12 +160,17 @@ z3::check_result solve_with_batches(z3::context &ctx, z3::solver &solver, const 
         }
         add_example_constraints(ctx, solver, std::span<const Example>(cfg.examples.begin() + offset, end - offset),
                                 "b" + std::to_string(batch_idx), spec, encoding, options.profile);
-        result = timed_check(solver, options.profile, options.logger, "Batch " + std::to_string(batch_idx + 1));
-        if (result != z3::sat) break;
-        if (options.logger != nullptr) {
-            options.logger->log(2, "Processed " + std::to_string(end) + "/" + std::to_string(cfg.examples.size()) +
-                                       " examples");
+        if (!options.do_all) {
+            result = timed_check(solver, options.profile, options.logger, "Batch " + std::to_string(batch_idx + 1));
+            if (result != z3::sat) break;
+            if (options.logger != nullptr) {
+                options.logger->log(2, "Processed " + std::to_string(end) + "/" + std::to_string(cfg.examples.size()) +
+                                           " examples");
+            }
         }
+    }
+    if (options.do_all) {
+        result = timed_check(solver, options.profile, options.logger, "All batches");
     }
     return result;
 }
@@ -191,7 +196,7 @@ SolveStatus map_status(z3::check_result result) {
 SolveResult solve_config(const Config &cfg, const SolveOptions &options) {
     const ProgramSpec spec{cfg.num_inputs, cfg.num_outputs, cfg.instructions};
     if (options.logger != nullptr) {
-        const std::string mode = options.cegis ? "cegis" : "batched";
+        const std::string mode = options.cegis ? "cegis" : (options.do_all ? "do-all" : "batched");
         const std::string batch =
             options.batch_size.has_value() ? std::to_string(*options.batch_size) : std::string("all");
         options.logger->log(2, "Solving with solver=" + options.solver + ", mode=" + mode + ", batch-size=" + batch +

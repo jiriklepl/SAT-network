@@ -104,6 +104,7 @@ cxxopts::Options make_options() {
         ("force-ordered", "Enable ordered-instruction constraints")
         ("force-useful", "Require every instruction to feed a later instruction or output")
         ("batch-size", "Number of examples to add per encoded batch", cxxopts::value<std::size_t>())
+        ("do-all", "Synthesize for all example batches at once")
         ("cegis", "Use counterexample-guided solving")
         ("cegis-initial-size", "Initial number of examples for --cegis", cxxopts::value<std::size_t>()->default_value("64"))
         ("cegis-counterexamples", "Maximum counterexamples to add per CEGIS iteration", cxxopts::value<std::size_t>()->default_value("1"))
@@ -145,6 +146,7 @@ CliOptions parse_args(int argc, char **argv) {
     options.force_ordered = parsed.contains("force-ordered");
     options.force_useful = parsed.contains("force-useful");
     if (parsed.contains("batch-size")) options.batch_size = parsed["batch-size"].as<std::size_t>();
+    options.do_all = parsed.contains("do-all");
     options.cegis = parsed.contains("cegis");
     options.cegis_initial_size = parsed["cegis-initial-size"].as<std::size_t>();
     options.cegis_counterexamples = parsed["cegis-counterexamples"].as<std::size_t>();
@@ -173,6 +175,9 @@ CliOptions parse_args(int argc, char **argv) {
     if (options.list_datasets) return options;
     if (options.config_path.empty() == options.dataset_name.empty()) {
         usage_error("exactly one of --config or --dataset is required");
+    }
+    if (options.cegis && options.do_all) {
+        usage_error("--cegis and --do-all are mutually exclusive");
     }
     if (options.cegis && (options.make_smt2 || options.make_dimacs)) {
         usage_error("--cegis cannot be combined with --make-smt2 or --make-dimacs");

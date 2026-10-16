@@ -5,6 +5,8 @@
 
 #include <cstddef>
 
+#include <algorithm>
+#include <bit>
 #include <iosfwd>
 #include <span>
 #include <string>
@@ -23,19 +25,38 @@ constexpr int kOpOr = 2;
 constexpr int kDefaultOperatorCost = 1;
 constexpr int kXorOperatorCost = 2;
 
+constexpr int input_source(int input_idx) {
+    return input_idx + 1;
+}
+
+constexpr int temp_source(int temp_idx, int num_inputs) {
+    return num_inputs + 1 + temp_idx;
+}
+
+constexpr int temp_index_from_source(int source, int num_inputs) {
+    return source - num_inputs - 1;
+}
+
+constexpr bool is_temp_source(int source, int num_inputs, int program_length) {
+    const int idx = temp_index_from_source(source, num_inputs);
+    return idx >= 0 && idx < program_length;
+}
+
 struct ProgramSpec {
     int num_inputs = 0;
     int num_outputs = 0;
     int program_length = 0;
 
-    int total_sources() const;
-    unsigned idx_bits() const;
-};
+    constexpr int total_sources() const {
+        return temp_source(program_length, num_inputs);
+    }
 
-int input_source(int input_idx);
-int temp_source(int temp_idx, int num_inputs);
-int temp_index_from_source(int source, int num_inputs);
-bool is_temp_source(int source, int num_inputs, int program_length);
+    constexpr unsigned idx_bits() const {
+        const int max_idx = std::max(0, total_sources() - 1);
+        const unsigned bits = std::bit_width(static_cast<unsigned>(max_idx));
+        return std::max(1U, bits);
+    }
+};
 
 struct EncodingOptions {
     bool encode_boolean = false;

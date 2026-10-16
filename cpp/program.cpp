@@ -6,39 +6,11 @@
 #include <cstddef>
 
 #include <algorithm>
-#include <bit>
 #include <ostream>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <vector>
-
-int ProgramSpec::total_sources() const {
-    return temp_source(program_length, num_inputs);
-}
-
-unsigned ProgramSpec::idx_bits() const {
-    const int max_idx = std::max(0, total_sources() - 1);
-    const unsigned bits = std::bit_width(static_cast<unsigned>(max_idx));
-    return std::max(1U, bits);
-}
-
-int input_source(int input_idx) {
-    return input_idx + 1;
-}
-
-int temp_source(int temp_idx, int num_inputs) {
-    return num_inputs + 1 + temp_idx;
-}
-
-int temp_index_from_source(int source, int num_inputs) {
-    return source - num_inputs - 1;
-}
-
-bool is_temp_source(int source, int num_inputs, int program_length) {
-    const int idx = temp_index_from_source(source, num_inputs);
-    return idx >= 0 && idx < program_length;
-}
 
 const std::vector<LogicOperator> &logic_operators() {
     static const std::vector<LogicOperator> operators{
