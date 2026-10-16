@@ -1,0 +1,39 @@
+{
+  "instructions": 7,
+  "defaults": {
+    "num_inputs": 4,
+    "num_outputs": 3,
+    "sloppy_adder": {
+      "left_range": 4,
+      "right_range": 4
+    }
+  },
+  "params": {
+    "num_inputs": { "path": "num_inputs", "default": 4 },
+    "num_outputs": { "path": "num_outputs", "default": 3 },
+    "left_range": { "path": "sloppy_adder.left_range", "default": 4 },
+    "right_range": { "path": "sloppy_adder.right_range", "default": 4 }
+  },
+  "num_inputs": "num_inputs",
+  "num_outputs": "num_outputs",
+  "forall": [
+    { "var": "left", "range": [0, "left_range"] },
+    { "var": "right", "range": [0, "right_range"] }
+  ],
+  "let_row": {
+    "result": "left + right",
+    "carry": "result >= 4"
+  },
+  "inputs": [
+    "bit((left >> 1) & 1)",
+    "bit(left & 1)",
+    "bit((right >> 1) & 1)",
+    "bit(right & 1)"
+  ],
+  "outputs": [
+    "bit(carry)",
+    "carry ? null : bit((result & 2) != 0)",
+    "carry ? null : bit((result & 1) != 0)"
+  ]
+}
+

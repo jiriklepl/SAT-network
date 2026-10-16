@@ -1,0 +1,46 @@
+{
+  "instructions": 18,
+  "defaults": {
+    "cyclic-compressed": {
+      "states": 32
+    }
+  },
+  "params": {
+    "state_count": {
+      "path": ["cyclic-compressed.states", "cyclic.states"],
+      "default": 32
+    }
+  },
+  "constraints": [
+    {
+      "check": "state_count >= 2",
+      "error": "cyclic-compressed.states must be at least 2"
+    }
+  ],
+  "let": {
+    "bits_per_state": "required_bits(state_count)"
+  },
+  "num_inputs": "bits_per_state + 6",
+  "num_outputs": "bits_per_state",
+  "forall": [
+    { "var": "center", "range": [0, "state_count"] },
+    { "var": "left_count", "range": [0, 4] },
+    { "var": "center_count", "range": [0, 3] },
+    { "var": "right_count", "range": [0, 4] }
+  ],
+  "let_row": {
+    "n": "left_count + center_count + right_count",
+    "successor": "(center + 1) % state_count",
+    "next_state": "n > 0 ? successor : center"
+  },
+  "inputs": [
+    "bits(left_count, 2)",
+    "bits(center_count, 2)",
+    "bits(right_count, 2)",
+    "bits(center, bits_per_state)"
+  ],
+  "outputs": [
+    "bits(next_state, bits_per_state)"
+  ]
+}
+

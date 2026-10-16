@@ -1,0 +1,39 @@
+{
+  "instructions": 14,
+  "defaults": {
+    "gol": {
+      "left_range": 4,
+      "center_range": 3,
+      "right_range": 4,
+      "include_alive": true
+    }
+  },
+  "params": {
+    "left_range": { "path": "gol.left_range", "default": 4 },
+    "center_range": { "path": "gol.center_range", "default": 3 },
+    "right_range": { "path": "gol.right_range", "default": 4 },
+    "include_alive": { "path": "gol.include_alive", "default": true }
+  },
+  "num_inputs": 7,
+  "num_outputs": 1,
+  "forall": [
+    { "var": "left", "range": [0, "left_range"] },
+    { "var": "center", "range": [0, "center_range"] },
+    { "var": "right", "range": [0, "right_range"] },
+    { "var": "alive", "values": [1, 0] }
+  ],
+  "where": "!alive || include_alive",
+  "let_row": {
+    "sum": "left + center + right"
+  },
+  "inputs": [
+    "bits(left, 2)",
+    "bits(center, 2)",
+    "bits(right, 2)",
+    "bit(alive)"
+  ],
+  "outputs": [
+    "bit(sum == 3 || (sum == 2 && alive))"
+  ]
+}
+

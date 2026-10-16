@@ -1,0 +1,24 @@
+{
+  "instructions": 6,
+  "num_inputs": 7,
+  "num_outputs": 1,
+  "forall": [
+    { "var": "center", "range": [0, 2] },
+    { "var": "left_count", "range": [0, 4] },
+    { "var": "center_count", "range": [0, 3] },
+    { "var": "right_count", "range": [0, 4] }
+  ],
+  "let_row": {
+    "n": "left_count + center_count + right_count"
+  },
+  "inputs": [
+    "bits(left_count, 2)",
+    "bits(center_count, 2)",
+    "bits(right_count, 2)",
+    "bits(center, 1)"
+  ],
+  "outputs": [
+    "bit(n == 3 || (center == 1 && n < 6))"
+  ]
+}
+

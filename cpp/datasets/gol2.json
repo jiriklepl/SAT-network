@@ -1,0 +1,26 @@
+{
+  "instructions": 8,
+  "num_inputs": 5,
+  "num_outputs": 1,
+  "forall": [
+    { "var": "left", "range": [0, 4] },
+    { "var": "center", "range": [0, 3] },
+    { "var": "right", "range": [0, 4] },
+    { "var": "alive", "values": [1, 0] }
+  ],
+  "let_row": {
+    "sum": "left + center + right",
+    "carry": "((left & 1) + (center & 1) + (right & 1)) / 2"
+  },
+  "inputs": [
+    "bit((left >> 1) & 1)",
+    "bit((center >> 1) & 1)",
+    "bit((right >> 1) & 1)",
+    "bit(carry == 1)",
+    "bit(((sum | alive) % 2) == 1)"
+  ],
+  "outputs": [
+    "bit((sum | alive) == 3)"
+  ]
+}
+

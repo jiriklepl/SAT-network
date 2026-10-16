@@ -1,0 +1,20 @@
+{
+  "instructions": 24,
+  "num_inputs": 18,
+  "num_outputs": 2,
+  "sample_section": "brian",
+  "forall": [
+    { "var": "states", "tuple": { "size": 9, "range": [0, 3] } }
+  ],
+  "let_row": {
+    "center": "states[0]",
+    "next_state": "center == 1 ? 2 : (center == 2 ? 0 : (count(states, 1, 1) == 2 ? 1 : 0))"
+  },
+  "inputs": [
+    "state_bits(states, 2)"
+  ],
+  "outputs": [
+    "bits(next_state, 2)"
+  ]
+}
+

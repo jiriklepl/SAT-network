@@ -1,0 +1,20 @@
+{
+  "instructions": 14,
+  "num_inputs": 9,
+  "num_outputs": 1,
+  "sample_section": "life",
+  "forall": [
+    { "var": "states", "tuple": { "size": 9, "range": [0, 2] } }
+  ],
+  "let_row": {
+    "center": "states[0]",
+    "alive_neighbors": "count(states, 1, 1)"
+  },
+  "inputs": [
+    "state_bits(states, 1)"
+  ],
+  "outputs": [
+    "bit(alive_neighbors == 3 || (center == 1 && alive_neighbors == 2))"
+  ]
+}
+

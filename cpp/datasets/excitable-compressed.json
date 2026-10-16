@@ -1,0 +1,45 @@
+{
+  "instructions": 12,
+  "defaults": {
+    "excitable-compressed": {
+      "states": 8
+    }
+  },
+  "params": {
+    "state_count": {
+      "path": ["excitable-compressed.states", "excitable.states"],
+      "default": 8
+    }
+  },
+  "constraints": [
+    {
+      "check": "state_count >= 3",
+      "error": "excitable-compressed.states must be at least 3"
+    }
+  ],
+  "let": {
+    "bits_per_state": "required_bits(state_count)"
+  },
+  "num_inputs": "bits_per_state + 6",
+  "num_outputs": "bits_per_state",
+  "forall": [
+    { "var": "center", "range": [0, "state_count"] },
+    { "var": "left_count", "range": [0, 4] },
+    { "var": "center_count", "range": [0, 3] },
+    { "var": "right_count", "range": [0, 4] }
+  ],
+  "let_row": {
+    "n": "left_count + center_count + right_count",
+    "next_state": "center == 0 ? (n > 0 ? 1 : 0) : (center == state_count - 1 ? 0 : center + 1)"
+  },
+  "inputs": [
+    "bits(left_count, 2)",
+    "bits(center_count, 2)",
+    "bits(right_count, 2)",
+    "bits(center, bits_per_state)"
+  ],
+  "outputs": [
+    "bits(next_state, bits_per_state)"
+  ]
+}
+

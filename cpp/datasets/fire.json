@@ -1,0 +1,21 @@
+{
+  "instructions": 18,
+  "num_inputs": 10,
+  "num_outputs": 2,
+  "sample_section": "fire",
+  "forall": [
+    { "var": "states", "tuple": { "size": 5, "range": [0, 4] } }
+  ],
+  "let_row": {
+    "center": "states[0]",
+    "has_fire_neighbor": "count(states, 2, 1) > 0",
+    "next_state": "center == 1 ? (has_fire_neighbor ? 2 : 1) : (center == 2 ? 3 : (center == 3 ? (has_fire_neighbor ? 3 : 0) : 0))"
+  },
+  "inputs": [
+    "state_bits(states, 2)"
+  ],
+  "outputs": [
+    "bits(next_state, 2)"
+  ]
+}
+

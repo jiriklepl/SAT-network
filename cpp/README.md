@@ -33,10 +33,11 @@ developer runners execute tests under tracing tools where LSan cannot run.
 
 ## Dataset Support
 
-C++ built-in dataset generation is intended to match Python plugin output
-exactly for deterministic configs, including row order and don't-care outputs.
-Full state-space generation is supported when `max_examples` is absent or is at
-least the full state-space size. Sampled state-space configs with
+Built-in datasets are defined as declarative quantified JSON configuration files
+in `cpp/datasets/*.json` and loaded by `cpp/datasets.cpp`. They match Python
+plugin output for deterministic configs, including row order and don't-care
+outputs. Full state-space generation is supported when `max_examples` is absent
+or is at least the full state-space size. Sampled state-space configs with
 `max_examples` smaller than the full state space are intentionally unsupported
 for now because the C++ generator does not reproduce Python's RNG sampling.
 
@@ -45,7 +46,8 @@ for now because the C++ generator does not reproduce Python's RNG sampling.
 - `sat_synth_cpp.cpp`: executable orchestration, CEGIS loop, and batch solving loop.
 - `cli.*`: `cxxopts` command-line parsing and user-facing logging.
 - `config.*`: JSON config loading and dataset dumping.
-- `datasets.*`: C++ built-in dataset generators.
+- `datasets.*`: loader and evaluator for declarative dataset config files in `cpp/datasets/*.json`.
+- `datasets/*.json`: declarative quantified dataset definitions.
 - `program.*`: program/data model, operator table, text emission, and packed verifier.
 - `postprocess.*`: post-processing beam orchestration and public options.
 - `postprocess_common.*`, `postprocess_mask.*`, `postprocess_resynthesis.*`:

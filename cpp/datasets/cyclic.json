@@ -1,0 +1,38 @@
+{
+  "instructions": 48,
+  "defaults": {
+    "cyclic": {
+      "states": 32
+    }
+  },
+  "params": {
+    "state_count": { "path": "cyclic.states", "default": 32 }
+  },
+  "constraints": [
+    {
+      "check": "state_count >= 2",
+      "error": "cyclic.states must be at least 2"
+    }
+  ],
+  "let": {
+    "bits_per_state": "required_bits(state_count)"
+  },
+  "num_inputs": "9 * bits_per_state",
+  "num_outputs": "bits_per_state",
+  "sample_section": "cyclic",
+  "forall": [
+    { "var": "states", "tuple": { "size": 9, "range": [0, "state_count"] } }
+  ],
+  "let_row": {
+    "center": "states[0]",
+    "successor": "(center + 1) % state_count",
+    "next_state": "count(states, successor, 1) > 0 ? successor : center"
+  },
+  "inputs": [
+    "state_bits(states, bits_per_state)"
+  ],
+  "outputs": [
+    "bits(next_state, bits_per_state)"
+  ]
+}
+

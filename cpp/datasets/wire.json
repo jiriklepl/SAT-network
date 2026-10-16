@@ -1,0 +1,21 @@
+{
+  "instructions": 24,
+  "num_inputs": 18,
+  "num_outputs": 2,
+  "sample_section": "wire",
+  "forall": [
+    { "var": "states", "tuple": { "size": 9, "range": [0, 4] } }
+  ],
+  "let_row": {
+    "center": "states[0]",
+    "heads": "count(states, 2, 1)",
+    "next_state": "center == 0 ? 0 : (center == 2 ? 3 : (center == 3 ? 1 : ((heads == 1 || heads == 2) ? 2 : 1)))"
+  },
+  "inputs": [
+    "state_bits(states, 2)"
+  ],
+  "outputs": [
+    "bits(next_state, 2)"
+  ]
+}
+

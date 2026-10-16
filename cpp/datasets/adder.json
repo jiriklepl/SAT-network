@@ -1,0 +1,24 @@
+{
+  "instructions": 5,
+  "defaults": {
+    "num_inputs": 3
+  },
+  "params": {
+    "num_inputs": { "path": "num_inputs", "default": 3 }
+  },
+  "let": {
+    "num_outputs": "required_bits(num_inputs + 1)"
+  },
+  "num_inputs": "num_inputs",
+  "num_outputs": "num_outputs",
+  "forall": [
+    { "var": "value", "range": [0, "1 << num_inputs"] }
+  ],
+  "inputs": [
+    "bits(value, num_inputs)"
+  ],
+  "outputs": [
+    "bits(popcount(value), num_outputs)"
+  ]
+}
+

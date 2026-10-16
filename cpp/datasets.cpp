@@ -1,18 +1,24 @@
 #include "datasets.hpp"
 
-#include <cstddef>
+#include <bit>
+#include <cctype>
+#include <cstdint>
+#include <cstdlib>
 
 #include <algorithm>
-#include <array>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <initializer_list>
-#include <map>
+#include <memory>
 #include <optional>
-#include <span>
+#include <set>
 #include <stdexcept>
 #include <string>
-#include <tuple>
+#include <string_view>
+#include <unordered_map>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace {
@@ -20,16 +26,6 @@ namespace {
 struct BitList {
     boost::dynamic_bitset<> values;
     boost::dynamic_bitset<> dont_care;
-
-    BitList() = default;
-    BitList(std::initializer_list<bool> items) {
-        for (bool item : items)
-            push_back(item);
-    }
-    BitList(std::initializer_list<std::optional<bool>> items) {
-        for (const auto &item : items)
-            push_back(item);
-    }
 
     std::size_t size() const {
         return values.size();
@@ -40,44 +36,24 @@ struct BitList {
         dont_care.push_back(!value.has_value());
     }
 
-    void append(const BitList &other) {
-        for (std::size_t idx = 0; idx < other.size(); ++idx) {
-            push_back(other[idx]);
-        }
-    }
-
     std::optional<bool> operator[](std::size_t idx) const {
         if (dont_care[idx]) return std::nullopt;
         return values[idx];
     }
-
-    bool operator==(const BitList &other) const {
-        return values == other.values && dont_care == other.dont_care;
-    }
 };
 
-constexpr int kMooreCells = 9;
-constexpr int kVonNeumannCells = 5;
-
-BitList bits(int value, int width) {
-    BitList result;
-    for (int bit = 0; bit < width; ++bit) {
-        result.push_back((value & (1 << bit)) != 0);
+void push_bits(BitList &out, std::int64_t value, std::int64_t width) {
+    if (width < 0) {
+        throw std::runtime_error("bits() width must be non-negative");
     }
-    return result;
+    for (std::int64_t bit = 0; bit < width; ++bit) {
+        out.push_back(((value >> bit) & 1) != 0);
+    }
 }
 
-BitList state_bits(std::span<const int> states, int bits_per_state) {
-    BitList result;
-    for (const int state : states) {
-        result.append(bits(state, bits_per_state));
-    }
-    return result;
-}
-
-int required_bits(int state_count) {
-    int max_value = std::max(0, state_count - 1);
-    int width = 0;
+std::int64_t required_bits(std::int64_t state_count) {
+    std::int64_t max_value = std::max<std::int64_t>(0, state_count - 1);
+    std::int64_t width = 0;
     do {
         ++width;
         max_value >>= 1;
@@ -85,23 +61,11 @@ int required_bits(int state_count) {
     return width;
 }
 
-int json_int(const nlohmann::json &cfg, const std::string &key, int default_value) {
-    return cfg.contains(key) ? cfg.at(key).get<int>() : default_value;
-}
-
-bool json_bool(const nlohmann::json &cfg, const std::string &key, bool default_value) {
-    return cfg.contains(key) ? cfg.at(key).get<bool>() : default_value;
-}
-
-const nlohmann::json &section_or_empty(const nlohmann::json &cfg, const std::string &section) {
-    static const nlohmann::json empty = nlohmann::json::object();
-    if (!cfg.contains(section) || cfg.at(section).is_null()) {
-        return empty;
-    }
-    return cfg.at(section);
-}
-
 void add_example(Config &dataset, const BitList &inputs, const BitList &outputs) {
+    if (static_cast<int>(inputs.size()) != dataset.num_inputs ||
+        static_cast<int>(outputs.size()) != dataset.num_outputs) {
+        throw std::runtime_error("Example length does not match declared input/output sizes");
+    }
     Example example;
     for (std::size_t idx = 0; idx < inputs.size(); ++idx) {
         const auto input = inputs[idx];
@@ -116,555 +80,926 @@ void add_example(Config &dataset, const BitList &inputs, const BitList &outputs)
     dataset.examples.push_back(std::move(example));
 }
 
-std::vector<std::vector<int>> state_vectors(int state_count, int cell_count, const nlohmann::json &cfg,
-                                            const std::string &section) {
-    const nlohmann::json &section_cfg = section_or_empty(cfg, section);
-    std::size_t total = 1;
-    for (int i = 0; i < cell_count; ++i) {
-        total *= static_cast<std::size_t>(state_count);
-    }
-
-    if (!section_cfg.contains("max_examples") || section_cfg.at("max_examples").get<std::size_t>() >= total) {
-        std::vector<std::vector<int>> rows;
-        rows.reserve(total);
-        for (std::size_t encoded = 0; encoded < total; ++encoded) {
-            std::size_t value = encoded;
-            std::vector<int> states(cell_count);
-            for (int cell = cell_count - 1; cell >= 0; --cell) {
-                states[cell] = static_cast<int>(value % static_cast<std::size_t>(state_count));
-                value /= static_cast<std::size_t>(state_count);
-            }
-            rows.push_back(std::move(states));
-        }
-        return rows;
-    }
-
-    if (section_cfg.at("max_examples").get<std::size_t>() == 0) {
-        throw std::runtime_error(section + ".max_examples must be positive");
-    }
-    throw std::runtime_error(section + ".max_examples sampling is not supported by the C++ dataset generator yet");
-}
-
-template <typename StateRule>
-Config build_state_dataset(const nlohmann::json &cfg, const std::string &section, int state_count, int bits_per_state,
-                           int cell_count, const StateRule &rule) {
-    Config dataset;
-    dataset.num_inputs = cell_count * bits_per_state;
-    const std::vector<int> zero_states(cell_count, 0);
-    dataset.num_outputs = static_cast<int>(rule(zero_states).size()) * bits_per_state;
-    for (const auto &states : state_vectors(state_count, cell_count, cfg, section)) {
-        BitList outputs;
-        for (const int output_state : rule(states)) {
-            outputs.append(bits(output_state, bits_per_state));
-        }
-        add_example(dataset, state_bits(states, bits_per_state), outputs);
-    }
-    return dataset;
-}
-
-Config build_summary_dataset(std::span<const std::pair<BitList, int>> rows, int num_inputs, int bits_per_output) {
-    Config dataset;
-    dataset.num_inputs = num_inputs;
-    dataset.num_outputs = bits_per_output;
-    for (const auto &[inputs, output_state] : rows) {
-        if (static_cast<int>(inputs.size()) != num_inputs) {
-            throw std::runtime_error("compressed input length does not match declared input count");
-        }
-        add_example(dataset, inputs, bits(output_state, bits_per_output));
-    }
-    return dataset;
-}
-
-BitList moore_column_count_inputs(int center, int left_count, int center_count, int right_count, int center_bits) {
-    BitList result = bits(left_count, 2);
-    result.append(bits(center_count, 2));
-    result.append(bits(right_count, 2));
-    result.append(bits(center, center_bits));
-    return result;
-}
-
-template <typename SummaryRule>
-Config build_moore_column_count_dataset(int state_count, int center_bits, int output_bits, const SummaryRule &rule) {
-    std::vector<std::pair<BitList, int>> rows;
-    for (int center = 0; center < state_count; ++center) {
-        for (int left_count = 0; left_count < 4; ++left_count) {
-            for (int center_count = 0; center_count < 3; ++center_count) {
-                for (int right_count = 0; right_count < 4; ++right_count) {
-                    const int relevant_neighbors = left_count + center_count + right_count;
-                    rows.emplace_back(
-                        moore_column_count_inputs(center, left_count, center_count, right_count, center_bits),
-                        rule(center, relevant_neighbors));
-                }
-            }
+std::filesystem::path datasets_directory() {
+    if (const char *env_dir = std::getenv("SAT_SYNTH_DATASETS_DIR"); env_dir != nullptr && *env_dir != '\0') {
+        std::filesystem::path candidate(env_dir);
+        if (std::filesystem::is_directory(candidate)) {
+            return candidate;
         }
     }
-    return build_summary_dataset(rows, center_bits + 6, output_bits);
-}
-
-int moore_alive_count(std::span<const int> states, int alive_state = 1) {
-    return static_cast<int>(std::count(states.begin() + 1, states.end(), alive_state));
-}
-
-Config with_instructions(Config dataset, int instructions) {
-    dataset.instructions = instructions;
-    return dataset;
-}
-
-Config build_adder(const nlohmann::json &cfg) {
-    const int num_inputs = json_int(cfg, "num_inputs", 3);
-    int num_outputs = 0;
-    while ((1 << num_outputs) < num_inputs + 1) {
-        ++num_outputs;
-    }
-
-    Config dataset;
-    dataset.num_inputs = num_inputs;
-    dataset.num_outputs = num_outputs;
-    for (int value = 0; value < (1 << num_inputs); ++value) {
-        int total = 0;
-        BitList inputs;
-        for (int bit = 0; bit < num_inputs; ++bit) {
-            bool input = (value & (1 << bit)) != 0;
-            inputs.push_back(input);
-            total += input ? 1 : 0;
-        }
-        add_example(dataset, inputs, bits(total, num_outputs));
-    }
-    return with_instructions(std::move(dataset), 5);
-}
-
-Config build_gol(const nlohmann::json &cfg) {
-    const nlohmann::json &gol = section_or_empty(cfg, "gol");
-    const int left_range = json_int(gol, "left_range", 4);
-    const int center_range = json_int(gol, "center_range", 3);
-    const int right_range = json_int(gol, "right_range", 4);
-    const bool include_alive = json_bool(gol, "include_alive", true);
-
-    Config dataset;
-    dataset.num_inputs = 7;
-    dataset.num_outputs = 1;
-    for (int left = 0; left < left_range; ++left) {
-        for (int center = 0; center < center_range; ++center) {
-            for (int right = 0; right < right_range; ++right) {
-                for (const bool alive : {true, false}) {
-                    if (alive && !include_alive) continue;
-                    const BitList inputs = {
-                        (left & 1) != 0,
-                        ((left >> 1) & 1) != 0,
-                        (center & 1) != 0,
-                        ((center >> 1) & 1) != 0,
-                        (right & 1) != 0,
-                        ((right >> 1) & 1) != 0,
-                        alive,
-                    };
-                    const int sum = left + center + right;
-                    add_example(dataset, inputs, BitList{sum == 3 || (sum == 2 && alive)});
-                }
-            }
-        }
-    }
-    return with_instructions(std::move(dataset), 14);
-}
-
-Config build_gol1(const nlohmann::json & /*cfg*/) {
-    Config dataset;
-    dataset.num_inputs = 7;
-    dataset.num_outputs = 2;
-    for (int left = 0; left < 4; ++left) {
-        for (int center = 0; center < 3; ++center) {
-            for (int right = 0; right < 4; ++right) {
-                for (const bool alive : {true, false}) {
-                    const int sum = left + center + right;
-                    const int carry = ((left & 1) + (center & 1) + (right & 1)) / 2;
-                    const BitList inputs = {
-                        (left & 1) != 0,
-                        ((left >> 1) & 1) != 0,
-                        (center & 1) != 0,
-                        ((center >> 1) & 1) != 0,
-                        (right & 1) != 0,
-                        ((right >> 1) & 1) != 0,
-                        alive,
-                    };
-                    add_example(dataset, inputs, BitList{((sum | static_cast<int>(alive)) % 2) == 1, carry == 1});
-                }
-            }
-        }
-    }
-    return with_instructions(std::move(dataset), 6);
-}
-
-Config build_gol2(const nlohmann::json & /*cfg*/) {
-    Config dataset;
-    dataset.num_inputs = 5;
-    dataset.num_outputs = 1;
-    for (int left = 0; left < 4; ++left) {
-        for (int center = 0; center < 3; ++center) {
-            for (int right = 0; right < 4; ++right) {
-                for (const bool alive : {true, false}) {
-                    const int sum = left + center + right;
-                    const int carry = ((left & 1) + (center & 1) + (right & 1)) / 2;
-                    const BitList inputs = {
-                        ((left >> 1) & 1) != 0,
-                        ((center >> 1) & 1) != 0,
-                        ((right >> 1) & 1) != 0,
-                        carry == 1,
-                        ((sum | static_cast<int>(alive)) % 2) == 1,
-                    };
-                    add_example(dataset, inputs, BitList{(sum | static_cast<int>(alive)) == 3});
-                }
-            }
-        }
-    }
-    return with_instructions(std::move(dataset), 8);
-}
-
-Config build_sloppy_adder(const nlohmann::json &cfg) {
-    const nlohmann::json &section = section_or_empty(cfg, "sloppy_adder");
-    const int left_range = json_int(section, "left_range", 4);
-    const int right_range = json_int(section, "right_range", 4);
-    Config dataset;
-    dataset.num_inputs = json_int(cfg, "num_inputs", 4);
-    dataset.num_outputs = json_int(cfg, "num_outputs", 3);
-    for (int left = 0; left < left_range; ++left) {
-        for (int right = 0; right < right_range; ++right) {
-            const int result = left + right;
-            const bool carry = result >= 4;
-            const BitList inputs = {((left >> 1) & 1) != 0, (left & 1) != 0, ((right >> 1) & 1) != 0, (right & 1) != 0};
-            const BitList outputs = {carry, carry ? std::nullopt : std::optional<bool>((result & 2) != 0),
-                                     carry ? std::nullopt : std::optional<bool>((result & 1) != 0)};
-            add_example(dataset, inputs, outputs);
-        }
-    }
-    return with_instructions(std::move(dataset), 7);
-}
-
-Config build_sloppy_adder3(const nlohmann::json &cfg) {
-    const nlohmann::json &section = section_or_empty(cfg, "sloppy_adder");
-    const int left_range = json_int(section, "left_range", 4);
-    const int center_range = json_int(section, "center_range", 3);
-    const int right_range = json_int(section, "right_range", 4);
-    Config dataset;
-    dataset.num_inputs = json_int(cfg, "num_inputs", 6);
-    dataset.num_outputs = json_int(cfg, "num_outputs", 3);
-    for (int left = 0; left < left_range; ++left) {
-        for (int center = 0; center < center_range; ++center) {
-            for (int right = 0; right < right_range; ++right) {
-                const int result = left + center + right;
-                const bool carry = result >= 4;
-                const BitList inputs = {
-                    ((left >> 1) & 1) != 0, (left & 1) != 0,         ((center >> 1) & 1) != 0,
-                    (center & 1) != 0,      ((right >> 1) & 1) != 0, (right & 1) != 0,
-                };
-                const BitList outputs = {carry, carry ? std::nullopt : std::optional<bool>((result & 2) != 0),
-                                         carry ? std::nullopt : std::optional<bool>((result & 1) != 0)};
-                add_example(dataset, inputs, outputs);
-            }
-        }
-    }
-    return with_instructions(std::move(dataset), 12);
-}
-
-Config build_life(const nlohmann::json &cfg) {
-    return with_instructions(
-        build_state_dataset(cfg, "life", 2, 1, kMooreCells,
-                            [](std::span<const int> states) {
-                                const int center = states[0];
-                                const int alive_neighbors = moore_alive_count(states);
-                                return std::vector<int>{
-                                    (alive_neighbors == 3 || (center == 1 && alive_neighbors == 2)) ? 1 : 0};
-                            }),
-        14);
-}
-
-Config build_life_compressed(const nlohmann::json & /*cfg*/) {
-    return with_instructions(
-        build_moore_column_count_dataset(2, 1, 1,
-                                         [](int center, int n) { return (n == 3 || (center == 1 && n == 2)) ? 1 : 0; }),
-        14);
-}
-
-Config build_maze(const nlohmann::json &cfg) {
-    return with_instructions(
-        build_state_dataset(cfg, "maze", 2, 1, kMooreCells,
-                            [](std::span<const int> states) {
-                                const int center = states[0];
-                                const int wall_neighbors = moore_alive_count(states);
-                                return std::vector<int>{
-                                    (wall_neighbors == 3 || (center == 1 && wall_neighbors < 6)) ? 1 : 0};
-                            }),
-        10);
-}
-
-Config build_maze_compressed(const nlohmann::json & /*cfg*/) {
-    return with_instructions(build_moore_column_count_dataset(
-                                 2, 1, 1, [](int center, int n) { return (n == 3 || (center == 1 && n < 6)) ? 1 : 0; }),
-                             6);
-}
-
-Config build_brian(const nlohmann::json &cfg) {
-    return with_instructions(build_state_dataset(cfg, "brian", 3, 2, kMooreCells,
-                                                 [](std::span<const int> states) {
-                                                     const int center = states[0];
-                                                     if (center == 1) return std::vector<int>{2};
-                                                     if (center == 2) return std::vector<int>{0};
-                                                     return std::vector<int>{moore_alive_count(states, 1) == 2 ? 1 : 0};
-                                                 }),
-                             24);
-}
-
-Config build_brian_compressed(const nlohmann::json & /*cfg*/) {
-    return with_instructions(build_moore_column_count_dataset(3, 2, 2,
-                                                              [](int center, int n) {
-                                                                  if (center == 1) return 2;
-                                                                  if (center == 2) return 0;
-                                                                  return n == 2 ? 1 : 0;
-                                                              }),
-                             10);
-}
-
-Config build_fire(const nlohmann::json &cfg) {
-    return with_instructions(build_state_dataset(cfg, "fire", 4, 2, kVonNeumannCells,
-                                                 [](std::span<const int> states) {
-                                                     const int center = states[0];
-                                                     const bool has_fire_neighbor =
-                                                         std::find(states.begin() + 1, states.end(), 2) != states.end();
-                                                     if (center == 1)
-                                                         return std::vector<int>{has_fire_neighbor ? 2 : 1};
-                                                     if (center == 2) return std::vector<int>{3};
-                                                     if (center == 3)
-                                                         return std::vector<int>{has_fire_neighbor ? 3 : 0};
-                                                     return std::vector<int>{0};
-                                                 }),
-                             18);
-}
-
-Config build_fire_compressed(const nlohmann::json & /*cfg*/) {
-    std::vector<std::pair<BitList, int>> rows;
-    for (int center = 0; center < 4; ++center) {
-        for (int left_count = 0; left_count < 2; ++left_count) {
-            for (int vertical_count = 0; vertical_count < 3; ++vertical_count) {
-                for (int right_count = 0; right_count < 2; ++right_count) {
-                    const bool has_fire_neighbor = left_count + vertical_count + right_count > 0;
-                    int output = 0;
-                    if (center == 1)
-                        output = has_fire_neighbor ? 2 : 1;
-                    else if (center == 2)
-                        output = 3;
-                    else if (center == 3)
-                        output = has_fire_neighbor ? 3 : 0;
-                    BitList input = bits(left_count, 1);
-                    input.append(bits(vertical_count, 2));
-                    input.append(bits(right_count, 1));
-                    input.append(bits(center, 2));
-                    rows.emplace_back(std::move(input), output);
-                }
-            }
-        }
-    }
-    return with_instructions(build_summary_dataset(rows, 6, 2), 8);
-}
-
-Config build_wire(const nlohmann::json &cfg) {
-    return with_instructions(build_state_dataset(cfg, "wire", 4, 2, kMooreCells,
-                                                 [](std::span<const int> states) {
-                                                     const int center = states[0];
-                                                     if (center == 0) return std::vector<int>{0};
-                                                     if (center == 2) return std::vector<int>{3};
-                                                     if (center == 3) return std::vector<int>{1};
-                                                     const int heads = static_cast<int>(
-                                                         std::count(states.begin() + 1, states.end(), 2));
-                                                     return std::vector<int>{(heads == 1 || heads == 2) ? 2 : 1};
-                                                 }),
-                             24);
-}
-
-Config build_wire_compressed(const nlohmann::json & /*cfg*/) {
-    return with_instructions(build_moore_column_count_dataset(4, 2, 2,
-                                                              [](int center, int n) {
-                                                                  if (center == 0) return 0;
-                                                                  if (center == 2) return 3;
-                                                                  if (center == 3) return 1;
-                                                                  return (n == 1 || n == 2) ? 2 : 1;
-                                                              }),
-                             10);
-}
-
-Config build_excitable(const nlohmann::json &cfg) {
-    const nlohmann::json &section = section_or_empty(cfg, "excitable");
-    const int state_count = json_int(section, "states", 8);
-    if (state_count < 3) throw std::runtime_error("excitable.states must be at least 3");
-    const int bits_per_state = required_bits(state_count);
-    return with_instructions(
-        build_state_dataset(cfg, "excitable", state_count, bits_per_state, kMooreCells,
-                            [state_count](std::span<const int> states) {
-                                const int center = states[0];
-                                if (center == 0)
-                                    return std::vector<int>{
-                                        std::find(states.begin() + 1, states.end(), 1) != states.end() ? 1 : 0};
-                                if (center == state_count - 1) return std::vector<int>{0};
-                                return std::vector<int>{center + 1};
-                            }),
-        32);
-}
-
-Config build_excitable_compressed(const nlohmann::json &cfg) {
-    const nlohmann::json &section =
-        cfg.contains("excitable-compressed") ? cfg.at("excitable-compressed") : section_or_empty(cfg, "excitable");
-    const int state_count = json_int(section, "states", 8);
-    if (state_count < 3) throw std::runtime_error("excitable-compressed.states must be at least 3");
-    const int bits_per_state = required_bits(state_count);
-    return with_instructions(build_moore_column_count_dataset(state_count, bits_per_state, bits_per_state,
-                                                              [state_count](int center, int n) {
-                                                                  if (center == 0) return n > 0 ? 1 : 0;
-                                                                  if (center == state_count - 1) return 0;
-                                                                  return center + 1;
-                                                              }),
-                             12);
-}
-
-Config build_cyclic(const nlohmann::json &cfg) {
-    const nlohmann::json &section = section_or_empty(cfg, "cyclic");
-    const int state_count = json_int(section, "states", 32);
-    if (state_count < 2) throw std::runtime_error("cyclic.states must be at least 2");
-    const int bits_per_state = required_bits(state_count);
-    return with_instructions(build_state_dataset(cfg, "cyclic", state_count, bits_per_state, kMooreCells,
-                                                 [state_count](std::span<const int> states) {
-                                                     const int center = states[0];
-                                                     const int successor = (center + 1) % state_count;
-                                                     return std::vector<int>{std::find(states.begin() + 1, states.end(),
-                                                                                       successor) != states.end()
-                                                                                 ? successor
-                                                                                 : center};
-                                                 }),
-                             48);
-}
-
-Config build_cyclic_compressed(const nlohmann::json &cfg) {
-    const nlohmann::json &section =
-        cfg.contains("cyclic-compressed") ? cfg.at("cyclic-compressed") : section_or_empty(cfg, "cyclic");
-    const int state_count = json_int(section, "states", 32);
-    if (state_count < 2) throw std::runtime_error("cyclic-compressed.states must be at least 2");
-    const int bits_per_state = required_bits(state_count);
-    return with_instructions(build_moore_column_count_dataset(state_count, bits_per_state, bits_per_state,
-                                                              [state_count](int center, int n) {
-                                                                  const int successor = (center + 1) % state_count;
-                                                                  return n > 0 ? successor : center;
-                                                              }),
-                             18);
-}
-
-Config build_fluid(const nlohmann::json &cfg) {
-    constexpr int up = 0;
-    constexpr int down = 1;
-    constexpr int left = 2;
-    constexpr int right = 3;
-    constexpr int north = 0;
-    constexpr int south = 1;
-    constexpr int west = 2;
-    constexpr int east = 3;
-
-    Config dataset;
-    dataset.num_inputs = 16;
-    dataset.num_outputs = 4;
-    for (const auto &states : state_vectors(16, 4, cfg, "fluid")) {
-        const bool incoming_up = (states[south] & (1 << up)) != 0;
-        const bool incoming_down = (states[north] & (1 << down)) != 0;
-        const bool incoming_left = (states[east] & (1 << left)) != 0;
-        const bool incoming_right = (states[west] & (1 << right)) != 0;
-        BitList output = {incoming_up, incoming_down, incoming_left, incoming_right};
-        if (output == BitList{true, true, false, false}) {
-            output = {false, false, true, true};
-        } else if (output == BitList{false, false, true, true}) {
-            output = {true, true, false, false};
-        }
-        add_example(dataset, state_bits(states, 4), output);
-    }
-    return with_instructions(std::move(dataset), 18);
-}
-
-Config build_critters(const nlohmann::json & /*cfg*/) {
-    Config dataset;
-    dataset.num_inputs = 4;
-    dataset.num_outputs = 4;
-    for (const bool b0 : {false, true}) {
-        for (const bool b1 : {false, true}) {
-            for (const bool b2 : {false, true}) {
-                for (const bool b3 : {false, true}) {
-                    const BitList block = {b0, b1, b2, b3};
-                    int alive_count = 0;
-                    for (std::size_t idx = 0; idx < block.size(); ++idx)
-                        alive_count += *block[idx] ? 1 : 0;
-                    BitList output;
-                    if (alive_count == 2) {
-                        output = block;
-                    } else if (alive_count == 3) {
-                        output = {!*block[3], !*block[2], !*block[1], !*block[0]};
-                    } else {
-                        for (std::size_t idx = 0; idx < block.size(); ++idx)
-                            output.push_back(!*block[idx]);
-                    }
-                    add_example(dataset, block, output);
-                }
-            }
-        }
-    }
-    return with_instructions(std::move(dataset), 10);
-}
-
-Config build_traffic(const nlohmann::json & /*cfg*/) {
-    Config dataset;
-    dataset.num_inputs = 7;
-    dataset.num_outputs = 2;
-    for (const bool phase : {false, true}) {
-        const int moving_state = phase ? 2 : 1;
-        for (int prev_state = 0; prev_state < 3; ++prev_state) {
-            for (int center_state = 0; center_state < 3; ++center_state) {
-                for (int next_state = 0; next_state < 3; ++next_state) {
-                    int output_state = center_state;
-                    if (center_state == moving_state && next_state == 0)
-                        output_state = 0;
-                    else if (center_state == 0 && prev_state == moving_state)
-                        output_state = moving_state;
-                    BitList inputs = {phase};
-                    const std::array<int, 3> states = {prev_state, center_state, next_state};
-                    inputs.append(state_bits(states, 2));
-                    add_example(dataset, inputs, bits(output_state, 2));
-                }
-            }
-        }
-    }
-    return with_instructions(std::move(dataset), 12);
-}
-
-using Builder = std::function<Config(const nlohmann::json &)>;
-
-const std::map<std::string, std::pair<int, Builder>> &registry() {
-    static const std::map<std::string, std::pair<int, Builder>> builders = {
-        {"adder", {5, build_adder}},
-        {"gol", {14, build_gol}},
-        {"gol1", {6, build_gol1}},
-        {"gol2", {8, build_gol2}},
-        {"sloppy-adder", {7, build_sloppy_adder}},
-        {"sloppy-adder3", {12, build_sloppy_adder3}},
-        {"life", {14, build_life}},
-        {"life-compressed", {14, build_life_compressed}},
-        {"maze", {10, build_maze}},
-        {"maze-compressed", {6, build_maze_compressed}},
-        {"brian", {24, build_brian}},
-        {"brian-compressed", {10, build_brian_compressed}},
-        {"fire", {18, build_fire}},
-        {"fire-compressed", {8, build_fire_compressed}},
-        {"wire", {24, build_wire}},
-        {"wire-compressed", {10, build_wire_compressed}},
-        {"excitable", {32, build_excitable}},
-        {"excitable-compressed", {12, build_excitable_compressed}},
-        {"cyclic", {48, build_cyclic}},
-        {"cyclic-compressed", {18, build_cyclic_compressed}},
-        {"fluid", {18, build_fluid}},
-        {"critters", {10, build_critters}},
-        {"traffic", {12, build_traffic}},
+    const std::vector<std::filesystem::path> candidates = {
+        std::filesystem::path(__FILE__).parent_path() / "datasets",
+        std::filesystem::current_path() / "cpp" / "datasets",
+        std::filesystem::current_path() / "datasets",
     };
-    return builders;
+    for (const auto &candidate : candidates) {
+        if (std::filesystem::is_directory(candidate)) {
+            return candidate;
+        }
+    }
+    throw std::runtime_error("Could not locate datasets directory");
+}
+
+nlohmann::json load_dataset_spec(const std::string &name) {
+    if (name.empty() || name.find('/') != std::string::npos || name.find('\\') != std::string::npos ||
+        name.find("..") != std::string::npos) {
+        throw std::runtime_error("unknown dataset: " + name);
+    }
+    const std::filesystem::path path = datasets_directory() / (name + ".json");
+    if (!std::filesystem::is_regular_file(path)) {
+        throw std::runtime_error("unknown dataset: " + name);
+    }
+    std::ifstream in(path);
+    if (!in) {
+        throw std::runtime_error("unknown dataset: " + name);
+    }
+    nlohmann::json spec;
+    in >> spec;
+    return spec;
+}
+
+struct EvalEnv {
+    std::vector<std::int64_t> scalars;
+    std::vector<std::vector<std::int64_t>> tuples;
+    std::unordered_map<std::string, std::size_t> scalar_slots;
+    std::unordered_map<std::string, std::size_t> tuple_slots;
+
+    std::size_t ensure_scalar_slot(const std::string &name) {
+        auto [it, inserted] = scalar_slots.try_emplace(name, scalars.size());
+        if (inserted) {
+            scalars.push_back(0);
+        }
+        return it->second;
+    }
+
+    std::size_t ensure_tuple_slot(const std::string &name) {
+        auto [it, inserted] = tuple_slots.try_emplace(name, tuples.size());
+        if (inserted) {
+            tuples.emplace_back();
+        }
+        return it->second;
+    }
+};
+
+enum class UnaryOp {
+    LogicalNot,
+    Negate,
+    BitNot,
+};
+
+enum class BinaryOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Shl,
+    Shr,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    Eq,
+    Ne,
+    BitAnd,
+    BitXor,
+    BitOr,
+    LogicalAnd,
+    LogicalOr,
+};
+
+struct Expr {
+    struct Literal {
+        std::int64_t value;
+    };
+    struct NullLiteral {};
+    struct ScalarVar {
+        std::size_t slot;
+    };
+    struct TupleIndex {
+        std::size_t tuple_slot;
+        std::unique_ptr<Expr> index;
+    };
+    struct Unary {
+        UnaryOp op;
+        std::unique_ptr<Expr> operand;
+    };
+    struct Binary {
+        BinaryOp op;
+        std::unique_ptr<Expr> left;
+        std::unique_ptr<Expr> right;
+    };
+    struct Ternary {
+        std::unique_ptr<Expr> cond;
+        std::unique_ptr<Expr> then_expr;
+        std::unique_ptr<Expr> else_expr;
+    };
+    struct RequiredBits {
+        std::unique_ptr<Expr> arg;
+    };
+    struct Popcount {
+        std::unique_ptr<Expr> arg;
+    };
+    struct Count {
+        std::size_t tuple_slot;
+        std::unique_ptr<Expr> target;
+        std::unique_ptr<Expr> start_index;
+    };
+    struct Bit {
+        std::unique_ptr<Expr> arg;
+    };
+    struct Bits {
+        std::unique_ptr<Expr> value;
+        std::unique_ptr<Expr> width;
+    };
+    struct StateBits {
+        std::size_t tuple_slot;
+        std::unique_ptr<Expr> width;
+    };
+
+    using Variant = std::variant<Literal, NullLiteral, ScalarVar, TupleIndex, Unary, Binary, Ternary, RequiredBits,
+                                 Popcount, Count, Bit, Bits, StateBits>;
+    Variant node;
+
+    explicit Expr(Variant v) : node(std::move(v)) {}
+};
+
+std::int64_t eval_scalar(const Expr &expr, const EvalEnv &env) {
+    return std::visit(
+        [&](const auto &n) -> std::int64_t {
+            using T = std::decay_t<decltype(n)>;
+            if constexpr (std::is_same_v<T, Expr::Literal>) {
+                return n.value;
+            } else if constexpr (std::is_same_v<T, Expr::NullLiteral>) {
+                throw std::runtime_error("null cannot be evaluated as a scalar");
+            } else if constexpr (std::is_same_v<T, Expr::ScalarVar>) {
+                return env.scalars[n.slot];
+            } else if constexpr (std::is_same_v<T, Expr::TupleIndex>) {
+                const std::int64_t idx = eval_scalar(*n.index, env);
+                const auto &tuple = env.tuples[n.tuple_slot];
+                if (idx < 0 || static_cast<std::size_t>(idx) >= tuple.size()) {
+                    throw std::runtime_error("Tuple index out of bounds");
+                }
+                return tuple[static_cast<std::size_t>(idx)];
+            } else if constexpr (std::is_same_v<T, Expr::Unary>) {
+                const std::int64_t val = eval_scalar(*n.operand, env);
+                switch (n.op) {
+                    case UnaryOp::LogicalNot:
+                        return val == 0 ? 1 : 0;
+                    case UnaryOp::Negate:
+                        return -val;
+                    case UnaryOp::BitNot:
+                        return ~val;
+                }
+                return 0;
+            } else if constexpr (std::is_same_v<T, Expr::Binary>) {
+                if (n.op == BinaryOp::LogicalAnd) {
+                    return (eval_scalar(*n.left, env) != 0 && eval_scalar(*n.right, env) != 0) ? 1 : 0;
+                }
+                if (n.op == BinaryOp::LogicalOr) {
+                    return (eval_scalar(*n.left, env) != 0 || eval_scalar(*n.right, env) != 0) ? 1 : 0;
+                }
+                const std::int64_t lhs = eval_scalar(*n.left, env);
+                const std::int64_t rhs = eval_scalar(*n.right, env);
+                switch (n.op) {
+                    case BinaryOp::Add:
+                        return lhs + rhs;
+                    case BinaryOp::Sub:
+                        return lhs - rhs;
+                    case BinaryOp::Mul:
+                        return lhs * rhs;
+                    case BinaryOp::Div:
+                        if (rhs == 0) throw std::runtime_error("Division by zero in dataset expression");
+                        return lhs / rhs;
+                    case BinaryOp::Mod:
+                        if (rhs == 0) throw std::runtime_error("Modulo by zero in dataset expression");
+                        return lhs % rhs;
+                    case BinaryOp::Shl:
+                        return lhs << rhs;
+                    case BinaryOp::Shr:
+                        return lhs >> rhs;
+                    case BinaryOp::Lt:
+                        return lhs < rhs ? 1 : 0;
+                    case BinaryOp::Le:
+                        return lhs <= rhs ? 1 : 0;
+                    case BinaryOp::Gt:
+                        return lhs > rhs ? 1 : 0;
+                    case BinaryOp::Ge:
+                        return lhs >= rhs ? 1 : 0;
+                    case BinaryOp::Eq:
+                        return lhs == rhs ? 1 : 0;
+                    case BinaryOp::Ne:
+                        return lhs != rhs ? 1 : 0;
+                    case BinaryOp::BitAnd:
+                        return lhs & rhs;
+                    case BinaryOp::BitXor:
+                        return lhs ^ rhs;
+                    case BinaryOp::BitOr:
+                        return lhs | rhs;
+                    case BinaryOp::LogicalAnd:
+                    case BinaryOp::LogicalOr:
+                        break;
+                }
+                return 0;
+            } else if constexpr (std::is_same_v<T, Expr::Ternary>) {
+                return eval_scalar(*n.cond, env) != 0 ? eval_scalar(*n.then_expr, env) : eval_scalar(*n.else_expr, env);
+            } else if constexpr (std::is_same_v<T, Expr::RequiredBits>) {
+                return required_bits(eval_scalar(*n.arg, env));
+            } else if constexpr (std::is_same_v<T, Expr::Popcount>) {
+                const auto val = static_cast<std::uint64_t>(eval_scalar(*n.arg, env));
+                return static_cast<std::int64_t>(std::popcount(val));
+            } else if constexpr (std::is_same_v<T, Expr::Count>) {
+                const auto &tuple = env.tuples[n.tuple_slot];
+                const std::int64_t target = eval_scalar(*n.target, env);
+                const std::int64_t start = n.start_index ? eval_scalar(*n.start_index, env) : 0;
+                std::int64_t matches = 0;
+                for (std::size_t idx = static_cast<std::size_t>(std::max<std::int64_t>(0, start)); idx < tuple.size();
+                     ++idx) {
+                    if (tuple[idx] == target) {
+                        ++matches;
+                    }
+                }
+                return matches;
+            } else if constexpr (std::is_same_v<T, Expr::Bit>) {
+                return eval_scalar(*n.arg, env) != 0 ? 1 : 0;
+            } else {
+                throw std::runtime_error("Bit-list expression cannot be evaluated as a scalar");
+            }
+        },
+        expr.node);
+}
+
+void emit_bits(const Expr &expr, const EvalEnv &env, BitList &out) {
+    std::visit(
+        [&](const auto &n) {
+            using T = std::decay_t<decltype(n)>;
+            if constexpr (std::is_same_v<T, Expr::NullLiteral>) {
+                out.push_back(std::nullopt);
+            } else if constexpr (std::is_same_v<T, Expr::Bit>) {
+                out.push_back(eval_scalar(*n.arg, env) != 0);
+            } else if constexpr (std::is_same_v<T, Expr::Bits>) {
+                push_bits(out, eval_scalar(*n.value, env), eval_scalar(*n.width, env));
+            } else if constexpr (std::is_same_v<T, Expr::StateBits>) {
+                const std::int64_t width = eval_scalar(*n.width, env);
+                for (const std::int64_t state : env.tuples[n.tuple_slot]) {
+                    push_bits(out, state, width);
+                }
+            } else if constexpr (std::is_same_v<T, Expr::Ternary>) {
+                if (eval_scalar(*n.cond, env) != 0) {
+                    emit_bits(*n.then_expr, env, out);
+                } else {
+                    emit_bits(*n.else_expr, env, out);
+                }
+            } else {
+                out.push_back(eval_scalar(expr, env) != 0);
+            }
+        },
+        expr.node);
+}
+
+class ExprParser {
+public:
+    using VarResolver = std::function<std::size_t(const std::string &)>;
+    using TupleResolver = std::function<std::size_t(const std::string &)>;
+
+    ExprParser(std::string source, VarResolver resolve_var, TupleResolver resolve_tuple)
+        : source_(std::move(source)), resolve_var_(std::move(resolve_var)), resolve_tuple_(std::move(resolve_tuple)) {}
+
+    std::unique_ptr<Expr> parse() {
+        auto result = parse_ternary();
+        skip_ws();
+        if (pos_ != source_.size()) {
+            throw std::runtime_error("Unexpected trailing characters in expression: " + source_);
+        }
+        return result;
+    }
+
+private:
+    std::string source_;
+    std::size_t pos_ = 0;
+    VarResolver resolve_var_;
+    TupleResolver resolve_tuple_;
+
+    void skip_ws() {
+        while (pos_ < source_.size() && std::isspace(static_cast<unsigned char>(source_[pos_])) != 0) {
+            ++pos_;
+        }
+    }
+
+    bool match(std::string_view token) {
+        skip_ws();
+        if (std::string_view(source_).substr(pos_).starts_with(token)) {
+            pos_ += token.size();
+            return true;
+        }
+        return false;
+    }
+
+    bool match_op(std::string_view op, std::string_view disallow_prefix = {}) {
+        skip_ws();
+        const std::string_view rem = std::string_view(source_).substr(pos_);
+        if (!disallow_prefix.empty() && rem.starts_with(disallow_prefix)) {
+            return false;
+        }
+        if (rem.starts_with(op)) {
+            pos_ += op.size();
+            return true;
+        }
+        return false;
+    }
+
+    void expect(std::string_view token) {
+        if (!match(token)) {
+            throw std::runtime_error("Expected '" + std::string(token) + "' in expression: " + std::string(source_));
+        }
+    }
+
+    std::string parse_identifier() {
+        skip_ws();
+        const std::size_t start = pos_;
+        while (pos_ < source_.size() &&
+               (std::isalnum(static_cast<unsigned char>(source_[pos_])) != 0 || source_[pos_] == '_')) {
+            ++pos_;
+        }
+        if (pos_ == start) {
+            throw std::runtime_error("Expected identifier in expression: " + std::string(source_));
+        }
+        return std::string(source_.substr(start, pos_ - start));
+    }
+
+    std::unique_ptr<Expr> parse_ternary() {
+        auto expr = parse_logical_or();
+        if (match("?")) {
+            auto then_expr = parse_ternary();
+            expect(":");
+            auto else_expr = parse_ternary();
+            return std::make_unique<Expr>(Expr::Ternary{
+                .cond = std::move(expr),
+                .then_expr = std::move(then_expr),
+                .else_expr = std::move(else_expr),
+            });
+        }
+        return expr;
+    }
+
+    std::unique_ptr<Expr> parse_logical_or() {
+        auto lhs = parse_logical_and();
+        while (match("||")) {
+            auto rhs = parse_logical_and();
+            lhs = std::make_unique<Expr>(
+                Expr::Binary{.op = BinaryOp::LogicalOr, .left = std::move(lhs), .right = std::move(rhs)});
+        }
+        return lhs;
+    }
+
+    std::unique_ptr<Expr> parse_logical_and() {
+        auto lhs = parse_bit_or();
+        while (match("&&")) {
+            auto rhs = parse_bit_or();
+            lhs = std::make_unique<Expr>(
+                Expr::Binary{.op = BinaryOp::LogicalAnd, .left = std::move(lhs), .right = std::move(rhs)});
+        }
+        return lhs;
+    }
+
+    std::unique_ptr<Expr> parse_bit_or() {
+        auto lhs = parse_bit_xor();
+        while (match_op("|", "||")) {
+            auto rhs = parse_bit_xor();
+            lhs = std::make_unique<Expr>(
+                Expr::Binary{.op = BinaryOp::BitOr, .left = std::move(lhs), .right = std::move(rhs)});
+        }
+        return lhs;
+    }
+
+    std::unique_ptr<Expr> parse_bit_xor() {
+        auto lhs = parse_bit_and();
+        while (match("^")) {
+            auto rhs = parse_bit_and();
+            lhs = std::make_unique<Expr>(
+                Expr::Binary{.op = BinaryOp::BitXor, .left = std::move(lhs), .right = std::move(rhs)});
+        }
+        return lhs;
+    }
+
+    std::unique_ptr<Expr> parse_bit_and() {
+        auto lhs = parse_equality();
+        while (match_op("&", "&&")) {
+            auto rhs = parse_equality();
+            lhs = std::make_unique<Expr>(
+                Expr::Binary{.op = BinaryOp::BitAnd, .left = std::move(lhs), .right = std::move(rhs)});
+        }
+        return lhs;
+    }
+
+    std::unique_ptr<Expr> parse_equality() {
+        auto lhs = parse_relational();
+        while (true) {
+            if (match("==")) {
+                auto rhs = parse_relational();
+                lhs = std::make_unique<Expr>(
+                    Expr::Binary{.op = BinaryOp::Eq, .left = std::move(lhs), .right = std::move(rhs)});
+            } else if (match("!=")) {
+                auto rhs = parse_relational();
+                lhs = std::make_unique<Expr>(
+                    Expr::Binary{.op = BinaryOp::Ne, .left = std::move(lhs), .right = std::move(rhs)});
+            } else {
+                break;
+            }
+        }
+        return lhs;
+    }
+
+    std::unique_ptr<Expr> parse_relational() {
+        auto lhs = parse_shift();
+        while (true) {
+            if (match("<=")) {
+                auto rhs = parse_shift();
+                lhs = std::make_unique<Expr>(
+                    Expr::Binary{.op = BinaryOp::Le, .left = std::move(lhs), .right = std::move(rhs)});
+            } else if (match(">=")) {
+                auto rhs = parse_shift();
+                lhs = std::make_unique<Expr>(
+                    Expr::Binary{.op = BinaryOp::Ge, .left = std::move(lhs), .right = std::move(rhs)});
+            } else if (match_op("<", "<<")) {
+                auto rhs = parse_shift();
+                lhs = std::make_unique<Expr>(
+                    Expr::Binary{.op = BinaryOp::Lt, .left = std::move(lhs), .right = std::move(rhs)});
+            } else if (match_op(">", ">>")) {
+                auto rhs = parse_shift();
+                lhs = std::make_unique<Expr>(
+                    Expr::Binary{.op = BinaryOp::Gt, .left = std::move(lhs), .right = std::move(rhs)});
+            } else {
+                break;
+            }
+        }
+        return lhs;
+    }
+
+    std::unique_ptr<Expr> parse_shift() {
+        auto lhs = parse_additive();
+        while (true) {
+            if (match("<<")) {
+                auto rhs = parse_additive();
+                lhs = std::make_unique<Expr>(
+                    Expr::Binary{.op = BinaryOp::Shl, .left = std::move(lhs), .right = std::move(rhs)});
+            } else if (match(">>")) {
+                auto rhs = parse_additive();
+                lhs = std::make_unique<Expr>(
+                    Expr::Binary{.op = BinaryOp::Shr, .left = std::move(lhs), .right = std::move(rhs)});
+            } else {
+                break;
+            }
+        }
+        return lhs;
+    }
+
+    std::unique_ptr<Expr> parse_additive() {
+        auto lhs = parse_multiplicative();
+        while (true) {
+            if (match("+")) {
+                auto rhs = parse_multiplicative();
+                lhs = std::make_unique<Expr>(
+                    Expr::Binary{.op = BinaryOp::Add, .left = std::move(lhs), .right = std::move(rhs)});
+            } else if (match("-")) {
+                auto rhs = parse_multiplicative();
+                lhs = std::make_unique<Expr>(
+                    Expr::Binary{.op = BinaryOp::Sub, .left = std::move(lhs), .right = std::move(rhs)});
+            } else {
+                break;
+            }
+        }
+        return lhs;
+    }
+
+    std::unique_ptr<Expr> parse_multiplicative() {
+        auto lhs = parse_unary();
+        while (true) {
+            if (match("*")) {
+                auto rhs = parse_unary();
+                lhs = std::make_unique<Expr>(
+                    Expr::Binary{.op = BinaryOp::Mul, .left = std::move(lhs), .right = std::move(rhs)});
+            } else if (match("/")) {
+                auto rhs = parse_unary();
+                lhs = std::make_unique<Expr>(
+                    Expr::Binary{.op = BinaryOp::Div, .left = std::move(lhs), .right = std::move(rhs)});
+            } else if (match("%")) {
+                auto rhs = parse_unary();
+                lhs = std::make_unique<Expr>(
+                    Expr::Binary{.op = BinaryOp::Mod, .left = std::move(lhs), .right = std::move(rhs)});
+            } else {
+                break;
+            }
+        }
+        return lhs;
+    }
+
+    std::unique_ptr<Expr> parse_unary() {
+        if (match_op("!", "!=")) {
+            return std::make_unique<Expr>(Expr::Unary{.op = UnaryOp::LogicalNot, .operand = parse_unary()});
+        }
+        if (match("-")) {
+            return std::make_unique<Expr>(Expr::Unary{.op = UnaryOp::Negate, .operand = parse_unary()});
+        }
+        if (match("+")) {
+            return parse_unary();
+        }
+        if (match("~")) {
+            return std::make_unique<Expr>(Expr::Unary{.op = UnaryOp::BitNot, .operand = parse_unary()});
+        }
+        return parse_primary();
+    }
+
+    std::unique_ptr<Expr> parse_primary() {
+        skip_ws();
+        if (match("(")) {
+            auto inner = parse_ternary();
+            expect(")");
+            return inner;
+        }
+        if (pos_ < source_.size() && std::isdigit(static_cast<unsigned char>(source_[pos_])) != 0) {
+            std::int64_t val = 0;
+            while (pos_ < source_.size() && std::isdigit(static_cast<unsigned char>(source_[pos_])) != 0) {
+                val = val * 10 + (source_[pos_] - '0');
+                ++pos_;
+            }
+            return std::make_unique<Expr>(Expr::Literal{.value = val});
+        }
+
+        const std::string ident = parse_identifier();
+        if (ident == "true") {
+            return std::make_unique<Expr>(Expr::Literal{.value = 1});
+        }
+        if (ident == "false") {
+            return std::make_unique<Expr>(Expr::Literal{.value = 0});
+        }
+        if (ident == "null") {
+            return std::make_unique<Expr>(Expr::NullLiteral{});
+        }
+
+        if (match("(")) {
+            if (ident == "required_bits") {
+                auto arg = parse_ternary();
+                expect(")");
+                return std::make_unique<Expr>(Expr::RequiredBits{.arg = std::move(arg)});
+            }
+            if (ident == "popcount") {
+                auto arg = parse_ternary();
+                expect(")");
+                return std::make_unique<Expr>(Expr::Popcount{.arg = std::move(arg)});
+            }
+            if (ident == "bit") {
+                auto arg = parse_ternary();
+                expect(")");
+                return std::make_unique<Expr>(Expr::Bit{.arg = std::move(arg)});
+            }
+            if (ident == "bits") {
+                auto val = parse_ternary();
+                expect(",");
+                auto width = parse_ternary();
+                expect(")");
+                return std::make_unique<Expr>(Expr::Bits{.value = std::move(val), .width = std::move(width)});
+            }
+            if (ident == "state_bits") {
+                const std::string tuple_name = parse_identifier();
+                expect(",");
+                auto width = parse_ternary();
+                expect(")");
+                return std::make_unique<Expr>(
+                    Expr::StateBits{.tuple_slot = resolve_tuple_(tuple_name), .width = std::move(width)});
+            }
+            if (ident == "count") {
+                const std::string tuple_name = parse_identifier();
+                expect(",");
+                auto target = parse_ternary();
+                std::unique_ptr<Expr> start_index;
+                if (match(",")) {
+                    start_index = parse_ternary();
+                }
+                expect(")");
+                return std::make_unique<Expr>(Expr::Count{
+                    .tuple_slot = resolve_tuple_(tuple_name),
+                    .target = std::move(target),
+                    .start_index = std::move(start_index),
+                });
+            }
+            throw std::runtime_error("Unknown function '" + ident + "' in dataset expression");
+        }
+
+        if (match("[")) {
+            auto idx = parse_ternary();
+            expect("]");
+            return std::make_unique<Expr>(
+                Expr::TupleIndex{.tuple_slot = resolve_tuple_(ident), .index = std::move(idx)});
+        }
+
+        return std::make_unique<Expr>(Expr::ScalarVar{.slot = resolve_var_(ident)});
+    }
+};
+
+const nlohmann::json *lookup_dotted_path(const nlohmann::json &cfg, std::string_view dotted_path) {
+    const nlohmann::json *curr = &cfg;
+    std::size_t start = 0;
+    while (start <= dotted_path.size()) {
+        const std::size_t dot = dotted_path.find('.', start);
+        const std::string key(
+            dotted_path.substr(start, dot == std::string_view::npos ? std::string_view::npos : dot - start));
+        if (!curr->is_object() || !curr->contains(key) || curr->at(key).is_null()) {
+            return nullptr;
+        }
+        curr = &curr->at(key);
+        if (dot == std::string_view::npos) {
+            return curr;
+        }
+        start = dot + 1;
+    }
+    return nullptr;
+}
+
+std::int64_t read_param_value(const nlohmann::json &runtime_cfg, const nlohmann::json &param_def) {
+    const nlohmann::json &default_val = param_def.at("default");
+    const nlohmann::json *found = nullptr;
+    if (param_def.contains("path")) {
+        const nlohmann::json &path_spec = param_def.at("path");
+        if (path_spec.is_string()) {
+            found = lookup_dotted_path(runtime_cfg, path_spec.get<std::string>());
+        } else if (path_spec.is_array()) {
+            for (const auto &candidate : path_spec) {
+                found = lookup_dotted_path(runtime_cfg, candidate.get<std::string>());
+                if (found != nullptr) {
+                    break;
+                }
+            }
+        }
+    }
+    const nlohmann::json &target = found != nullptr ? *found : default_val;
+    if (default_val.is_boolean()) {
+        return target.get<bool>() ? 1 : 0;
+    }
+    return target.get<std::int64_t>();
+}
+
+struct Quantifier {
+    struct Range {
+        std::size_t slot;
+        std::int64_t start;
+        std::int64_t end;
+    };
+    struct Values {
+        std::size_t slot;
+        std::vector<std::int64_t> values;
+    };
+    struct Tuple {
+        std::size_t tuple_slot;
+        std::size_t size;
+        std::int64_t start;
+        std::int64_t end;
+    };
+    std::variant<Range, Values, Tuple> spec;
+};
+
+Config evaluate_dataset_spec(const nlohmann::json &spec, const nlohmann::json &runtime_cfg) {
+    EvalEnv env;
+
+    if (spec.contains("params")) {
+        for (const auto &[name, param_def] : spec.at("params").items()) {
+            const std::size_t slot = env.ensure_scalar_slot(name);
+            env.scalars[slot] = read_param_value(runtime_cfg, param_def);
+        }
+    }
+
+    std::unordered_map<std::string, std::string> raw_static_lets;
+    if (spec.contains("let")) {
+        for (const auto &[name, expr_json] : spec.at("let").items()) {
+            raw_static_lets.emplace(name, expr_json.is_string() ? expr_json.get<std::string>() : expr_json.dump());
+        }
+    }
+
+    std::set<std::string> compiling_static;
+    std::function<std::size_t(const std::string &)> resolve_static_var = [&](const std::string &name) -> std::size_t {
+        if (auto it = env.scalar_slots.find(name); it != env.scalar_slots.end()) {
+            return it->second;
+        }
+        if (auto it = raw_static_lets.find(name); it != raw_static_lets.end()) {
+            if (!compiling_static.insert(name).second) {
+                throw std::runtime_error("Cyclic let definition for variable: " + name);
+            }
+            ExprParser parser(it->second, resolve_static_var, [](const std::string &t) -> std::size_t {
+                throw std::runtime_error("Tuple variable '" + t + "' is not available in static context");
+            });
+            auto ast = parser.parse();
+            const std::int64_t value = eval_scalar(*ast, env);
+            const std::size_t slot = env.ensure_scalar_slot(name);
+            env.scalars[slot] = value;
+            compiling_static.erase(name);
+            return slot;
+        }
+        throw std::runtime_error("Unknown variable in static dataset expression: " + name);
+    };
+
+    for (const auto &[name, _] : raw_static_lets) {
+        (void)resolve_static_var(name);
+    }
+
+    auto eval_static_expr = [&](const nlohmann::json &node) -> std::int64_t {
+        if (node.is_number_integer()) {
+            return node.get<std::int64_t>();
+        }
+        if (node.is_boolean()) {
+            return node.get<bool>() ? 1 : 0;
+        }
+        if (node.is_string()) {
+            ExprParser parser(node.get<std::string>(), resolve_static_var, [](const std::string &t) -> std::size_t {
+                throw std::runtime_error("Tuple variable '" + t + "' is not available in static context");
+            });
+            return eval_scalar(*parser.parse(), env);
+        }
+        throw std::runtime_error("Expected integer, boolean, or expression string in dataset config");
+    };
+
+    if (spec.contains("constraints")) {
+        for (const auto &constraint : spec.at("constraints")) {
+            if (eval_static_expr(constraint.at("check")) == 0) {
+                throw std::runtime_error(constraint.at("error").get<std::string>());
+            }
+        }
+    }
+
+    Config dataset;
+    dataset.num_inputs = static_cast<int>(eval_static_expr(spec.at("num_inputs")));
+    dataset.num_outputs = static_cast<int>(eval_static_expr(spec.at("num_outputs")));
+    const int default_instructions =
+        spec.contains("instructions") ? static_cast<int>(eval_static_expr(spec.at("instructions"))) : kDefaultProgramLength;
+    dataset.instructions = runtime_cfg.value("instructions", default_instructions);
+
+    std::vector<Quantifier> quantifiers;
+    std::size_t total_domain_size = 1;
+    if (spec.contains("forall")) {
+        for (const auto &q_json : spec.at("forall")) {
+            const std::string var_name = q_json.at("var").get<std::string>();
+            if (q_json.contains("range")) {
+                const auto &range = q_json.at("range");
+                const std::int64_t start = eval_static_expr(range.at(0));
+                const std::int64_t end = eval_static_expr(range.at(1));
+                const std::size_t slot = env.ensure_scalar_slot(var_name);
+                quantifiers.push_back(Quantifier{Quantifier::Range{.slot = slot, .start = start, .end = end}});
+                total_domain_size *= static_cast<std::size_t>(std::max<std::int64_t>(0, end - start));
+            } else if (q_json.contains("values")) {
+                std::vector<std::int64_t> values;
+                for (const auto &val_json : q_json.at("values")) {
+                    values.push_back(eval_static_expr(val_json));
+                }
+                const std::size_t slot = env.ensure_scalar_slot(var_name);
+                total_domain_size *= values.size();
+                quantifiers.push_back(Quantifier{Quantifier::Values{.slot = slot, .values = std::move(values)}});
+            } else if (q_json.contains("tuple")) {
+                const auto &tuple_spec = q_json.at("tuple");
+                const auto size = static_cast<std::size_t>(eval_static_expr(tuple_spec.at("size")));
+                const auto &range = tuple_spec.at("range");
+                const std::int64_t start = eval_static_expr(range.at(0));
+                const std::int64_t end = eval_static_expr(range.at(1));
+                const std::size_t tuple_slot = env.ensure_tuple_slot(var_name);
+                env.tuples[tuple_slot].assign(size, start);
+                const auto span = static_cast<std::size_t>(std::max<std::int64_t>(0, end - start));
+                for (std::size_t idx = 0; idx < size; ++idx) {
+                    total_domain_size *= span;
+                }
+                quantifiers.push_back(Quantifier{
+                    Quantifier::Tuple{.tuple_slot = tuple_slot, .size = size, .start = start, .end = end}});
+            } else {
+                throw std::runtime_error("Unsupported quantifier specification for variable: " + var_name);
+            }
+        }
+    }
+
+    if (spec.contains("sample_section")) {
+        const std::string section = spec.at("sample_section").get<std::string>();
+        if (runtime_cfg.contains(section) && runtime_cfg.at(section).is_object() &&
+            runtime_cfg.at(section).contains("max_examples")) {
+            const std::size_t max_examples = runtime_cfg.at(section).at("max_examples").get<std::size_t>();
+            if (max_examples < total_domain_size) {
+                if (max_examples == 0) {
+                    throw std::runtime_error(section + ".max_examples must be positive");
+                }
+                throw std::runtime_error(section +
+                                         ".max_examples sampling is not supported by the C++ dataset generator yet");
+            }
+        }
+    }
+
+    std::unordered_map<std::string, std::string> raw_row_lets;
+    if (spec.contains("let_row")) {
+        for (const auto &[name, expr_json] : spec.at("let_row").items()) {
+            raw_row_lets.emplace(name, expr_json.is_string() ? expr_json.get<std::string>() : expr_json.dump());
+        }
+    }
+
+    std::vector<std::pair<std::size_t, std::unique_ptr<Expr>>> compiled_row_lets;
+    std::set<std::string> compiling_row;
+
+    auto resolve_tuple_var = [&](const std::string &name) -> std::size_t {
+        if (auto it = env.tuple_slots.find(name); it != env.tuple_slots.end()) {
+            return it->second;
+        }
+        throw std::runtime_error("Unknown tuple variable in dataset expression: " + name);
+    };
+
+    std::function<std::size_t(const std::string &)> resolve_row_var = [&](const std::string &name) -> std::size_t {
+        if (auto it = env.scalar_slots.find(name); it != env.scalar_slots.end()) {
+            return it->second;
+        }
+        if (auto it = raw_row_lets.find(name); it != raw_row_lets.end()) {
+            if (!compiling_row.insert(name).second) {
+                throw std::runtime_error("Cyclic let_row definition for variable: " + name);
+            }
+            ExprParser parser(it->second, resolve_row_var, resolve_tuple_var);
+            auto ast = parser.parse();
+            const std::size_t slot = env.ensure_scalar_slot(name);
+            compiled_row_lets.emplace_back(slot, std::move(ast));
+            compiling_row.erase(name);
+            return slot;
+        }
+        throw std::runtime_error("Unknown variable in dataset expression: " + name);
+    };
+
+    for (const auto &[name, _] : raw_row_lets) {
+        (void)resolve_row_var(name);
+    }
+
+    auto compile_row_expr = [&](const nlohmann::json &node) -> std::unique_ptr<Expr> {
+        const std::string text = node.is_string() ? node.get<std::string>() : node.dump();
+        ExprParser parser(text, resolve_row_var, resolve_tuple_var);
+        return parser.parse();
+    };
+
+    std::unique_ptr<Expr> where_ast;
+    if (spec.contains("where")) {
+        where_ast = compile_row_expr(spec.at("where"));
+    }
+
+    std::vector<std::unique_ptr<Expr>> input_asts;
+    for (const auto &in_expr : spec.at("inputs")) {
+        input_asts.push_back(compile_row_expr(in_expr));
+    }
+
+    std::vector<std::unique_ptr<Expr>> output_asts;
+    for (const auto &out_expr : spec.at("outputs")) {
+        output_asts.push_back(compile_row_expr(out_expr));
+    }
+
+    std::function<void(std::size_t)> run_quantifiers = [&](std::size_t q_idx) {
+        if (q_idx == quantifiers.size()) {
+            if (where_ast && eval_scalar(*where_ast, env) == 0) {
+                return;
+            }
+            for (const auto &[slot, ast] : compiled_row_lets) {
+                env.scalars[slot] = eval_scalar(*ast, env);
+            }
+            BitList inputs;
+            for (const auto &ast : input_asts) {
+                emit_bits(*ast, env, inputs);
+            }
+            BitList outputs;
+            for (const auto &ast : output_asts) {
+                emit_bits(*ast, env, outputs);
+            }
+            add_example(dataset, inputs, outputs);
+            return;
+        }
+
+        std::visit(
+            [&](const auto &q) {
+                using T = std::decay_t<decltype(q)>;
+                if constexpr (std::is_same_v<T, Quantifier::Range>) {
+                    for (std::int64_t val = q.start; val < q.end; ++val) {
+                        env.scalars[q.slot] = val;
+                        run_quantifiers(q_idx + 1);
+                    }
+                } else if constexpr (std::is_same_v<T, Quantifier::Values>) {
+                    for (const std::int64_t val : q.values) {
+                        env.scalars[q.slot] = val;
+                        run_quantifiers(q_idx + 1);
+                    }
+                } else if constexpr (std::is_same_v<T, Quantifier::Tuple>) {
+                    auto &tuple = env.tuples[q.tuple_slot];
+                    std::function<void(std::size_t)> fill_tuple = [&](std::size_t cell) {
+                        if (cell == q.size) {
+                            run_quantifiers(q_idx + 1);
+                            return;
+                        }
+                        for (std::int64_t val = q.start; val < q.end; ++val) {
+                            tuple[cell] = val;
+                            fill_tuple(cell + 1);
+                        }
+                    };
+                    fill_tuple(0);
+                }
+            },
+            quantifiers[q_idx].spec);
+    };
+
+    run_quantifiers(0);
+    return dataset;
 }
 
 }  // namespace
@@ -708,55 +1043,35 @@ void Example::push_output(std::optional<bool> value) {
 
 std::vector<std::string> available_dataset_names() {
     std::vector<std::string> names;
-    for (const auto &[name, _] : registry()) {
-        names.push_back(name);
+    for (const auto &entry : std::filesystem::directory_iterator(datasets_directory())) {
+        if (entry.is_regular_file() && entry.path().extension() == ".json") {
+            names.push_back(entry.path().stem().string());
+        }
     }
+    std::ranges::sort(names);
     return names;
 }
 
 nlohmann::json default_dataset_config(const std::string &name) {
-    const auto it = registry().find(name);
-    if (it == registry().end()) {
-        throw std::runtime_error("unknown dataset: " + name);
-    }
-    nlohmann::json cfg = nlohmann::json::object();
+    const nlohmann::json spec = load_dataset_spec(name);
+    nlohmann::json cfg = spec.value("defaults", nlohmann::json::object());
     cfg["type"] = name;
-    cfg["instructions"] = it->second.first;
-    if (name == "adder") {
-        cfg["num_inputs"] = 3;
-    } else if (name == "gol") {
-        cfg["gol"] = {{"left_range", 4}, {"center_range", 3}, {"right_range", 4}, {"include_alive", true}};
-    } else if (name == "sloppy-adder") {
-        cfg["num_inputs"] = 4;
-        cfg["num_outputs"] = 3;
-        cfg["sloppy_adder"] = {{"left_range", 4}, {"right_range", 4}};
-    } else if (name == "sloppy-adder3") {
-        cfg["num_inputs"] = 6;
-        cfg["num_outputs"] = 3;
-        cfg["sloppy_adder"] = {{"left_range", 4}, {"center_range", 3}, {"right_range", 4}};
-    } else if (name == "excitable") {
-        cfg["excitable"] = {{"states", 8}};
-    } else if (name == "excitable-compressed") {
-        cfg["excitable-compressed"] = {{"states", 8}};
-    } else if (name == "cyclic") {
-        cfg["cyclic"] = {{"states", 32}};
-    } else if (name == "cyclic-compressed") {
-        cfg["cyclic-compressed"] = {{"states", 32}};
-    }
+    cfg["instructions"] = spec.value("instructions", kDefaultProgramLength);
     return cfg;
 }
 
 Config build_dataset_from_config(const nlohmann::json &cfg) {
-    if (!cfg.contains("type")) {
-        throw std::runtime_error("dataset config without examples must contain a type");
+    nlohmann::json spec;
+    if (cfg.contains("forall")) {
+        spec = cfg;
+    } else {
+        if (!cfg.contains("type")) {
+            throw std::runtime_error("dataset config without examples must contain a type");
+        }
+        const std::string name = cfg.at("type").get<std::string>();
+        spec = load_dataset_spec(name);
     }
-    const std::string name = cfg.at("type").get<std::string>();
-    const auto it = registry().find(name);
-    if (it == registry().end()) {
-        throw std::runtime_error("unknown dataset: " + name);
-    }
-    Config dataset = it->second.second(cfg);
-    dataset.instructions = cfg.value("instructions", dataset.instructions);
+    Config dataset = evaluate_dataset_spec(spec, cfg);
     if (dataset.examples.empty()) {
         throw std::runtime_error("Dataset contains no examples");
     }

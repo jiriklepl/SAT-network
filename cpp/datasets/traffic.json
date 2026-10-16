@@ -1,0 +1,25 @@
+{
+  "instructions": 12,
+  "num_inputs": 7,
+  "num_outputs": 2,
+  "forall": [
+    { "var": "phase", "range": [0, 2] },
+    { "var": "prev_state", "range": [0, 3] },
+    { "var": "center_state", "range": [0, 3] },
+    { "var": "next_state", "range": [0, 3] }
+  ],
+  "let_row": {
+    "moving_state": "phase ? 2 : 1",
+    "output_state": "(center_state == moving_state && next_state == 0) ? 0 : ((center_state == 0 && prev_state == moving_state) ? moving_state : center_state)"
+  },
+  "inputs": [
+    "bit(phase)",
+    "bits(prev_state, 2)",
+    "bits(center_state, 2)",
+    "bits(next_state, 2)"
+  ],
+  "outputs": [
+    "bits(output_state, 2)"
+  ]
+}
+

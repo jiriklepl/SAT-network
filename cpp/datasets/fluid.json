@@ -1,0 +1,27 @@
+{
+  "instructions": 18,
+  "num_inputs": 16,
+  "num_outputs": 4,
+  "sample_section": "fluid",
+  "forall": [
+    { "var": "states", "tuple": { "size": 4, "range": [0, 16] } }
+  ],
+  "let_row": {
+    "incoming_up": "(states[1] & 1) != 0",
+    "incoming_down": "(states[0] & 2) != 0",
+    "incoming_left": "(states[3] & 4) != 0",
+    "incoming_right": "(states[2] & 8) != 0",
+    "vertical_collision": "incoming_up && incoming_down && !incoming_left && !incoming_right",
+    "horizontal_collision": "!incoming_up && !incoming_down && incoming_left && incoming_right"
+  },
+  "inputs": [
+    "state_bits(states, 4)"
+  ],
+  "outputs": [
+    "bit(vertical_collision ? 0 : (horizontal_collision ? 1 : incoming_up))",
+    "bit(vertical_collision ? 0 : (horizontal_collision ? 1 : incoming_down))",
+    "bit(vertical_collision ? 1 : (horizontal_collision ? 0 : incoming_left))",
+    "bit(vertical_collision ? 1 : (horizontal_collision ? 0 : incoming_right))"
+  ]
+}
+

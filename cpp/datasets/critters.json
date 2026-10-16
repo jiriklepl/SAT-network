@@ -1,0 +1,27 @@
+{
+  "instructions": 10,
+  "num_inputs": 4,
+  "num_outputs": 4,
+  "forall": [
+    { "var": "b0", "range": [0, 2] },
+    { "var": "b1", "range": [0, 2] },
+    { "var": "b2", "range": [0, 2] },
+    { "var": "b3", "range": [0, 2] }
+  ],
+  "let_row": {
+    "alive_count": "b0 + b1 + b2 + b3"
+  },
+  "inputs": [
+    "bit(b0)",
+    "bit(b1)",
+    "bit(b2)",
+    "bit(b3)"
+  ],
+  "outputs": [
+    "bit(alive_count == 2 ? b0 : (alive_count == 3 ? !b3 : !b0))",
+    "bit(alive_count == 2 ? b1 : (alive_count == 3 ? !b2 : !b1))",
+    "bit(alive_count == 2 ? b2 : (alive_count == 3 ? !b1 : !b2))",
+    "bit(alive_count == 2 ? b3 : (alive_count == 3 ? !b0 : !b3))"
+  ]
+}
+

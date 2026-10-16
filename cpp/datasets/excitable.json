@@ -1,0 +1,37 @@
+{
+  "instructions": 32,
+  "defaults": {
+    "excitable": {
+      "states": 8
+    }
+  },
+  "params": {
+    "state_count": { "path": "excitable.states", "default": 8 }
+  },
+  "constraints": [
+    {
+      "check": "state_count >= 3",
+      "error": "excitable.states must be at least 3"
+    }
+  ],
+  "let": {
+    "bits_per_state": "required_bits(state_count)"
+  },
+  "num_inputs": "9 * bits_per_state",
+  "num_outputs": "bits_per_state",
+  "sample_section": "excitable",
+  "forall": [
+    { "var": "states", "tuple": { "size": 9, "range": [0, "state_count"] } }
+  ],
+  "let_row": {
+    "center": "states[0]",
+    "next_state": "center == 0 ? (count(states, 1, 1) > 0 ? 1 : 0) : (center == state_count - 1 ? 0 : center + 1)"
+  },
+  "inputs": [
+    "state_bits(states, bits_per_state)"
+  ],
+  "outputs": [
+    "bits(next_state, bits_per_state)"
+  ]
+}
+

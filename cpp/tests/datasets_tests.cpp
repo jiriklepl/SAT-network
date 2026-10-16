@@ -121,3 +121,40 @@ TEST_CASE("compact deterministic parametric datasets are supported") {
     REQUIRE(cyclic_compressed.num_outputs == 2);
     REQUIRE(cyclic_compressed.examples.size() == 144);
 }
+
+TEST_CASE("declarative quantified dataset specs and parameter constraints are evaluated") {
+    require_throws_message(
+        nlohmann::json{
+            {"type", "excitable"},
+            {"excitable", {{"states", 2}}},
+        },
+        "excitable.states must be at least 3");
+    require_throws_message(
+        nlohmann::json{
+            {"type", "cyclic"},
+            {"cyclic", {{"states", 1}}},
+        },
+        "cyclic.states must be at least 2");
+
+    Config inline_quantified = build_dataset_from_config(nlohmann::json{
+        {"instructions", 3},
+        {"num_inputs", 2},
+        {"num_outputs", 1},
+        {"forall", nlohmann::json::array({
+                       nlohmann::json{{"var", "a"}, {"range", {0, 2}}},
+                       nlohmann::json{{"var", "b"}, {"range", {0, 2}}},
+                   })},
+        {"let_row", {{"xor_val", "a ^ b"}}},
+        {"inputs", {"bit(a)", "bit(b)"}},
+        {"outputs", {"bit(xor_val)"}},
+    });
+    REQUIRE(inline_quantified.num_inputs == 2);
+    REQUIRE(inline_quantified.num_outputs == 1);
+    REQUIRE(inline_quantified.instructions == 3);
+    REQUIRE(inline_quantified.examples.size() == 4);
+    REQUIRE(inline_quantified.examples[0].output(0) == false);
+    REQUIRE(inline_quantified.examples[1].output(0) == true);
+    REQUIRE(inline_quantified.examples[2].output(0) == true);
+    REQUIRE(inline_quantified.examples[3].output(0) == false);
+}
+
