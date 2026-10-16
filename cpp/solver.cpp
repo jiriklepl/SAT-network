@@ -20,6 +20,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -31,7 +32,7 @@ double elapsed_seconds(Clock::time_point start) {
     return std::chrono::duration<double>(Clock::now() - start).count();
 }
 
-std::string check_result_name(z3::check_result result) {
+constexpr std::string_view check_result_name(z3::check_result result) {
     if (result == z3::sat) return "sat";
     if (result == z3::unsat) return "unsat";
     return "unknown";
