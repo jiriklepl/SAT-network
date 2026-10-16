@@ -330,6 +330,7 @@ struct SolverScope {
     z3::solver &solver;
     explicit SolverScope(z3::solver &s) : solver(s) { solver.push(); }
     ~SolverScope() { solver.pop(); }
+
     SolverScope(const SolverScope &) = delete;
     SolverScope &operator=(const SolverScope &) = delete;
 };

@@ -5,7 +5,6 @@
 #include <cstddef>
 #include <cstdint>
 
-#include <functional>
 #include <memory>
 #include <optional>
 #include <random>
@@ -140,6 +139,7 @@ struct Quantifier {
         std::int64_t start;
         std::int64_t end;
     };
+
     std::variant<Range, Values, Tuple> spec;
 };
 

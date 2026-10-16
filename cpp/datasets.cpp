@@ -10,7 +10,6 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
-#include <functional>
 #include <initializer_list>
 #include <limits>
 #include <memory>
