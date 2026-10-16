@@ -266,9 +266,11 @@ void mark_reachable(int source, const Program &program, int num_inputs, std::vec
         const int current = to_visit.top();
         to_visit.pop();
         if (!is_temp_source(current, num_inputs, static_cast<int>(program.instrs.size()))) continue;
+
         const auto idx = static_cast<std::size_t>(temp_index_from_source(current, num_inputs));
         if (reachable[idx]) continue;
         reachable[idx] = true;
+
         const Instruction &instr = program.instrs[idx];
         to_visit.push(instr.s2);
         to_visit.push(instr.s1);
