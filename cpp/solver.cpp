@@ -101,9 +101,7 @@ z3::check_result solve_with_cegis(z3::context &ctx, z3::solver &solver, const Co
                                   std::optional<Program> &program) {
     boost::dynamic_bitset<> active(cfg.examples.size());
     const std::size_t initial_count = std::min(options.cegis_initial_size, cfg.examples.size());
-    for (std::size_t idx = 0; idx < initial_count; ++idx) {
-        active[idx] = true;
-    }
+    active.set(0, initial_count, true);
     if (options.logger != nullptr) {
         options.logger->log(2, "CEGIS starting with " + std::to_string(initial_count) + "/" +
                                    std::to_string(cfg.examples.size()) + " examples");
@@ -129,8 +127,8 @@ z3::check_result solve_with_cegis(z3::context &ctx, z3::solver &solver, const Co
         std::vector<Example> counterexamples;
         counterexamples.reserve(options.cegis_counterexamples);
         for (const std::size_t idx : mismatches) {
-            if (!active[idx]) {
-                active[idx] = true;
+            if (!active.test(idx)) {
+                active.set(idx);
                 counterexamples.push_back(cfg.examples[idx]);
             }
             if (counterexamples.size() >= options.cegis_counterexamples) break;
