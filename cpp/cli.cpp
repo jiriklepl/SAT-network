@@ -64,7 +64,7 @@ std::vector<PostProcessScorePhase> parse_post_process_score(const std::string &v
             }
             if (metric_text.empty()) usage_error("--post-process-score contains an empty metric");
             try {
-                phase.push_back({post_process_score_metric_by_name(metric_text), descending});
+                phase.push_back({.metric=post_process_score_metric_by_name(metric_text), .descending=descending});
             } catch (const std::exception &) {
                 usage_error("Unsupported --post-process-score metric: " + metric_text);
             }

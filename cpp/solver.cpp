@@ -194,7 +194,7 @@ SolveStatus map_status(z3::check_result result) {
 }  // namespace
 
 SolveResult solve_config(const Config &cfg, const SolveOptions &options) {
-    const ProgramSpec spec{cfg.num_inputs, cfg.num_outputs, cfg.instructions};
+    const ProgramSpec spec{.num_inputs=cfg.num_inputs, .num_outputs=cfg.num_outputs, .program_length=cfg.instructions};
     if (options.logger != nullptr) {
         const std::string mode = options.cegis ? "cegis" : (options.do_all ? "do-all" : "batched");
         const std::string batch =
