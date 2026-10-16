@@ -120,7 +120,7 @@ public:
                 return self->bv(n.value);
             }
 
-            z3::expr operator()(const Expr::NullLiteral &) const {
+            static z3::expr operator()(const Expr::NullLiteral &) {
                 throw std::runtime_error("null cannot be evaluated as a scalar");
             }
 
@@ -215,7 +215,7 @@ public:
                 return z3::ite(self->to_bool(*n.cond), self->to_int(*n.then_expr), self->to_int(*n.else_expr));
             }
 
-            z3::expr operator()(const Expr::RequiredBits &n) const {
+            static z3::expr operator()(const Expr::RequiredBits &) {
                 throw std::runtime_error("required_bits() argument must not depend on quantified variables");
             }
 
@@ -250,11 +250,11 @@ public:
                 return self->from_bool(self->to_bool(*n.arg));
             }
 
-            z3::expr operator()(const Expr::Bits &) const {
+            static z3::expr operator()(const Expr::Bits &) {
                 throw std::runtime_error("bit-list expression used where a scalar is required");
             }
 
-            z3::expr operator()(const Expr::StateBits &) const {
+            static z3::expr operator()(const Expr::StateBits &) {
                 throw std::runtime_error("bit-list expression used where a scalar is required");
             }
         } const visitor{this};
