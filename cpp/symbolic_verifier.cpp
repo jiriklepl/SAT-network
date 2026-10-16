@@ -163,18 +163,11 @@ public:
             }
 
             z3::expr operator()(const Expr::Binary &n) const {
-                switch (n.op) {
-                    case BinaryOp::LogicalAnd:
-                    case BinaryOp::LogicalOr:
-                    case BinaryOp::Lt:
-                    case BinaryOp::Le:
-                    case BinaryOp::Gt:
-                    case BinaryOp::Ge:
-                    case BinaryOp::Eq:
-                    case BinaryOp::Ne:
-                        return self->from_bool(self->to_bool(*n.left));
-                    default:
-                        break;
+                if (n.op == BinaryOp::LogicalAnd) {
+                    return self->from_bool(self->to_bool(*n.left) && self->to_bool(*n.right));
+                }
+                if (n.op == BinaryOp::LogicalOr) {
+                    return self->from_bool(self->to_bool(*n.left) || self->to_bool(*n.right));
                 }
                 const z3::expr lhs = self->to_int(*n.left);
                 const z3::expr rhs = self->to_int(*n.right);
@@ -193,13 +186,26 @@ public:
                         return z3::shl(lhs, rhs);
                     case BinaryOp::Shr:
                         return z3::ashr(lhs, rhs);
+                    case BinaryOp::Lt:
+                        return self->from_bool(lhs < rhs);
+                    case BinaryOp::Le:
+                        return self->from_bool(lhs <= rhs);
+                    case BinaryOp::Gt:
+                        return self->from_bool(lhs > rhs);
+                    case BinaryOp::Ge:
+                        return self->from_bool(lhs >= rhs);
+                    case BinaryOp::Eq:
+                        return self->from_bool(lhs == rhs);
+                    case BinaryOp::Ne:
+                        return self->from_bool(lhs != rhs);
                     case BinaryOp::BitAnd:
                         return lhs & rhs;
                     case BinaryOp::BitXor:
                         return lhs ^ rhs;
                     case BinaryOp::BitOr:
                         return lhs | rhs;
-                    default:
+                    case BinaryOp::LogicalAnd:
+                    case BinaryOp::LogicalOr:
                         break;
                 }
                 throw std::logic_error("unreachable binary operator");
