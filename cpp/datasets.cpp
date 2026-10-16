@@ -911,8 +911,9 @@ void QuantifiedSpec::for_each_point(EvalEnv &scratch, const std::function<void(E
             visit(scratch);
             return;
         }
+
         std::visit(
-            [&](const auto &q) {
+            [&scratch, &self, q_idx](const auto &q) {
                 using T = std::decay_t<decltype(q)>;
                 if constexpr (std::is_same_v<T, Quantifier::Range>) {
                     for (std::int64_t val = q.start; val < q.end; ++val) {
@@ -1063,25 +1064,31 @@ Config build_dataset_from_config(const nlohmann::json &cfg, const DatasetLoadOpt
         spec = load_dataset_spec(name);
     }
 
-    std::shared_ptr<QuantifiedSpec> compiled = compile_dataset_spec(spec, cfg);
-    Config dataset;
-    dataset.num_inputs = compiled->num_inputs;
-    dataset.num_outputs = compiled->num_outputs;
-    dataset.instructions = compiled->instructions;
-    dataset.domain_size = compiled->domain_size;
-    dataset.quantified = compiled;
+    const std::shared_ptr<QuantifiedSpec> compiled = compile_dataset_spec(spec, cfg);
+    Config dataset {
+        .examples = {},
+        .num_inputs = compiled->num_inputs,
+        .num_outputs = compiled->num_outputs,
+        .instructions = compiled->instructions,
+        .quantified = compiled,
+        .fully_materialized = true,
+        .domain_size = compiled->domain_size,
+    };
 
     if (compiled->domain_size <= options.max_materialized_examples) {
         EvalEnv env = compiled->env;
-        compiled->for_each_point(env, [&](EvalEnv &point) {
-            if (std::optional<Example> example = compiled->evaluate_point(point)) {
-                dataset.examples.push_back(std::move(*example));
+        compiled->for_each_point(env, [&dataset, compiled](EvalEnv &point) {
+            if (auto example = compiled->evaluate_point(point)) {
+                if (example) {
+                    dataset.examples.push_back(std::move(*example));
+                }
             }
         });
     } else {
         dataset.fully_materialized = false;
         dataset.examples = seed_basis(*compiled, options.basis_size, options.seed);
     }
+
     if (dataset.examples.empty()) {
         throw std::runtime_error("Dataset contains no examples");
     }
