@@ -56,9 +56,6 @@ struct BitList {
     }
 };
 
-using StateRule = std::function<std::vector<int>(std::span<const int>)>;
-using SummaryRule = std::function<int(int, int)>;
-
 constexpr int kMooreCells = 9;
 constexpr int kVonNeumannCells = 5;
 
@@ -148,6 +145,7 @@ std::vector<std::vector<int>> state_vectors(int state_count, int cell_count, con
     throw std::runtime_error(section + ".max_examples sampling is not supported by the C++ dataset generator yet");
 }
 
+template <typename StateRule>
 Config build_state_dataset(const nlohmann::json &cfg, const std::string &section, int state_count, int bits_per_state,
                            int cell_count, const StateRule &rule) {
     Config dataset;
@@ -185,6 +183,7 @@ BitList moore_column_count_inputs(int center, int left_count, int center_count, 
     return result;
 }
 
+template <typename SummaryRule>
 Config build_moore_column_count_dataset(int state_count, int center_bits, int output_bits, const SummaryRule &rule) {
     std::vector<std::pair<BitList, int>> rows;
     for (int center = 0; center < state_count; ++center) {

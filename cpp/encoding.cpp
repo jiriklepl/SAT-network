@@ -138,15 +138,15 @@ z3::expr select_bv(z3::context & /*ctx*/, ExprCache &cache, std::span<const z3::
         return result;
     }
 
-    std::function<z3::expr(std::size_t, std::size_t, const z3::expr &)> build =
-        [&](std::size_t lo, std::size_t hi, const z3::expr &default_expr) -> z3::expr {
+    const auto build =
+        [&](this auto &self, std::size_t lo, std::size_t hi, const z3::expr &default_expr) -> z3::expr {
         if (lo >= hi) return default_expr;
         if (hi - lo == 1) {
             return z3::ite(idx_var == bv_val(cache, static_cast<uint64_t>(lo), bits), values[lo], default_expr);
         }
         const std::size_t mid = (lo + hi) / 2;
-        const z3::expr right = build(mid, hi, default_expr);
-        return build(lo, mid, right);
+        const z3::expr right = self(mid, hi, default_expr);
+        return self(lo, mid, right);
     };
     return build(1, values.size(), values[0]);
 }
