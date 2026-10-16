@@ -121,108 +121,135 @@ nlohmann::json load_dataset_spec(const std::string &name) {
 }
 
 std::int64_t eval_scalar(const Expr &expr, const EvalEnv &env) {
-    return std::visit(
-        [&](const auto &n) -> std::int64_t {
-            using T = std::decay_t<decltype(n)>;
-            if constexpr (std::is_same_v<T, Expr::Literal>) {
-                return n.value;
-            } else if constexpr (std::is_same_v<T, Expr::NullLiteral>) {
-                throw std::runtime_error("null cannot be evaluated as a scalar");
-            } else if constexpr (std::is_same_v<T, Expr::ScalarVar>) {
-                return env.scalars[n.slot];
-            } else if constexpr (std::is_same_v<T, Expr::TupleIndex>) {
-                const std::int64_t idx = eval_scalar(*n.index, env);
-                const auto &tuple = env.tuples[n.tuple_slot];
-                if (idx < 0 || static_cast<std::size_t>(idx) >= tuple.size()) {
-                    throw std::runtime_error("Tuple index out of bounds");
-                }
-                return tuple[static_cast<std::size_t>(idx)];
-            } else if constexpr (std::is_same_v<T, Expr::Unary>) {
-                const std::int64_t val = eval_scalar(*n.operand, env);
-                switch (n.op) {
-                    case UnaryOp::LogicalNot:
-                        return val == 0 ? 1 : 0;
-                    case UnaryOp::Negate:
-                        return -val;
-                    case UnaryOp::BitNot:
-                        return ~val;
-                }
-                return 0;
-            } else if constexpr (std::is_same_v<T, Expr::Binary>) {
-                if (n.op == BinaryOp::LogicalAnd) {
-                    return (eval_scalar(*n.left, env) != 0 && eval_scalar(*n.right, env) != 0) ? 1 : 0;
-                }
-                if (n.op == BinaryOp::LogicalOr) {
-                    return (eval_scalar(*n.left, env) != 0 || eval_scalar(*n.right, env) != 0) ? 1 : 0;
-                }
-                const std::int64_t lhs = eval_scalar(*n.left, env);
-                const std::int64_t rhs = eval_scalar(*n.right, env);
-                switch (n.op) {
-                    case BinaryOp::Add:
-                        return lhs + rhs;
-                    case BinaryOp::Sub:
-                        return lhs - rhs;
-                    case BinaryOp::Mul:
-                        return lhs * rhs;
-                    case BinaryOp::Div:
-                        if (rhs == 0) throw std::runtime_error("Division by zero in dataset expression");
-                        return lhs / rhs;
-                    case BinaryOp::Mod:
-                        if (rhs == 0) throw std::runtime_error("Modulo by zero in dataset expression");
-                        return lhs % rhs;
-                    case BinaryOp::Shl:
-                        return lhs << rhs;
-                    case BinaryOp::Shr:
-                        return lhs >> rhs;
-                    case BinaryOp::Lt:
-                        return lhs < rhs ? 1 : 0;
-                    case BinaryOp::Le:
-                        return lhs <= rhs ? 1 : 0;
-                    case BinaryOp::Gt:
-                        return lhs > rhs ? 1 : 0;
-                    case BinaryOp::Ge:
-                        return lhs >= rhs ? 1 : 0;
-                    case BinaryOp::Eq:
-                        return lhs == rhs ? 1 : 0;
-                    case BinaryOp::Ne:
-                        return lhs != rhs ? 1 : 0;
-                    case BinaryOp::BitAnd:
-                        return lhs & rhs;
-                    case BinaryOp::BitXor:
-                        return lhs ^ rhs;
-                    case BinaryOp::BitOr:
-                        return lhs | rhs;
-                    case BinaryOp::LogicalAnd:
-                    case BinaryOp::LogicalOr:
-                        break;
-                }
-                return 0;
-            } else if constexpr (std::is_same_v<T, Expr::Ternary>) {
-                return eval_scalar(*n.cond, env) != 0 ? eval_scalar(*n.then_expr, env) : eval_scalar(*n.else_expr, env);
-            } else if constexpr (std::is_same_v<T, Expr::RequiredBits>) {
-                return required_bits(eval_scalar(*n.arg, env));
-            } else if constexpr (std::is_same_v<T, Expr::Popcount>) {
-                const auto val = static_cast<std::uint64_t>(eval_scalar(*n.arg, env));
-                return static_cast<std::int64_t>(std::popcount(val));
-            } else if constexpr (std::is_same_v<T, Expr::Count>) {
-                const auto &tuple = env.tuples[n.tuple_slot];
-                const std::int64_t target = eval_scalar(*n.target, env);
-                const std::int64_t start = n.start_index ? eval_scalar(*n.start_index, env) : 0;
-                std::int64_t matches = 0;
-                for (std::size_t idx = static_cast<std::size_t>(std::max<std::int64_t>(0, start)); idx < tuple.size();
-                     ++idx) {
-                    if (tuple[idx] == target) {
-                        ++matches;
-                    }
-                }
-                return matches;
-            } else if constexpr (std::is_same_v<T, Expr::Bit>) {
-                return eval_scalar(*n.arg, env) != 0 ? 1 : 0;
-            } else {
-                throw std::runtime_error("Bit-list expression cannot be evaluated as a scalar");
+    struct Visitor {
+        const EvalEnv &env;
+
+        static std::int64_t operator()(const Expr::Literal &lit) {
+            return lit.value;
+        }
+
+        static std::int64_t operator()(const Expr::NullLiteral &) {
+            throw std::runtime_error("null cannot be evaluated as a scalar");
+        }
+
+        std::int64_t operator()(const Expr::ScalarVar &var) const {
+            return env.scalars[var.slot];
+        }
+
+        std::int64_t operator()(const Expr::TupleIndex &tuple_idx) const {
+            const std::int64_t idx = eval_scalar(*tuple_idx.index, env);
+            const auto &tuple = env.tuples[tuple_idx.tuple_slot];
+            if (idx < 0 || static_cast<std::size_t>(idx) >= tuple.size()) {
+                throw std::runtime_error("Tuple index out of bounds");
             }
-        },
-        expr.node);
+            return tuple[static_cast<std::size_t>(idx)];
+        }
+
+        std::int64_t operator()(const Expr::Unary &unary) const {
+            const std::int64_t val = eval_scalar(*unary.operand, env);
+            switch (unary.op) {
+                case UnaryOp::LogicalNot:
+                    return val == 0 ? 1 : 0;
+                case UnaryOp::Negate:
+                    return -val;
+                case UnaryOp::BitNot:
+                    return ~val;
+            }
+            return 0;
+        }
+
+        std::int64_t operator()(const Expr::Binary &n) const {
+            if (n.op == BinaryOp::LogicalAnd) {
+                return (eval_scalar(*n.left, env) != 0 && eval_scalar(*n.right, env) != 0) ? 1 : 0;
+            }
+            if (n.op == BinaryOp::LogicalOr) {
+                return (eval_scalar(*n.left, env) != 0 || eval_scalar(*n.right, env) != 0) ? 1 : 0;
+            }
+            const std::int64_t lhs = eval_scalar(*n.left, env);
+            const std::int64_t rhs = eval_scalar(*n.right, env);
+            switch (n.op) {
+                case BinaryOp::Add:
+                    return lhs + rhs;
+                case BinaryOp::Sub:
+                    return lhs - rhs;
+                case BinaryOp::Mul:
+                    return lhs * rhs;
+                case BinaryOp::Div:
+                    if (rhs == 0) throw std::runtime_error("Division by zero in dataset expression");
+                    return lhs / rhs;
+                case BinaryOp::Mod:
+                    if (rhs == 0) throw std::runtime_error("Modulo by zero in dataset expression");
+                    return lhs % rhs;
+                case BinaryOp::Shl:
+                    return lhs << rhs;
+                case BinaryOp::Shr:
+                    return lhs >> rhs;
+                case BinaryOp::Lt:
+                    return lhs < rhs ? 1 : 0;
+                case BinaryOp::Le:
+                    return lhs <= rhs ? 1 : 0;
+                case BinaryOp::Gt:
+                    return lhs > rhs ? 1 : 0;
+                case BinaryOp::Ge:
+                    return lhs >= rhs ? 1 : 0;
+                case BinaryOp::Eq:
+                    return lhs == rhs ? 1 : 0;
+                case BinaryOp::Ne:
+                    return lhs != rhs ? 1 : 0;
+                case BinaryOp::BitAnd:
+                    return lhs & rhs;
+                case BinaryOp::BitXor:
+                    return lhs ^ rhs;
+                case BinaryOp::BitOr:
+                    return lhs | rhs;
+                case BinaryOp::LogicalAnd:
+                case BinaryOp::LogicalOr:
+                    break;
+            }
+            return 0;
+        }
+
+        std::int64_t operator()(const Expr::Ternary &n) const {
+            return eval_scalar(*n.cond, env) != 0 ? eval_scalar(*n.then_expr, env) : eval_scalar(*n.else_expr, env);
+        }
+
+        std::int64_t operator()(const Expr::RequiredBits &n) const {
+            return required_bits(eval_scalar(*n.arg, env));
+        }
+
+        std::int64_t operator()(const Expr::Popcount &n) const {
+            const auto val = static_cast<std::uint64_t>(eval_scalar(*n.arg, env));
+            return static_cast<std::int64_t>(std::popcount(val));
+        }
+
+        std::int64_t operator()(const Expr::Count &n) const {
+            const auto &tuple = env.tuples[n.tuple_slot];
+            const std::int64_t target = eval_scalar(*n.target, env);
+            const std::int64_t start = n.start_index ? eval_scalar(*n.start_index, env) : 0;
+            std::int64_t matches = 0;
+            for (std::size_t idx = static_cast<std::size_t>(std::max<std::int64_t>(0, start)); idx < tuple.size();
+                    ++idx) {
+                if (tuple[idx] == target) {
+                    ++matches;
+                }
+            }
+            return matches;
+        }
+
+        std::int64_t operator()(const Expr::Bit &n) const {
+            return eval_scalar(*n.arg, env) != 0 ? 1 : 0;
+        }
+
+        static std::int64_t operator()(const Expr::Bits &) {
+            throw std::runtime_error("Bit-list expression cannot be evaluated as a scalar");
+        }
+
+        static std::int64_t operator()(const Expr::StateBits &) {
+            throw std::runtime_error("Bit-list expression cannot be evaluated as a scalar");
+        }
+    } const visitor{env};
+
+    return std::visit(visitor, expr.node);
 }
 
 void emit_bits(const Expr &expr, const EvalEnv &env, BitList &out) {
