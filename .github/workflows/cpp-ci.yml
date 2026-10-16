@@ -4,6 +4,14 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: cpp-ci
+  cancel-in-progress: true
+
 jobs:
   build-and-test:
     strategy:
