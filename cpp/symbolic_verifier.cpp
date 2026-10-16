@@ -112,116 +112,148 @@ public:
 
     z3::expr to_int(const Expr &expr) {
         if (is_static(expr)) return bv(static_value(expr));
-        return std::visit(
-            [&](const auto &n) -> z3::expr {
-                using T = std::decay_t<decltype(n)>;
-                if constexpr (std::is_same_v<T, Expr::ScalarVar>) {
-                    if (!scalars_[n.slot].has_value()) {
-                        throw std::runtime_error("dataset expression uses a variable before it is defined");
-                    }
-                    return *scalars_[n.slot];
-                } else if constexpr (std::is_same_v<T, Expr::TupleIndex>) {
-                    const auto &cells = tuples_.at(n.tuple_slot);
-                    if (cells.empty()) throw std::runtime_error("empty tuple in dataset expression");
-                    if (is_static(*n.index)) {
-                        const std::int64_t idx = static_value(*n.index);
-                        if (idx < 0 || static_cast<std::size_t>(idx) >= cells.size()) {
-                            throw std::runtime_error("Tuple index out of bounds");
-                        }
-                        return cells[static_cast<std::size_t>(idx)];
-                    }
-                    const z3::expr idx = to_int(*n.index);
-                    auto select_range = [&](this auto &self, std::size_t lo, std::size_t hi) -> z3::expr {
-                        if (lo + 1 == hi) return cells[lo];
-                        const std::size_t mid = lo + (hi - lo) / 2;
-                        return z3::ite(idx < bv(static_cast<std::int64_t>(mid)), self(lo, mid), self(mid, hi));
-                    };
-                    return select_range(0, cells.size());
-                } else if constexpr (std::is_same_v<T, Expr::Unary>) {
-                    switch (n.op) {
-                        case UnaryOp::LogicalNot:
-                            return from_bool(!to_bool(*n.operand));
-                        case UnaryOp::Negate:
-                            return -to_int(*n.operand);
-                        case UnaryOp::BitNot:
-                            return ~to_int(*n.operand);
-                    }
-                    throw std::logic_error("unreachable unary operator");
-                } else if constexpr (std::is_same_v<T, Expr::Binary>) {
-                    switch (n.op) {
-                        case BinaryOp::LogicalAnd:
-                        case BinaryOp::LogicalOr:
-                        case BinaryOp::Lt:
-                        case BinaryOp::Le:
-                        case BinaryOp::Gt:
-                        case BinaryOp::Ge:
-                        case BinaryOp::Eq:
-                        case BinaryOp::Ne:
-                            return from_bool(to_bool(expr));
-                        default:
-                            break;
-                    }
-                    const z3::expr lhs = to_int(*n.left);
-                    const z3::expr rhs = to_int(*n.right);
-                    switch (n.op) {
-                        case BinaryOp::Add:
-                            return lhs + rhs;
-                        case BinaryOp::Sub:
-                            return lhs - rhs;
-                        case BinaryOp::Mul:
-                            return lhs * rhs;
-                        case BinaryOp::Div:
-                            return z3::to_expr(ctx_, Z3_mk_bvsdiv(ctx_, lhs, rhs));
-                        case BinaryOp::Mod:
-                            return z3::srem(lhs, rhs);
-                        case BinaryOp::Shl:
-                            return z3::shl(lhs, rhs);
-                        case BinaryOp::Shr:
-                            return z3::ashr(lhs, rhs);
-                        case BinaryOp::BitAnd:
-                            return lhs & rhs;
-                        case BinaryOp::BitXor:
-                            return lhs ^ rhs;
-                        case BinaryOp::BitOr:
-                            return lhs | rhs;
-                        default:
-                            break;
-                    }
-                    throw std::logic_error("unreachable binary operator");
-                } else if constexpr (std::is_same_v<T, Expr::Ternary>) {
-                    return z3::ite(to_bool(*n.cond), to_int(*n.then_expr), to_int(*n.else_expr));
-                } else if constexpr (std::is_same_v<T, Expr::RequiredBits>) {
-                    throw std::runtime_error("required_bits() argument must not depend on quantified variables");
-                } else if constexpr (std::is_same_v<T, Expr::Popcount>) {
-                    const z3::expr arg = to_int(*n.arg);
-                    std::vector<z3::expr> terms;
-                    terms.reserve(kWidth);
-                    for (unsigned bit = 0; bit < kWidth; ++bit) {
-                        terms.push_back(z3::zext(arg.extract(bit, bit), kWidth - 1));
-                    }
-                    return balanced_sum(ctx_, std::move(terms));
-                } else if constexpr (std::is_same_v<T, Expr::Count>) {
-                    const auto &cells = tuples_.at(n.tuple_slot);
-                    std::int64_t first = 0;
-                    if (n.start_index) {
-                        if (!is_static(*n.start_index)) {
-                            throw std::runtime_error("count() start index must not depend on quantified variables");
-                        }
-                        first = std::max<std::int64_t>(0, static_value(*n.start_index));
-                    }
-                    const z3::expr target = to_int(*n.target);
-                    std::vector<z3::expr> terms;
-                    for (std::size_t cell = static_cast<std::size_t>(first); cell < cells.size(); ++cell) {
-                        terms.push_back(z3::ite(cells[cell] == target, bv(1), bv(0)));
-                    }
-                    return balanced_sum(ctx_, std::move(terms));
-                } else if constexpr (std::is_same_v<T, Expr::Bit>) {
-                    return from_bool(to_bool(*n.arg));
-                } else {
-                    throw std::runtime_error("bit-list expression used where a scalar is required");
+
+        struct Visitor {
+            Lowering *self;
+
+            z3::expr operator()(const Expr::Literal &n) const {
+                return self->bv(n.value);
+            }
+
+            z3::expr operator()(const Expr::NullLiteral &) const {
+                throw std::runtime_error("null cannot be evaluated as a scalar");
+            }
+
+            z3::expr operator()(const Expr::ScalarVar &n) const {
+                if (!self->scalars_[n.slot].has_value()) {
+                    throw std::runtime_error("dataset expression uses a variable before it is defined");
                 }
-            },
-            expr.node);
+                return *self->scalars_[n.slot];
+            }
+
+            z3::expr operator()(const Expr::TupleIndex &n) const {
+                const auto &cells = self->tuples_.at(n.tuple_slot);
+                if (cells.empty()) throw std::runtime_error("empty tuple in dataset expression");
+                if (self->is_static(*n.index)) {
+                    const std::int64_t idx = self->static_value(*n.index);
+                    if (idx < 0 || static_cast<std::size_t>(idx) >= cells.size()) {
+                        throw std::runtime_error("Tuple index out of bounds");
+                    }
+                    return cells[static_cast<std::size_t>(idx)];
+                }
+                const z3::expr idx = self->to_int(*n.index);
+                auto select_range = [&_self=self, &cells, idx](this auto &self, std::size_t lo, std::size_t hi) -> z3::expr {
+                    if (lo + 1 == hi) return cells[lo];
+                    const std::size_t mid = lo + (hi - lo) / 2;
+                    return z3::ite(idx < _self->bv(static_cast<std::int64_t>(mid)), self(lo, mid), self(mid, hi));
+                };
+                return select_range(0, cells.size());
+            }
+
+            z3::expr operator()(const Expr::Unary &n) const {
+                switch (n.op) {
+                    case UnaryOp::LogicalNot:
+                        return self->from_bool(!self->to_bool(*n.operand));
+                    case UnaryOp::Negate:
+                        return -self->to_int(*n.operand);
+                    case UnaryOp::BitNot:
+                        return ~self->to_int(*n.operand);
+                }
+                throw std::logic_error("unreachable unary operator");
+            }
+
+            z3::expr operator()(const Expr::Binary &n) const {
+                switch (n.op) {
+                    case BinaryOp::LogicalAnd:
+                    case BinaryOp::LogicalOr:
+                    case BinaryOp::Lt:
+                    case BinaryOp::Le:
+                    case BinaryOp::Gt:
+                    case BinaryOp::Ge:
+                    case BinaryOp::Eq:
+                    case BinaryOp::Ne:
+                        return self->from_bool(self->to_bool(*n.left));
+                    default:
+                        break;
+                }
+                const z3::expr lhs = self->to_int(*n.left);
+                const z3::expr rhs = self->to_int(*n.right);
+                switch (n.op) {
+                    case BinaryOp::Add:
+                        return lhs + rhs;
+                    case BinaryOp::Sub:
+                        return lhs - rhs;
+                    case BinaryOp::Mul:
+                        return lhs * rhs;
+                    case BinaryOp::Div:
+                        return z3::to_expr(self->ctx_, Z3_mk_bvsdiv(self->ctx_, lhs, rhs));
+                    case BinaryOp::Mod:
+                        return z3::srem(lhs, rhs);
+                    case BinaryOp::Shl:
+                        return z3::shl(lhs, rhs);
+                    case BinaryOp::Shr:
+                        return z3::ashr(lhs, rhs);
+                    case BinaryOp::BitAnd:
+                        return lhs & rhs;
+                    case BinaryOp::BitXor:
+                        return lhs ^ rhs;
+                    case BinaryOp::BitOr:
+                        return lhs | rhs;
+                    default:
+                        break;
+                }
+                throw std::logic_error("unreachable binary operator");
+            }
+
+            z3::expr operator()(const Expr::Ternary &n) const {
+                return z3::ite(self->to_bool(*n.cond), self->to_int(*n.then_expr), self->to_int(*n.else_expr));
+            }
+
+            z3::expr operator()(const Expr::RequiredBits &n) const {
+                throw std::runtime_error("required_bits() argument must not depend on quantified variables");
+            }
+
+            z3::expr operator()(const Expr::Popcount &n) const {
+                const z3::expr arg = self->to_int(*n.arg);
+                std::vector<z3::expr> terms;
+                terms.reserve(kWidth);
+                for (unsigned bit = 0; bit < kWidth; ++bit) {
+                    terms.push_back(z3::zext(arg.extract(bit, bit), kWidth - 1));
+                }
+                return balanced_sum(self->ctx_, std::move(terms));
+            }
+
+            z3::expr operator()(const Expr::Count &n) const {
+                const auto &cells = self->tuples_.at(n.tuple_slot);
+                std::int64_t first = 0;
+                if (n.start_index) {
+                    if (!self->is_static(*n.start_index)) {
+                        throw std::runtime_error("count() start index must not depend on quantified variables");
+                    }
+                    first = std::max<std::int64_t>(0, self->static_value(*n.start_index));
+                }
+                const z3::expr target = self->to_int(*n.target);
+                std::vector<z3::expr> terms;
+                for (std::size_t cell = static_cast<std::size_t>(first); cell < cells.size(); ++cell) {
+                    terms.push_back(z3::ite(cells[cell] == target, self->bv(1), self->bv(0)));
+                }
+                return balanced_sum(self->ctx_, std::move(terms));
+            }
+
+            z3::expr operator()(const Expr::Bit &n) const {
+                return self->from_bool(self->to_bool(*n.arg));
+            }
+
+            z3::expr operator()(const Expr::Bits &) const {
+                throw std::runtime_error("bit-list expression used where a scalar is required");
+            }
+
+            z3::expr operator()(const Expr::StateBits &) const {
+                throw std::runtime_error("bit-list expression used where a scalar is required");
+            }
+        } const visitor{this};
+
+        return std::visit(visitor, expr.node);
     }
 
     z3::expr to_bool(const Expr &expr) {
