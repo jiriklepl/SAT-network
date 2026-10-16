@@ -160,8 +160,6 @@ struct QuantifiedSpec {
 
     // Evaluates the example at the assignment currently stored in `scratch` (nullopt if filtered by `where`).
     std::optional<Example> evaluate_point(EvalEnv &scratch) const;
-    // Calls `visit` with `scratch` set to every quantifier assignment, in the order used by the Python plugins.
-    void for_each_point(EvalEnv &scratch, const std::function<void(EvalEnv &)> &visit) const;
     // Overwrites the quantified variables in `scratch` with a uniformly random in-domain assignment.
     void assign_random(EvalEnv &scratch, std::mt19937_64 &rng) const;
 };

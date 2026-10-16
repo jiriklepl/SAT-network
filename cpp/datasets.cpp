@@ -825,6 +825,48 @@ std::shared_ptr<QuantifiedSpec> compile_dataset_spec(const nlohmann::json &spec,
     }
     return compiled;
 }
+
+template <typename Visit>
+// Calls `visit` with `scratch` set to every quantifier assignment, in the order used by the Python plugins.
+void for_each_point(const QuantifiedSpec &spec, EvalEnv &scratch, const Visit &visit) {
+    const auto run = [&spec, &visit, &scratch](this const auto &self, std::size_t q_idx) -> void {
+        if (q_idx == spec.quantifiers.size()) {
+            visit(scratch);
+            return;
+        }
+
+        std::visit(
+            [&scratch, &self, q_idx](const auto &q) {
+                using T = std::decay_t<decltype(q)>;
+                if constexpr (std::is_same_v<T, Quantifier::Range>) {
+                    for (std::int64_t val = q.start; val < q.end; ++val) {
+                        scratch.scalars[q.slot] = val;
+                        self(q_idx + 1);
+                    }
+                } else if constexpr (std::is_same_v<T, Quantifier::Values>) {
+                    for (const std::int64_t val : q.values) {
+                        scratch.scalars[q.slot] = val;
+                        self(q_idx + 1);
+                    }
+                } else {
+                    const auto fill = [&](this auto &fill_self, std::size_t cell) -> void {
+                        if (cell == q.size) {
+                            self(q_idx + 1);
+                            return;
+                        }
+                        for (std::int64_t val = q.start; val < q.end; ++val) {
+                            scratch.tuples[q.tuple_slot][cell] = val;
+                            fill_self(cell + 1);
+                        }
+                    };
+                    fill(0);
+                }
+            },
+            spec.quantifiers[q_idx].spec);
+    };
+    run(0);
+}
+
 }  // namespace
 
 Example::Example(std::initializer_list<bool> input_values, std::initializer_list<std::optional<bool>> output_values) {
@@ -903,45 +945,6 @@ std::optional<Example> QuantifiedSpec::evaluate_point(EvalEnv &scratch) const {
         emit_bits(*ast, scratch, out_bits);
     }
     return make_example(in_bits, out_bits, num_inputs, num_outputs);
-}
-
-void QuantifiedSpec::for_each_point(EvalEnv &scratch, const std::function<void(EvalEnv &)> &visit) const {
-    const auto run = [this, &visit, &scratch](this const auto &self, std::size_t q_idx) -> void {
-        if (q_idx == quantifiers.size()) {
-            visit(scratch);
-            return;
-        }
-
-        std::visit(
-            [&scratch, &self, q_idx](const auto &q) {
-                using T = std::decay_t<decltype(q)>;
-                if constexpr (std::is_same_v<T, Quantifier::Range>) {
-                    for (std::int64_t val = q.start; val < q.end; ++val) {
-                        scratch.scalars[q.slot] = val;
-                        self(q_idx + 1);
-                    }
-                } else if constexpr (std::is_same_v<T, Quantifier::Values>) {
-                    for (const std::int64_t val : q.values) {
-                        scratch.scalars[q.slot] = val;
-                        self(q_idx + 1);
-                    }
-                } else {
-                    const auto fill = [&](this auto &fill_self, std::size_t cell) -> void {
-                        if (cell == q.size) {
-                            self(q_idx + 1);
-                            return;
-                        }
-                        for (std::int64_t val = q.start; val < q.end; ++val) {
-                            scratch.tuples[q.tuple_slot][cell] = val;
-                            fill_self(cell + 1);
-                        }
-                    };
-                    fill(0);
-                }
-            },
-            quantifiers[q_idx].spec);
-    };
-    run(0);
 }
 
 void QuantifiedSpec::assign_random(EvalEnv &scratch, std::mt19937_64 &rng) const {
@@ -1077,7 +1080,7 @@ Config build_dataset_from_config(const nlohmann::json &cfg, const DatasetLoadOpt
 
     if (compiled->domain_size <= options.max_materialized_examples) {
         EvalEnv env = compiled->env;
-        compiled->for_each_point(env, [&dataset, compiled](EvalEnv &point) {
+        for_each_point(*compiled, env, [&dataset, compiled](EvalEnv &point) {
             if (auto example = compiled->evaluate_point(point)) {
                 if (example) {
                     dataset.examples.push_back(std::move(*example));
