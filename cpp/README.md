@@ -4,9 +4,14 @@
 It supports JSON configs with explicit `examples` and C++-generated built-in
 datasets selected by config `type` or `--dataset`.
 
-It intentionally does not support Python plugin loading or quantified synthesis.
-The `--post-process` flag currently runs mask-only simplification plus local SAT
-resynthesis for small one-fanout windows.
+It supports declarative JSON configs with explicit examples or first-order
+quantified specifications, as well as built-in datasets selected by config `type`
+or `--dataset`.
+
+For quantified specifications with large or unmaterialized domains, it features
+a hybrid symbolic CEGIS engine (`SymbolicVerifier`) that couples quantifier-free
+bit-vector (`QF_BV`) miter checks with on-the-fly basis bitset accumulation,
+as well as two-tier counterexample-guided post-processing candidate verification.
 
 ## Build
 
@@ -48,6 +53,8 @@ for now because the C++ generator does not reproduce Python's RNG sampling.
 - `config.*`: JSON config loading and dataset dumping.
 - `datasets.*`: loader and evaluator for declarative dataset config files in `cpp/datasets/*.json`.
 - `datasets/*.json`: declarative quantified dataset definitions.
+- `quantified_spec.hpp`: declarative AST for quantified domains, predicates, and basis seeds.
+- `symbolic_verifier.*`: Z3 QF_BV symbolic miter verification, counterexample extraction, and candidate checking.
 - `program.*`: program/data model, operator table, text emission, and packed verifier.
 - `postprocess.*`: post-processing beam orchestration and public options.
 - `postprocess_common.*`, `postprocess_mask.*`, `postprocess_resynthesis.*`:

@@ -221,12 +221,24 @@ std::uint64_t stable_seed(unsigned base_seed, const std::string &key, std::size_
 
 }  // namespace
 
-std::vector<Program> generate_mask_simplification_candidates(
-    const Program &base, std::span<const Example> examples, int num_inputs, int num_outputs,
-    const PackedExamples &packed, std::span<const PackedMask> values, const std::string &base_key,
-    std::set<std::string> &seen, std::size_t max_candidates, const PostProcessOptions &options, ProfileData *profile) {
-    const PackedMask all_mask = all_ones(packed.width);
-    const int false_source = first_zero_source(values);
+std::vector<Program> generate_mask_simplification_candidates(const Program &base, VerificationOracle &oracle,
+                                                             const std::string &base_key, std::set<std::string> &seen,
+                                                             std::size_t max_candidates,
+                                                             const PostProcessOptions &options, ProfileData *profile) {
+    const int num_inputs = oracle.num_inputs();
+    const int num_outputs = oracle.num_outputs();
+    PackedMask all_mask = all_ones(oracle.packed().width);
+    std::vector<PackedMask> values = evaluate_all_sources(base, oracle.packed().input_masks, all_mask);
+    int false_source = first_zero_source(values);
+    std::size_t synced_gen = oracle.basis_generation();
+    auto sync_basis = [&]() {
+        if (oracle.basis_generation() == synced_gen) return;
+        synced_gen = oracle.basis_generation();
+        all_mask = all_ones(oracle.packed().width);
+        values = evaluate_all_sources(base, oracle.packed().input_masks, all_mask);
+        false_source = first_zero_source(values);
+    };
+
     std::vector<Program> candidates;
 
     PostProcessGeneratorRun mask_generator(profile, PostProcessGeneratorKind::Mask, options.generator_timeout_seconds);
@@ -237,8 +249,9 @@ std::vector<Program> generate_mask_simplification_candidates(
         if (mask_done()) return false;
         mask_generator.candidate_considered();
         mask_generator.candidate_materialized();
-        return push_unique_candidate(candidates, seen, candidate, base_key, examples, num_inputs, num_outputs,
-                                     mask_generator);
+        const bool accepted = push_unique_candidate(candidates, seen, candidate, base_key, oracle, mask_generator);
+        sync_basis();
+        return accepted;
     };
 
     for (std::size_t source = 1; source < values.size() && !mask_done(); ++source) {
@@ -258,16 +271,17 @@ std::vector<Program> generate_mask_simplification_candidates(
     }
 
     for (int output_idx = 0; output_idx < num_outputs && !mask_done(); ++output_idx) {
-        const PackedMask care_mask = all_mask ^ packed.output_dont_care_masks[static_cast<std::size_t>(output_idx)];
-        int upper = base.outputs[static_cast<std::size_t>(output_idx)];
+        const auto out_pos = static_cast<std::size_t>(output_idx);
+        int upper = base.outputs[out_pos];
         if (upper < 0 || static_cast<std::size_t>(upper) > values.size()) upper = static_cast<int>(values.size());
         for (int source = 0; source < upper && !mask_done(); ++source) {
-            if (!cares_match(values[static_cast<std::size_t>(source)],
-                             packed.output_values[static_cast<std::size_t>(output_idx)], care_mask)) {
+            const PackedMask care_mask = all_mask ^ oracle.packed().output_dont_care_masks[out_pos];
+            if (!cares_match(values[static_cast<std::size_t>(source)], oracle.packed().output_values[out_pos],
+                             care_mask)) {
                 continue;
             }
             Program candidate = base;
-            candidate.outputs[static_cast<std::size_t>(output_idx)] = source;
+            candidate.outputs[out_pos] = source;
             add_mask(prune_dead_nodes(candidate, num_inputs));
         }
     }
@@ -446,7 +460,7 @@ std::vector<Program> generate_mask_simplification_candidates(
             const PackedMask candidate_mask =
                 apply_operator_mask(op, values[static_cast<std::size_t>(s1)], values[static_cast<std::size_t>(s2)]) &
                 all_mask;
-            if (!replacement_preserves_outputs(base, num_inputs, packed, values, all_mask, target_source,
+            if (!replacement_preserves_outputs(base, num_inputs, oracle.packed(), values, all_mask, target_source,
                                                candidate_mask)) {
                 continue;
             }
@@ -458,9 +472,14 @@ std::vector<Program> generate_mask_simplification_candidates(
             Program candidate = base;
             candidate.instrs[instr_idx] = Instruction{op, s1, s2};
             replacement_generator.candidate_materialized();
-            push_unique_candidate(candidates, seen, materialize_program_dag(candidate, num_inputs), base_key, examples,
-                                  num_inputs, num_outputs, replacement_generator);
-            ++valid_replacements_for_node;
+            const std::size_t gen_before = oracle.basis_generation();
+            push_unique_candidate(candidates, seen, materialize_program_dag(candidate, num_inputs), base_key, oracle,
+                                  replacement_generator);
+            if (oracle.basis_generation() == gen_before) {
+                ++valid_replacements_for_node;
+            } else {
+                sync_basis();
+            }
         }
     }
 

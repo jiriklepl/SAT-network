@@ -222,21 +222,35 @@ Program apply_resynthesized_window(const Program &base, int num_inputs, std::spa
     return materialize_dag(nodes, rewritten_outputs, num_inputs);
 }
 
+constexpr std::size_t kMaxWindowRefinements = 8;
+
+PackedMask slice_mask_range(const PackedMask &src, std::size_t start_idx, std::size_t count) {
+    PackedMask dst(static_cast<unsigned>(count));
+    for (std::size_t i = 0; i < count; ++i) {
+        if (src.test(start_idx + i)) {
+            dst.set(i);
+        }
+    }
+    return dst;
+}
+
 }  // namespace
 
-std::vector<Program> generate_resynthesis_candidates(const Program &base, std::span<const Example> examples,
-                                                     int num_inputs, int num_outputs, const PackedExamples &packed,
-                                                     std::span<const PackedMask> values,
+std::vector<Program> generate_resynthesis_candidates(const Program &base, VerificationOracle &oracle,
                                                      const PostProcessOptions &options, const std::string &base_key,
                                                      std::set<std::string> &seen, std::size_t max_candidates,
                                                      ProfileData *profile) {
+    const int num_inputs = oracle.num_inputs();
     std::vector<Program> candidates;
     PostProcessGeneratorRun generator(profile, PostProcessGeneratorKind::Resynthesis,
                                       options.generator_timeout_seconds);
-    if (base.instrs.size() < 2 || packed.width == 0 || options.resynthesis_maxnodes < 2) {
+    if (base.instrs.size() < 2 || oracle.packed().width == 0 || options.resynthesis_maxnodes < 2) {
         generator.finish();
         return candidates;
     }
+
+    PackedMask all_mask = all_ones(oracle.packed().width);
+    std::vector<PackedMask> values = evaluate_all_sources(base, oracle.packed().input_masks, all_mask);
 
     const std::vector<std::set<int>> users = build_users(base, num_inputs);
     const std::map<int, int> output_uses = build_output_uses(base);
@@ -306,19 +320,53 @@ std::vector<Program> generate_resynthesis_candidates(const Program &base, std::s
             solver.add(test.outputs[out_idx] ==
                        packed_mask_value(ctx, values[static_cast<std::size_t>(window_outputs[out_idx])]));
         }
-        const std::optional<int> timeout_ms = generator.remaining_timeout_ms();
-        if (timeout_ms.has_value()) {
-            if (*timeout_ms <= 0) break;
-            solver.set("timeout", static_cast<unsigned>(*timeout_ms));
+
+        for (std::size_t refine = 0; refine < kMaxWindowRefinements; ++refine) {
+            const std::optional<int> timeout_ms = generator.remaining_timeout_ms();
+            if (timeout_ms.has_value()) {
+                if (*timeout_ms <= 0) break;
+                solver.set("timeout", static_cast<unsigned>(*timeout_ms));
+            }
+            if (solver.check() != z3::sat) break;
+            if (refine == 0 && profile != nullptr) ++profile->post_processing_resynthesis_windows_sat;
+
+            const Program local_program = extract_program(ctx, solver.get_model(), local_spec);
+            const Program candidate =
+                apply_resynthesized_window(base, num_inputs, window_outputs, external_sources, local_program);
+            generator.candidate_materialized();
+
+            const std::size_t prev_width = oracle.packed().width;
+            const std::size_t prev_gen = oracle.basis_generation();
+            push_unique_candidate(candidates, seen, candidate, base_key, oracle, generator);
+            if (oracle.basis_generation() == prev_gen) {
+                ++sat_results;
+                break;
+            }
+
+            // Candidate was refuted by symbolic counterexamples appended at [prev_width, oracle.packed().width).
+            all_mask = all_ones(oracle.packed().width);
+            values = evaluate_all_sources(base, oracle.packed().input_masks, all_mask);
+            const std::size_t delta_count = oracle.packed().width - prev_width;
+            if (delta_count == 0 || refine + 1 == kMaxWindowRefinements) {
+                ++sat_results;
+                break;
+            }
+
+            std::vector<PackedMask> delta_inputs;
+            delta_inputs.reserve(external_sources.size());
+            for (const int source : external_sources) {
+                delta_inputs.push_back(slice_mask_range(values[static_cast<std::size_t>(source)], prev_width, delta_count));
+            }
+            PackedTestEncoding delta_test = build_packed_test(
+                ctx, delta_inputs, "resynth" + std::to_string(window_idx) + "_r" + std::to_string(refine), local_spec,
+                EncodingOptions{});
+            add_exprs(solver, delta_test.constraints);
+            for (std::size_t out_idx = 0; out_idx < window_outputs.size(); ++out_idx) {
+                const PackedMask delta_out = slice_mask_range(
+                    values[static_cast<std::size_t>(window_outputs[out_idx])], prev_width, delta_count);
+                solver.add(delta_test.outputs[out_idx] == packed_mask_value(ctx, delta_out));
+            }
         }
-        if (solver.check() != z3::sat) continue;
-        if (profile != nullptr) ++profile->post_processing_resynthesis_windows_sat;
-        ++sat_results;
-        const Program local_program = extract_program(ctx, solver.get_model(), local_spec);
-        const Program candidate =
-            apply_resynthesized_window(base, num_inputs, window_outputs, external_sources, local_program);
-        generator.candidate_materialized();
-        push_unique_candidate(candidates, seen, candidate, base_key, examples, num_inputs, num_outputs, generator);
     }
     generator.finish();
     return candidates;

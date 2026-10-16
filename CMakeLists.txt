@@ -61,6 +61,7 @@ add_library(sat_synth_core
   cpp/postprocess_resynthesis.cpp
   cpp/program.cpp
   cpp/solver.cpp
+  cpp/symbolic_verifier.cpp
 )
 target_include_directories(sat_synth_core PUBLIC cpp ${Z3_INCLUDE_DIR})
 target_link_libraries(sat_synth_core PUBLIC ${Z3_LIBRARY} cxxopts::cxxopts nlohmann_json::nlohmann_json)
@@ -83,6 +84,7 @@ if(BUILD_TESTING)
     cpp/tests/postprocess_tests.cpp
     cpp/tests/program_tests.cpp
     cpp/tests/solver_tests.cpp
+    cpp/tests/symbolic_verifier_tests.cpp
   )
   target_link_libraries(cpp_unit_tests PRIVATE sat_synth_core Catch2::Catch2WithMain)
   if(SAT_SYNTH_ENABLE_SANITIZERS)

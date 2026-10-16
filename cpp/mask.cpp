@@ -47,6 +47,10 @@ std::span<const std::uint64_t> PackedMask::words() const {
     return words_;
 }
 
+std::uint64_t PackedMask::word(std::size_t word_idx) const noexcept {
+    return word_idx < words_.size() ? words_[word_idx] : 0;
+}
+
 bool PackedMask::is_zero() const {
     return std::ranges::all_of(words_, [](std::uint64_t word) { return word == 0; });
 }
@@ -63,6 +67,16 @@ void PackedMask::set(std::size_t idx) {
         throw std::out_of_range("PackedMask bit index out of range");
     }
     words_[idx / 64] |= std::uint64_t{1} << (idx % 64);
+}
+
+void PackedMask::push_back(bool bit) {
+    const std::size_t idx = width_++;
+    if (idx % 64 == 0) {
+        words_.push_back(0);
+    }
+    if (bit) {
+        words_[idx / 64] |= std::uint64_t{1} << (idx % 64);
+    }
 }
 
 std::vector<std::size_t> PackedMask::set_bit_indices() const {

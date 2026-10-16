@@ -12,6 +12,8 @@
 #include <string>
 #include <vector>
 
+class SymbolicVerifier;
+
 enum class PostProcessScoreMetric : std::uint8_t {
     ProgramLength,
     OutputDepth,
@@ -52,6 +54,8 @@ struct PostProcessOptions {
     std::size_t resynthesis_patience = 1;
     double generator_timeout_seconds = 0.0;
     const Logger *logger = nullptr;
+    // When set, candidates are proven against the full quantified domain instead of only the example basis.
+    SymbolicVerifier *verifier = nullptr;
 };
 
 PostProcessScoreMetric post_process_score_metric_by_name(const std::string &name);

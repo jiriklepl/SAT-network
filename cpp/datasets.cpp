@@ -1,5 +1,7 @@
 #include "datasets.hpp"
 
+#include "quantified_spec.hpp"
+
 #include <bit>
 #include <cctype>
 #include <cstdint>
@@ -10,8 +12,10 @@
 #include <fstream>
 #include <functional>
 #include <initializer_list>
+#include <limits>
 #include <memory>
 #include <optional>
+#include <random>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -61,9 +65,8 @@ std::int64_t required_bits(std::int64_t state_count) {
     return width;
 }
 
-void add_example(Config &dataset, const BitList &inputs, const BitList &outputs) {
-    if (static_cast<int>(inputs.size()) != dataset.num_inputs ||
-        static_cast<int>(outputs.size()) != dataset.num_outputs) {
+Example make_example(const BitList &inputs, const BitList &outputs, int num_inputs, int num_outputs) {
+    if (static_cast<int>(inputs.size()) != num_inputs || static_cast<int>(outputs.size()) != num_outputs) {
         throw std::runtime_error("Example length does not match declared input/output sizes");
     }
     Example example;
@@ -77,7 +80,7 @@ void add_example(Config &dataset, const BitList &inputs, const BitList &outputs)
     for (std::size_t idx = 0; idx < outputs.size(); ++idx) {
         example.push_output(outputs[idx]);
     }
-    dataset.examples.push_back(std::move(example));
+    return example;
 }
 
 std::filesystem::path datasets_directory() {
@@ -117,112 +120,6 @@ nlohmann::json load_dataset_spec(const std::string &name) {
     in >> spec;
     return spec;
 }
-
-struct EvalEnv {
-    std::vector<std::int64_t> scalars;
-    std::vector<std::vector<std::int64_t>> tuples;
-    std::unordered_map<std::string, std::size_t> scalar_slots;
-    std::unordered_map<std::string, std::size_t> tuple_slots;
-
-    std::size_t ensure_scalar_slot(const std::string &name) {
-        auto [it, inserted] = scalar_slots.try_emplace(name, scalars.size());
-        if (inserted) {
-            scalars.push_back(0);
-        }
-        return it->second;
-    }
-
-    std::size_t ensure_tuple_slot(const std::string &name) {
-        auto [it, inserted] = tuple_slots.try_emplace(name, tuples.size());
-        if (inserted) {
-            tuples.emplace_back();
-        }
-        return it->second;
-    }
-};
-
-enum class UnaryOp {
-    LogicalNot,
-    Negate,
-    BitNot,
-};
-
-enum class BinaryOp {
-    Add,
-    Sub,
-    Mul,
-    Div,
-    Mod,
-    Shl,
-    Shr,
-    Lt,
-    Le,
-    Gt,
-    Ge,
-    Eq,
-    Ne,
-    BitAnd,
-    BitXor,
-    BitOr,
-    LogicalAnd,
-    LogicalOr,
-};
-
-struct Expr {
-    struct Literal {
-        std::int64_t value;
-    };
-    struct NullLiteral {};
-    struct ScalarVar {
-        std::size_t slot;
-    };
-    struct TupleIndex {
-        std::size_t tuple_slot;
-        std::unique_ptr<Expr> index;
-    };
-    struct Unary {
-        UnaryOp op;
-        std::unique_ptr<Expr> operand;
-    };
-    struct Binary {
-        BinaryOp op;
-        std::unique_ptr<Expr> left;
-        std::unique_ptr<Expr> right;
-    };
-    struct Ternary {
-        std::unique_ptr<Expr> cond;
-        std::unique_ptr<Expr> then_expr;
-        std::unique_ptr<Expr> else_expr;
-    };
-    struct RequiredBits {
-        std::unique_ptr<Expr> arg;
-    };
-    struct Popcount {
-        std::unique_ptr<Expr> arg;
-    };
-    struct Count {
-        std::size_t tuple_slot;
-        std::unique_ptr<Expr> target;
-        std::unique_ptr<Expr> start_index;
-    };
-    struct Bit {
-        std::unique_ptr<Expr> arg;
-    };
-    struct Bits {
-        std::unique_ptr<Expr> value;
-        std::unique_ptr<Expr> width;
-    };
-    struct StateBits {
-        std::size_t tuple_slot;
-        std::unique_ptr<Expr> width;
-    };
-
-    using Variant = std::variant<Literal, NullLiteral, ScalarVar, TupleIndex, Unary, Binary, Ternary, RequiredBits,
-                                 Popcount, Count, Bit, Bits, StateBits>;
-    Variant node;
-
-    explicit Expr(Variant v) : node(std::move(v)) {}
-};
 
 std::int64_t eval_scalar(const Expr &expr, const EvalEnv &env) {
     return std::visit(
@@ -739,27 +636,16 @@ std::int64_t read_param_value(const nlohmann::json &runtime_cfg, const nlohmann:
     return target.get<std::int64_t>();
 }
 
-struct Quantifier {
-    struct Range {
-        std::size_t slot;
-        std::int64_t start;
-        std::int64_t end;
-    };
-    struct Values {
-        std::size_t slot;
-        std::vector<std::int64_t> values;
-    };
-    struct Tuple {
-        std::size_t tuple_slot;
-        std::size_t size;
-        std::int64_t start;
-        std::int64_t end;
-    };
-    std::variant<Range, Values, Tuple> spec;
-};
+std::size_t saturating_mul(std::size_t lhs, std::size_t rhs) {
+    if (lhs != 0 && rhs > std::numeric_limits<std::size_t>::max() / lhs) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    return lhs * rhs;
+}
 
-Config evaluate_dataset_spec(const nlohmann::json &spec, const nlohmann::json &runtime_cfg) {
-    EvalEnv env;
+std::shared_ptr<QuantifiedSpec> compile_dataset_spec(const nlohmann::json &spec, const nlohmann::json &runtime_cfg) {
+    auto compiled = std::make_shared<QuantifiedSpec>();
+    EvalEnv &env = compiled->env;
 
     if (spec.contains("params")) {
         for (const auto &[name, param_def] : spec.at("params").items()) {
@@ -800,6 +686,7 @@ Config evaluate_dataset_spec(const nlohmann::json &spec, const nlohmann::json &r
     for (const auto &[name, _] : raw_static_lets) {
         (void)resolve_static_var(name);
     }
+    compiled->static_slot_count = env.scalars.size();
 
     auto eval_static_expr = [&](const nlohmann::json &node) -> std::int64_t {
         if (node.is_number_integer()) {
@@ -825,15 +712,12 @@ Config evaluate_dataset_spec(const nlohmann::json &spec, const nlohmann::json &r
         }
     }
 
-    Config dataset;
-    dataset.num_inputs = static_cast<int>(eval_static_expr(spec.at("num_inputs")));
-    dataset.num_outputs = static_cast<int>(eval_static_expr(spec.at("num_outputs")));
+    compiled->num_inputs = static_cast<int>(eval_static_expr(spec.at("num_inputs")));
+    compiled->num_outputs = static_cast<int>(eval_static_expr(spec.at("num_outputs")));
     const int default_instructions =
         spec.contains("instructions") ? static_cast<int>(eval_static_expr(spec.at("instructions"))) : kDefaultProgramLength;
-    dataset.instructions = runtime_cfg.value("instructions", default_instructions);
+    compiled->instructions = runtime_cfg.value("instructions", default_instructions);
 
-    std::vector<Quantifier> quantifiers;
-    std::size_t total_domain_size = 1;
     if (spec.contains("forall")) {
         for (const auto &q_json : spec.at("forall")) {
             const std::string var_name = q_json.at("var").get<std::string>();
@@ -842,16 +726,17 @@ Config evaluate_dataset_spec(const nlohmann::json &spec, const nlohmann::json &r
                 const std::int64_t start = eval_static_expr(range.at(0));
                 const std::int64_t end = eval_static_expr(range.at(1));
                 const std::size_t slot = env.ensure_scalar_slot(var_name);
-                quantifiers.push_back(Quantifier{Quantifier::Range{.slot = slot, .start = start, .end = end}});
-                total_domain_size *= static_cast<std::size_t>(std::max<std::int64_t>(0, end - start));
+                compiled->quantifiers.push_back(Quantifier{Quantifier::Range{.slot = slot, .start = start, .end = end}});
+                compiled->domain_size = saturating_mul(
+                    compiled->domain_size, static_cast<std::size_t>(std::max<std::int64_t>(0, end - start)));
             } else if (q_json.contains("values")) {
                 std::vector<std::int64_t> values;
                 for (const auto &val_json : q_json.at("values")) {
                     values.push_back(eval_static_expr(val_json));
                 }
                 const std::size_t slot = env.ensure_scalar_slot(var_name);
-                total_domain_size *= values.size();
-                quantifiers.push_back(Quantifier{Quantifier::Values{.slot = slot, .values = std::move(values)}});
+                compiled->domain_size = saturating_mul(compiled->domain_size, values.size());
+                compiled->quantifiers.push_back(Quantifier{Quantifier::Values{.slot = slot, .values = std::move(values)}});
             } else if (q_json.contains("tuple")) {
                 const auto &tuple_spec = q_json.at("tuple");
                 const auto size = static_cast<std::size_t>(eval_static_expr(tuple_spec.at("size")));
@@ -862,9 +747,9 @@ Config evaluate_dataset_spec(const nlohmann::json &spec, const nlohmann::json &r
                 env.tuples[tuple_slot].assign(size, start);
                 const auto span = static_cast<std::size_t>(std::max<std::int64_t>(0, end - start));
                 for (std::size_t idx = 0; idx < size; ++idx) {
-                    total_domain_size *= span;
+                    compiled->domain_size = saturating_mul(compiled->domain_size, span);
                 }
-                quantifiers.push_back(Quantifier{
+                compiled->quantifiers.push_back(Quantifier{
                     Quantifier::Tuple{.tuple_slot = tuple_slot, .size = size, .start = start, .end = end}});
             } else {
                 throw std::runtime_error("Unsupported quantifier specification for variable: " + var_name);
@@ -877,7 +762,7 @@ Config evaluate_dataset_spec(const nlohmann::json &spec, const nlohmann::json &r
         if (runtime_cfg.contains(section) && runtime_cfg.at(section).is_object() &&
             runtime_cfg.at(section).contains("max_examples")) {
             const std::size_t max_examples = runtime_cfg.at(section).at("max_examples").get<std::size_t>();
-            if (max_examples < total_domain_size) {
+            if (max_examples < compiled->domain_size) {
                 if (max_examples == 0) {
                     throw std::runtime_error(section + ".max_examples must be positive");
                 }
@@ -894,7 +779,6 @@ Config evaluate_dataset_spec(const nlohmann::json &spec, const nlohmann::json &r
         }
     }
 
-    std::vector<std::pair<std::size_t, std::unique_ptr<Expr>>> compiled_row_lets;
     std::set<std::string> compiling_row;
 
     auto resolve_tuple_var = [&](const std::string &name) -> std::size_t {
@@ -915,7 +799,7 @@ Config evaluate_dataset_spec(const nlohmann::json &spec, const nlohmann::json &r
             ExprParser parser(it->second, resolve_row_var, resolve_tuple_var);
             auto ast = parser.parse();
             const std::size_t slot = env.ensure_scalar_slot(name);
-            compiled_row_lets.emplace_back(slot, std::move(ast));
+            compiled->row_lets.emplace_back(slot, std::move(ast));
             compiling_row.erase(name);
             return slot;
         }
@@ -932,76 +816,17 @@ Config evaluate_dataset_spec(const nlohmann::json &spec, const nlohmann::json &r
         return parser.parse();
     };
 
-    std::unique_ptr<Expr> where_ast;
     if (spec.contains("where")) {
-        where_ast = compile_row_expr(spec.at("where"));
+        compiled->where = compile_row_expr(spec.at("where"));
     }
-
-    std::vector<std::unique_ptr<Expr>> input_asts;
     for (const auto &in_expr : spec.at("inputs")) {
-        input_asts.push_back(compile_row_expr(in_expr));
+        compiled->inputs.push_back(compile_row_expr(in_expr));
     }
-
-    std::vector<std::unique_ptr<Expr>> output_asts;
     for (const auto &out_expr : spec.at("outputs")) {
-        output_asts.push_back(compile_row_expr(out_expr));
+        compiled->outputs.push_back(compile_row_expr(out_expr));
     }
-
-    std::function<void(std::size_t)> run_quantifiers = [&](std::size_t q_idx) {
-        if (q_idx == quantifiers.size()) {
-            if (where_ast && eval_scalar(*where_ast, env) == 0) {
-                return;
-            }
-            for (const auto &[slot, ast] : compiled_row_lets) {
-                env.scalars[slot] = eval_scalar(*ast, env);
-            }
-            BitList inputs;
-            for (const auto &ast : input_asts) {
-                emit_bits(*ast, env, inputs);
-            }
-            BitList outputs;
-            for (const auto &ast : output_asts) {
-                emit_bits(*ast, env, outputs);
-            }
-            add_example(dataset, inputs, outputs);
-            return;
-        }
-
-        std::visit(
-            [&](const auto &q) {
-                using T = std::decay_t<decltype(q)>;
-                if constexpr (std::is_same_v<T, Quantifier::Range>) {
-                    for (std::int64_t val = q.start; val < q.end; ++val) {
-                        env.scalars[q.slot] = val;
-                        run_quantifiers(q_idx + 1);
-                    }
-                } else if constexpr (std::is_same_v<T, Quantifier::Values>) {
-                    for (const std::int64_t val : q.values) {
-                        env.scalars[q.slot] = val;
-                        run_quantifiers(q_idx + 1);
-                    }
-                } else if constexpr (std::is_same_v<T, Quantifier::Tuple>) {
-                    auto &tuple = env.tuples[q.tuple_slot];
-                    std::function<void(std::size_t)> fill_tuple = [&](std::size_t cell) {
-                        if (cell == q.size) {
-                            run_quantifiers(q_idx + 1);
-                            return;
-                        }
-                        for (std::int64_t val = q.start; val < q.end; ++val) {
-                            tuple[cell] = val;
-                            fill_tuple(cell + 1);
-                        }
-                    };
-                    fill_tuple(0);
-                }
-            },
-            quantifiers[q_idx].spec);
-    };
-
-    run_quantifiers(0);
-    return dataset;
+    return compiled;
 }
-
 }  // namespace
 
 Example::Example(std::initializer_list<bool> input_values, std::initializer_list<std::optional<bool>> output_values) {
@@ -1060,7 +885,175 @@ nlohmann::json default_dataset_config(const std::string &name) {
     return cfg;
 }
 
-Config build_dataset_from_config(const nlohmann::json &cfg) {
+std::int64_t evaluate_scalar(const Expr &expr, const EvalEnv &env) {
+    return eval_scalar(expr, env);
+}
+
+std::optional<Example> QuantifiedSpec::evaluate_point(EvalEnv &scratch) const {
+    for (const auto &[slot, ast] : row_lets) {
+        scratch.scalars[slot] = eval_scalar(*ast, scratch);
+    }
+    if (where && eval_scalar(*where, scratch) == 0) {
+        return std::nullopt;
+    }
+    BitList in_bits;
+    for (const auto &ast : inputs) {
+        emit_bits(*ast, scratch, in_bits);
+    }
+    BitList out_bits;
+    for (const auto &ast : outputs) {
+        emit_bits(*ast, scratch, out_bits);
+    }
+    return make_example(in_bits, out_bits, num_inputs, num_outputs);
+}
+
+void QuantifiedSpec::for_each_point(EvalEnv &scratch, const std::function<void(EvalEnv &)> &visit) const {
+    auto run = [&](this auto &self, std::size_t q_idx) -> void {
+        if (q_idx == quantifiers.size()) {
+            visit(scratch);
+            return;
+        }
+        std::visit(
+            [&](const auto &q) {
+                using T = std::decay_t<decltype(q)>;
+                if constexpr (std::is_same_v<T, Quantifier::Range>) {
+                    for (std::int64_t val = q.start; val < q.end; ++val) {
+                        scratch.scalars[q.slot] = val;
+                        self(q_idx + 1);
+                    }
+                } else if constexpr (std::is_same_v<T, Quantifier::Values>) {
+                    for (const std::int64_t val : q.values) {
+                        scratch.scalars[q.slot] = val;
+                        self(q_idx + 1);
+                    }
+                } else {
+                    auto fill = [&](this auto &fill_self, std::size_t cell) -> void {
+                        if (cell == q.size) {
+                            self(q_idx + 1);
+                            return;
+                        }
+                        for (std::int64_t val = q.start; val < q.end; ++val) {
+                            scratch.tuples[q.tuple_slot][cell] = val;
+                            fill_self(cell + 1);
+                        }
+                    };
+                    fill(0);
+                }
+            },
+            quantifiers[q_idx].spec);
+    };
+    run(0);
+}
+
+void QuantifiedSpec::assign_random(EvalEnv &scratch, std::mt19937_64 &rng) const {
+    auto pick = [&](std::int64_t start, std::int64_t end) {
+        return std::uniform_int_distribution<std::int64_t>(start, std::max(start, end - 1))(rng);
+    };
+    for (const Quantifier &quantifier : quantifiers) {
+        std::visit(
+            [&](const auto &q) {
+                using T = std::decay_t<decltype(q)>;
+                if constexpr (std::is_same_v<T, Quantifier::Range>) {
+                    scratch.scalars[q.slot] = pick(q.start, q.end);
+                } else if constexpr (std::is_same_v<T, Quantifier::Values>) {
+                    if (!q.values.empty()) {
+                        scratch.scalars[q.slot] = q.values[pick(0, static_cast<std::int64_t>(q.values.size()))];
+                    }
+                } else {
+                    for (std::size_t cell = 0; cell < q.size; ++cell) {
+                        scratch.tuples[q.tuple_slot][cell] = pick(q.start, q.end);
+                    }
+                }
+            },
+            quantifier.spec);
+    }
+}
+
+namespace {
+
+// Moves every quantified variable to the low or high end of its domain.
+void assign_corner(const QuantifiedSpec &spec, EvalEnv &env, bool high) {
+    for (const Quantifier &quantifier : spec.quantifiers) {
+        std::visit(
+            [&](const auto &q) {
+                using T = std::decay_t<decltype(q)>;
+                if constexpr (std::is_same_v<T, Quantifier::Range>) {
+                    env.scalars[q.slot] = high ? std::max(q.start, q.end - 1) : q.start;
+                } else if constexpr (std::is_same_v<T, Quantifier::Values>) {
+                    if (!q.values.empty()) env.scalars[q.slot] = high ? q.values.back() : q.values.front();
+                } else {
+                    env.tuples[q.tuple_slot].assign(q.size, high ? std::max(q.start, q.end - 1) : q.start);
+                }
+            },
+            quantifier.spec);
+    }
+}
+
+}  // namespace
+
+std::vector<Example> seed_basis(const QuantifiedSpec &spec, std::size_t count, unsigned seed) {
+    std::vector<Example> basis;
+    std::set<boost::dynamic_bitset<>> seen;
+    EvalEnv env = spec.env;
+    count = std::max<std::size_t>(count, 1);
+
+    auto add_current = [&]() {
+        if (basis.size() >= count) return;
+        std::optional<Example> example = spec.evaluate_point(env);
+        if (!example.has_value()) return;
+        if (seen.insert(example->inputs).second) basis.push_back(std::move(*example));
+    };
+
+    for (const bool high : {false, true}) {
+        assign_corner(spec, env, high);
+        add_current();
+    }
+    // Single-variable and single-cell deviations from each corner exercise every quantifier position.
+    for (const Quantifier &quantifier : spec.quantifiers) {
+        std::visit(
+            [&](const auto &q) {
+                using T = std::decay_t<decltype(q)>;
+                if constexpr (std::is_same_v<T, Quantifier::Range>) {
+                    const std::int64_t low = q.start;
+                    const std::int64_t high = std::max(q.start, q.end - 1);
+                    for (const bool base_high : {false, true}) {
+                        assign_corner(spec, env, base_high);
+                        env.scalars[q.slot] = base_high ? low : high;
+                        add_current();
+                    }
+                } else if constexpr (std::is_same_v<T, Quantifier::Values>) {
+                    if (!q.values.empty()) {
+                        for (const bool base_high : {false, true}) {
+                            assign_corner(spec, env, base_high);
+                            env.scalars[q.slot] = base_high ? q.values.front() : q.values.back();
+                            add_current();
+                        }
+                    }
+                } else {
+                    const std::int64_t low = q.start;
+                    const std::int64_t high = std::max(q.start, q.end - 1);
+                    for (const bool base_high : {false, true}) {
+                        for (std::size_t cell = 0; cell < q.size; ++cell) {
+                            assign_corner(spec, env, base_high);
+                            env.tuples[q.tuple_slot][cell] = base_high ? low : high;
+                            add_current();
+                        }
+                    }
+                }
+            },
+            quantifier.spec);
+    }
+
+    std::mt19937_64 rng(seed);
+    const std::size_t max_attempts = count * 64 + 256;
+    for (std::size_t attempt = 0; attempt < max_attempts && basis.size() < count; ++attempt) {
+        spec.assign_random(env, rng);
+        add_current();
+    }
+    return basis;
+}
+
+Config build_dataset_from_config(const nlohmann::json &cfg, const DatasetLoadOptions &options) {
     nlohmann::json spec;
     if (cfg.contains("forall")) {
         spec = cfg;
@@ -1071,7 +1064,26 @@ Config build_dataset_from_config(const nlohmann::json &cfg) {
         const std::string name = cfg.at("type").get<std::string>();
         spec = load_dataset_spec(name);
     }
-    Config dataset = evaluate_dataset_spec(spec, cfg);
+
+    std::shared_ptr<QuantifiedSpec> compiled = compile_dataset_spec(spec, cfg);
+    Config dataset;
+    dataset.num_inputs = compiled->num_inputs;
+    dataset.num_outputs = compiled->num_outputs;
+    dataset.instructions = compiled->instructions;
+    dataset.domain_size = compiled->domain_size;
+    dataset.quantified = compiled;
+
+    if (compiled->domain_size <= options.max_materialized_examples) {
+        EvalEnv env = compiled->env;
+        compiled->for_each_point(env, [&](EvalEnv &point) {
+            if (std::optional<Example> example = compiled->evaluate_point(point)) {
+                dataset.examples.push_back(std::move(*example));
+            }
+        });
+    } else {
+        dataset.fully_materialized = false;
+        dataset.examples = seed_basis(*compiled, options.basis_size, options.seed);
+    }
     if (dataset.examples.empty()) {
         throw std::runtime_error("Dataset contains no examples");
     }

@@ -5,6 +5,7 @@
 #include "postprocess.hpp"
 #include "profile.hpp"
 #include "program.hpp"
+#include "symbolic_verifier.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -62,17 +63,15 @@ std::vector<PackedMask> evaluate_all_sources(const Program &program, std::span<c
                                              const PackedMask &all_examples_mask);
 
 bool push_unique_candidate(std::vector<Program> &candidates, std::set<std::string> &seen, const Program &candidate,
-                           const std::string &base_key, std::span<const Example> examples, int num_inputs,
-                           int num_outputs, PostProcessGeneratorRun &generator);
+                           const std::string &base_key, VerificationOracle &oracle,
+                           PostProcessGeneratorRun &generator);
 
-std::vector<Program> generate_mask_simplification_candidates(
-    const Program &base, std::span<const Example> examples, int num_inputs, int num_outputs,
-    const PackedExamples &packed, std::span<const PackedMask> values, const std::string &base_key,
-    std::set<std::string> &seen, std::size_t max_candidates, const PostProcessOptions &options, ProfileData *profile);
+std::vector<Program> generate_mask_simplification_candidates(const Program &base, VerificationOracle &oracle,
+                                                             const std::string &base_key, std::set<std::string> &seen,
+                                                             std::size_t max_candidates,
+                                                             const PostProcessOptions &options, ProfileData *profile);
 
-std::vector<Program> generate_resynthesis_candidates(const Program &base, std::span<const Example> examples,
-                                                     int num_inputs, int num_outputs, const PackedExamples &packed,
-                                                     std::span<const PackedMask> values,
+std::vector<Program> generate_resynthesis_candidates(const Program &base, VerificationOracle &oracle,
                                                      const PostProcessOptions &options, const std::string &base_key,
                                                      std::set<std::string> &seen, std::size_t max_candidates,
                                                      ProfileData *profile);

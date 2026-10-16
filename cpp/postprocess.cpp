@@ -5,6 +5,7 @@
 #include "postprocess_internal.hpp"
 #include "profile.hpp"
 #include "program.hpp"
+#include "symbolic_verifier.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -30,22 +31,20 @@ std::string score_phase_summary(const PostProcessScorePhase &phase) {
     return out.str();
 }
 
-std::vector<Program> generate_candidates(const Program &program, std::span<const Example> examples, int num_inputs,
-                                         int num_outputs, const PackedExamples &packed,
+std::vector<Program> generate_candidates(const Program &program, VerificationOracle &oracle,
                                          const PostProcessOptions &options, const PostProcessScorePhase &phase,
                                          ProfileData *profile) {
+    const int num_inputs = oracle.num_inputs();
     const Program base = canonicalize_program(program, num_inputs);
     const std::string base_key = program_key(base);
-    const PackedMask all_mask = all_ones(packed.width);
-    const std::vector<PackedMask> values = evaluate_all_sources(base, packed.input_masks, all_mask);
     const std::size_t max_candidates = options.beam_candidates;
 
     std::set<std::string> seen;
     const std::size_t before_mask = profile == nullptr ? 0 : profile->post_processing_mask_candidates_accepted;
     const std::size_t before_replacement =
         profile == nullptr ? 0 : profile->post_processing_replacement_candidates_accepted;
-    std::vector<Program> candidates = generate_mask_simplification_candidates(
-        base, examples, num_inputs, num_outputs, packed, values, base_key, seen, max_candidates, options, profile);
+    std::vector<Program> candidates =
+        generate_mask_simplification_candidates(base, oracle, base_key, seen, max_candidates, options, profile);
     const std::size_t after_mask = profile == nullptr ? 0 : profile->post_processing_mask_candidates_accepted;
     const std::size_t after_replacement =
         profile == nullptr ? 0 : profile->post_processing_replacement_candidates_accepted;
@@ -56,9 +55,10 @@ std::vector<Program> generate_candidates(const Program &program, std::span<const
     }
     const std::size_t before_resynthesis =
         profile == nullptr ? 0 : profile->post_processing_resynthesis_candidates_accepted;
-    std::vector<Program> resynth_candidates = generate_resynthesis_candidates(
-        base, examples, num_inputs, num_outputs, packed, values, options, base_key, seen, max_candidates, profile);
-    candidates.insert(candidates.end(), resynth_candidates.begin(), resynth_candidates.end());
+    std::vector<Program> resynth_candidates =
+        generate_resynthesis_candidates(base, oracle, options, base_key, seen, max_candidates, profile);
+    candidates.insert(candidates.end(), std::make_move_iterator(resynth_candidates.begin()),
+                      std::make_move_iterator(resynth_candidates.end()));
     const std::size_t after_resynthesis =
         profile == nullptr ? 0 : profile->post_processing_resynthesis_candidates_accepted;
     if (options.logger != nullptr) {
@@ -67,19 +67,20 @@ std::vector<Program> generate_candidates(const Program &program, std::span<const
     }
 
     std::ranges::sort(candidates, [&](const Program &left, const Program &right) {
-        return score_program(left, num_inputs, packed, phase, options.random_seed) <
-               score_program(right, num_inputs, packed, phase, options.random_seed);
+        return score_program(left, num_inputs, oracle.packed(), phase, options.random_seed) <
+               score_program(right, num_inputs, oracle.packed(), phase, options.random_seed);
     });
     if (max_candidates != 0 && candidates.size() > max_candidates) candidates.resize(max_candidates);
     return candidates;
 }
 
-Program run_score_phase(const Program &start, std::span<const Example> examples, int num_inputs, int num_outputs,
-                        const PackedExamples &packed, const PostProcessOptions &options,
+Program run_score_phase(const Program &start, VerificationOracle &oracle, const PostProcessOptions &options,
                         const PostProcessScorePhase &phase, ProfileData *profile) {
+    const int num_inputs = oracle.num_inputs();
     Program best = start;
-    ProgramScore best_score = score_program(best, num_inputs, packed, phase, options.random_seed);
-    const ProgramScore start_score = best_score;
+    ProgramScore best_score = score_program(best, num_inputs, oracle.packed(), phase, options.random_seed);
+    ProgramScore start_score = best_score;
+    std::size_t scored_gen = oracle.basis_generation();
     std::vector<Program> beam{best};
     std::set<std::string> globally_seen{program_key(best)};
     const std::size_t max_rounds =
@@ -92,8 +93,7 @@ Program run_score_phase(const Program &start, std::span<const Example> examples,
         }
         std::vector<Program> next;
         for (const Program &state : beam) {
-            const std::vector<Program> candidates =
-                generate_candidates(state, examples, num_inputs, num_outputs, packed, options, phase, profile);
+            const std::vector<Program> candidates = generate_candidates(state, oracle, options, phase, profile);
             for (const Program &candidate : candidates) {
                 if (globally_seen.insert(program_key(candidate)).second) {
                     next.push_back(candidate);
@@ -101,19 +101,25 @@ Program run_score_phase(const Program &start, std::span<const Example> examples,
             }
         }
         if (next.empty()) break;
+        if (oracle.basis_generation() != scored_gen) {
+            scored_gen = oracle.basis_generation();
+            best_score = score_program(best, num_inputs, oracle.packed(), phase, options.random_seed);
+            start_score = score_program(start, num_inputs, oracle.packed(), phase, options.random_seed);
+        }
         if (options.logger != nullptr) {
             options.logger->log(3, "Post-process round " + std::to_string(round + 1) + " generated " +
                                        std::to_string(next.size()) + " new candidates");
         }
         std::ranges::sort(next, [&](const Program &left, const Program &right) {
-            return score_program(left, num_inputs, packed, phase, options.random_seed) <
-                   score_program(right, num_inputs, packed, phase, options.random_seed);
+            return score_program(left, num_inputs, oracle.packed(), phase, options.random_seed) <
+                   score_program(right, num_inputs, oracle.packed(), phase, options.random_seed);
         });
         if (next.size() > options.beam_width) next.resize(options.beam_width);
 
         bool improved = false;
         for (const Program &candidate : next) {
-            const ProgramScore score = score_program(candidate, num_inputs, packed, phase, options.random_seed);
+            const ProgramScore score =
+                score_program(candidate, num_inputs, oracle.packed(), phase, options.random_seed);
             if (score < best_score) {
                 best = candidate;
                 best_score = score;
@@ -142,10 +148,11 @@ Program post_process_program(const Program &program, std::span<const Example> ex
                                    " input instructions");
     }
 
-    const PackedExamples packed = pack_examples(examples, num_inputs, num_outputs);
+    VerificationOracle oracle(examples, num_inputs, num_outputs, options.verifier, profile);
     Program best = canonicalize_program(program, num_inputs);
     require_valid_program(best, num_inputs, num_outputs, "post-process pruned input program");
-    if (!verify_program(best, examples, num_inputs, num_outputs).empty()) return program;
+    const std::string best_key = program_key(best);
+    if (!oracle.verify_candidate(best, best_key)) return program;
 
     for (std::size_t phase_idx = 0; phase_idx < options.score_phases.size(); ++phase_idx) {
         const PostProcessScorePhase &phase = options.score_phases[phase_idx];
@@ -158,7 +165,7 @@ Program post_process_program(const Program &program, std::span<const Example> ex
                                        " metrics=" + score_phase_summary(phase));
         }
         const std::size_t before = best.instrs.size();
-        best = run_score_phase(best, examples, num_inputs, num_outputs, packed, options, phase, profile);
+        best = run_score_phase(best, oracle, options, phase, profile);
         if (best.instrs.size() < before && options.logger != nullptr) {
             options.logger->log(2, "Post-process phase " + std::to_string(phase_idx + 1) + " reduced program from " +
                                        std::to_string(before) + " to " + std::to_string(best.instrs.size()) +

@@ -80,6 +80,56 @@ std::string format_source(int idx, int num_inputs) {
     return "T" + std::to_string(temp_index_from_source(idx, num_inputs));
 }
 
+void PackedExamples::append_example(const Example &ex) {
+    if (ex.input_count() != input_masks.size() || ex.output_count() != output_values.size()) {
+        throw std::runtime_error("Example length does not match PackedExamples dimensions");
+    }
+    for (std::size_t i = 0; i < input_masks.size(); ++i) {
+        input_masks[i].push_back(ex.input(i));
+    }
+    for (std::size_t j = 0; j < output_values.size(); ++j) {
+        const bool dc = ex.output_dont_care[j];
+        output_dont_care_masks[j].push_back(dc);
+        output_values[j].push_back(!dc && ex.output_values[j]);
+    }
+    ++width;
+}
+
+PackedExamples PackedExamples::slice_words(std::size_t start_example, std::size_t count) const {
+    if (start_example > width) {
+        throw std::out_of_range("PackedExamples slice start out of range");
+    }
+    const std::size_t actual_count = std::min<std::size_t>(count, width - start_example);
+    PackedExamples result;
+    result.width = static_cast<unsigned>(actual_count);
+    auto slice_mask = [&](const PackedMask &src) {
+        if (actual_count == 0) return PackedMask(0);
+        if (start_example % 64 == 0) {
+            const std::size_t first_word = start_example / 64;
+            const std::size_t num_words = (actual_count + 63) / 64;
+            std::vector<std::uint64_t> words(num_words, 0);
+            for (std::size_t w = 0; w < num_words; ++w) {
+                words[w] = src.word(first_word + w);
+            }
+            return PackedMask(result.width, std::move(words));
+        }
+        PackedMask dst(result.width);
+        for (std::size_t idx = 0; idx < actual_count; ++idx) {
+            if (src.test(start_example + idx)) {
+                dst.set(idx);
+            }
+        }
+        return dst;
+    };
+    result.input_masks.reserve(input_masks.size());
+    for (const auto &m : input_masks) result.input_masks.push_back(slice_mask(m));
+    result.output_values.reserve(output_values.size());
+    for (const auto &m : output_values) result.output_values.push_back(slice_mask(m));
+    result.output_dont_care_masks.reserve(output_dont_care_masks.size());
+    for (const auto &m : output_dont_care_masks) result.output_dont_care_masks.push_back(slice_mask(m));
+    return result;
+}
+
 PackedExamples pack_examples(std::span<const Example> examples, int num_inputs, int num_outputs) {
     PackedExamples packed;
     packed.width = static_cast<unsigned>(examples.size());
@@ -125,18 +175,36 @@ std::vector<PackedMask> evaluate_program_masks(const Program &program, std::span
     return outputs;
 }
 
-std::vector<std::size_t> verify_program(const Program &program, std::span<const Example> examples, int num_inputs,
-                                        int num_outputs) {
-    if (examples.empty()) return {};
-    PackedExamples packed = pack_examples(examples, num_inputs, num_outputs);
+bool verify_program_packed_ok(const Program &program, const PackedExamples &packed, int num_outputs) {
+    if (packed.width == 0) return true;
     const PackedMask full_mask = all_ones(packed.width);
-    std::vector<PackedMask> actual = evaluate_program_masks(program, packed.input_masks, full_mask);
+    const std::vector<PackedMask> actual = evaluate_program_masks(program, packed.input_masks, full_mask);
+    for (int out_idx = 0; out_idx < num_outputs; ++out_idx) {
+        const PackedMask care_mask = full_mask ^ packed.output_dont_care_masks[out_idx];
+        if (!((actual[out_idx] ^ packed.output_values[out_idx]) & care_mask).is_zero()) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::vector<std::size_t> verify_program_packed(const Program &program, const PackedExamples &packed, int num_outputs) {
+    if (packed.width == 0) return {};
+    const PackedMask full_mask = all_ones(packed.width);
+    const std::vector<PackedMask> actual = evaluate_program_masks(program, packed.input_masks, full_mask);
     PackedMask mismatch_mask(packed.width);
     for (int out_idx = 0; out_idx < num_outputs; ++out_idx) {
         const PackedMask care_mask = full_mask ^ packed.output_dont_care_masks[out_idx];
         mismatch_mask = mismatch_mask | ((actual[out_idx] ^ packed.output_values[out_idx]) & care_mask);
     }
     return mismatch_mask.set_bit_indices();
+}
+
+std::vector<std::size_t> verify_program(const Program &program, std::span<const Example> examples, int num_inputs,
+                                        int num_outputs) {
+    if (examples.empty()) return {};
+    const PackedExamples packed = pack_examples(examples, num_inputs, num_outputs);
+    return verify_program_packed(program, packed, num_outputs);
 }
 
 void emit_program(std::ostream &out, const Program &program, int num_inputs) {

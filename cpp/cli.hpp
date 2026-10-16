@@ -24,6 +24,7 @@ struct CliOptions {
     bool cegis = false;
     std::size_t cegis_initial_size = 64;
     std::size_t cegis_counterexamples = 1;
+    std::optional<std::size_t> max_materialized_examples;
     bool no_shuffle = false;
     unsigned seed = 0;
     bool quiet = false;

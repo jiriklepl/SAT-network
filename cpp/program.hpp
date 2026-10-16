@@ -81,6 +81,9 @@ struct PackedExamples {
     std::vector<PackedMask> input_masks;
     std::vector<PackedMask> output_values;
     std::vector<PackedMask> output_dont_care_masks;
+
+    void append_example(const Example &ex);
+    PackedExamples slice_words(std::size_t start_example, std::size_t count) const;
 };
 
 const std::vector<LogicOperator> &logic_operators();
@@ -94,6 +97,8 @@ std::string format_source(int idx, int num_inputs);
 PackedExamples pack_examples(std::span<const Example> examples, int num_inputs, int num_outputs);
 std::vector<PackedMask> evaluate_program_masks(const Program &program, std::span<const PackedMask> input_masks,
                                                const PackedMask &all_examples_mask);
+bool verify_program_packed_ok(const Program &program, const PackedExamples &packed, int num_outputs);
+std::vector<std::size_t> verify_program_packed(const Program &program, const PackedExamples &packed, int num_outputs);
 std::vector<std::size_t> verify_program(const Program &program, std::span<const Example> examples, int num_inputs,
                                         int num_outputs);
 void emit_program(std::ostream &out, const Program &program, int num_inputs);

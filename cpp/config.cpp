@@ -74,7 +74,7 @@ Config load_explicit_examples(const nlohmann::json &cfg) {
     return result;
 }
 
-Config load_config(const std::string &path) {
+Config load_config(const std::string &path, const DatasetLoadOptions &options) {
     std::ifstream in(path);
     if (!in) {
         throw std::runtime_error("Config file not found: " + path);
@@ -83,5 +83,5 @@ Config load_config(const std::string &path) {
     in >> cfg;
 
     if (cfg.contains("examples")) return load_explicit_examples(cfg);
-    return build_dataset_from_config(cfg);
+    return build_dataset_from_config(cfg, options);
 }

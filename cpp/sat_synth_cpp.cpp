@@ -25,9 +25,26 @@ double elapsed_seconds(Clock::time_point start) {
     return std::chrono::duration<double>(Clock::now() - start).count();
 }
 
+bool exports_full_dataset(const CliOptions &cli) {
+    return cli.dump_dataset || cli.make_blif || cli.make_smt2 || cli.make_dimacs;
+}
+
 Config load_requested_config(const CliOptions &cli) {
-    Config cfg = cli.config_path.empty() ? build_dataset_from_config(default_dataset_config(cli.dataset_name))
-                                         : load_config(cli.config_path);
+    DatasetLoadOptions load_options;
+    load_options.max_materialized_examples =
+        cli.max_materialized_examples.value_or(exports_full_dataset(cli) ? kExportMaxMaterializedExamples
+                                                                         : kDefaultMaxMaterializedExamples);
+    load_options.basis_size = std::max(cli.cegis_initial_size, static_cast<std::size_t>(kDefaultBasisSize));
+    load_options.seed = cli.seed;
+    Config cfg = cli.config_path.empty()
+                     ? build_dataset_from_config(default_dataset_config(cli.dataset_name), load_options)
+                     : load_config(cli.config_path, load_options);
+    if (exports_full_dataset(cli) && !cfg.fully_materialized) {
+        throw std::runtime_error("the quantified dataset has " + std::to_string(cfg.domain_size) +
+                                 " rows, which exceeds --max-materialized-examples (" +
+                                 std::to_string(load_options.max_materialized_examples) +
+                                 "); it cannot be exported without unrolling");
+    }
     if (cli.instructions.has_value()) cfg.instructions = *cli.instructions;
     if (cfg.instructions < 0) throw std::runtime_error("--instructions must be non-negative");
     return cfg;
@@ -80,6 +97,7 @@ void print_profile(const ProfileData &profile) {
     std::cerr << "PROFILE post_processing_resynthesis_generator_seconds="
               << profile.post_processing_resynthesis_generator_seconds << "\n";
     std::cerr << "PROFILE packed_verification_seconds=" << profile.packed_verification_seconds << "\n";
+    std::cerr << "PROFILE symbolic_verifier_seconds=" << profile.symbolic_verifier_seconds << "\n";
     std::cerr << "PROFILE structure_constraints=" << profile.structure_constraints << "\n";
     std::cerr << "PROFILE example_constraints=" << profile.example_constraints << "\n";
     std::cerr << "PROFILE example_batches=" << profile.example_batches << "\n";
@@ -123,6 +141,8 @@ void print_profile(const ProfileData &profile) {
     std::cerr << "PROFILE post_processing_resynthesis_timeout_exits="
               << profile.post_processing_resynthesis_timeout_exits << "\n";
     std::cerr << "PROFILE verification_examples=" << profile.verification_examples << "\n";
+    std::cerr << "PROFILE symbolic_verifier_checks=" << profile.symbolic_verifier_checks << "\n";
+    std::cerr << "PROFILE symbolic_counterexamples=" << profile.symbolic_counterexamples << "\n";
     std::cerr << "PROFILE bv_cache_hits=" << profile.bv_cache_hits << "\n";
     std::cerr << "PROFILE bv_cache_misses=" << profile.bv_cache_misses << "\n";
 }

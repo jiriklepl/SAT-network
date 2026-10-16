@@ -14,6 +14,7 @@ struct ProfileData {
     double post_processing_replacement_generator_seconds = 0.0;
     double post_processing_resynthesis_generator_seconds = 0.0;
     double packed_verification_seconds = 0.0;
+    double symbolic_verifier_seconds = 0.0;
 
     std::size_t structure_constraints = 0;
     std::size_t example_constraints = 0;
@@ -42,6 +43,8 @@ struct ProfileData {
     std::size_t post_processing_resynthesis_candidates_accepted = 0;
     std::size_t post_processing_resynthesis_timeout_exits = 0;
     std::size_t verification_examples = 0;
+    std::size_t symbolic_verifier_checks = 0;
+    std::size_t symbolic_counterexamples = 0;
     std::size_t bv_cache_hits = 0;
     std::size_t bv_cache_misses = 0;
 };

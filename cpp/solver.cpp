@@ -6,6 +6,7 @@
 #include "postprocess.hpp"
 #include "profile.hpp"
 #include "program.hpp"
+#include "symbolic_verifier.hpp"
 
 #include <boost/dynamic_bitset.hpp>
 
@@ -15,6 +16,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <iterator>
+#include <memory>
 #include <optional>
 #include <span>
 #include <sstream>
@@ -97,15 +100,37 @@ std::vector<std::size_t> timed_verify_program(const Program &program, std::span<
     return mismatches;
 }
 
+std::vector< std::size_t> timed_verify_program_packed(const Program &program, const PackedExamples &packed,
+                                                      int num_outputs, ProfileData *profile) {
+    const auto start = Clock::now();
+    std::vector<std::size_t> mismatches = verify_program_packed(program, packed, num_outputs);
+    if (profile != nullptr) {
+        profile->packed_verification_seconds += elapsed_seconds(start);
+        profile->verification_examples += packed.width;
+    }
+    return mismatches;
+}
+
+std::vector<Example> timed_symbolic_check(SymbolicVerifier &verifier, const Program &program,
+                                          std::size_t max_counterexamples, ProfileData *profile) {
+    return verifier.find_counterexamples(program, max_counterexamples, std::nullopt, profile);
+}
+
+// Counterexample-guided synthesis. `cfg.examples` is checked natively with packed simulation; when `verifier` is
+// set (quantified datasets that are not unrolled) a candidate that passes all of them is additionally proven for
+// the whole quantified domain, and any counterexample is appended to `learned` and encoded into the solver.
 z3::check_result solve_with_cegis(z3::context &ctx, z3::solver &solver, const Config &cfg, const ProgramSpec &spec,
                                   const EncodingOptions &encoding, const SolveOptions &options,
+                                  SymbolicVerifier *verifier, std::vector<Example> &learned,
                                   std::optional<Program> &program) {
+    const PackedExamples packed_examples = pack_examples(cfg.examples, spec.num_inputs, spec.num_outputs);
     boost::dynamic_bitset<> active(cfg.examples.size());
     const std::size_t initial_count = std::min(options.cegis_initial_size, cfg.examples.size());
     active.set(0, initial_count, true);
     if (options.logger != nullptr) {
         options.logger->log(2, "CEGIS starting with " + std::to_string(initial_count) + "/" +
-                                   std::to_string(cfg.examples.size()) + " examples");
+                                   std::to_string(cfg.examples.size()) + " examples" +
+                                   (verifier != nullptr ? " (symbolic verification over the full domain)" : ""));
     }
     add_example_constraints(ctx, solver, std::span<const Example>(cfg.examples.begin(), initial_count), "cegis0", spec,
                             encoding, options.profile);
@@ -118,24 +143,30 @@ z3::check_result solve_with_cegis(z3::context &ctx, z3::solver &solver, const Co
 
         program = timed_extract_program(ctx, solver.get_model(), spec, options.profile);
         const std::vector<std::size_t> mismatches =
-            timed_verify_program(*program, cfg.examples, spec.num_inputs, spec.num_outputs, options.profile);
+            timed_verify_program_packed(*program, packed_examples, spec.num_outputs, options.profile);
         if (options.logger != nullptr) {
             options.logger->log(3, "CEGIS iteration " + std::to_string(iteration) + " verification found " +
                                        std::to_string(mismatches.size()) + " mismatches");
         }
-        if (mismatches.empty()) return result;
 
         std::vector<Example> counterexamples;
-        counterexamples.reserve(options.cegis_counterexamples);
-        for (const std::size_t idx : mismatches) {
-            if (!active.test(idx)) {
-                active.set(idx);
-                counterexamples.push_back(cfg.examples[idx]);
+        if (mismatches.empty()) {
+            if (verifier == nullptr) return result;
+            counterexamples = timed_symbolic_check(*verifier, *program, options.cegis_counterexamples, options.profile);
+            if (counterexamples.empty()) return result;
+            learned.insert(learned.end(), counterexamples.begin(), counterexamples.end());
+        } else {
+            counterexamples.reserve(options.cegis_counterexamples);
+            for (const std::size_t idx : mismatches) {
+                if (!active.test(idx)) {
+                    active.set(idx);
+                    counterexamples.push_back(cfg.examples[idx]);
+                }
+                if (counterexamples.size() >= options.cegis_counterexamples) break;
             }
-            if (counterexamples.size() >= options.cegis_counterexamples) break;
-        }
-        if (counterexamples.empty()) {
-            throw std::runtime_error("CEGIS candidate failed on already constrained examples");
+            if (counterexamples.empty()) {
+                throw std::runtime_error("CEGIS candidate failed on already constrained examples");
+            }
         }
         ++iteration;
         add_example_constraints(ctx, solver, counterexamples, "cegis" + std::to_string(iteration), spec, encoding,
@@ -192,10 +223,29 @@ SolveStatus map_status(z3::check_result result) {
 
 }  // namespace
 
+namespace {
+
+void require_materialized(const Config &cfg, const std::string &what) {
+    if (cfg.fully_materialized) return;
+    throw std::runtime_error(what + " needs the full dataset, but its quantified domain has " +
+                             std::to_string(cfg.domain_size) +
+                             " rows and was not unrolled; raise --max-materialized-examples to unroll it");
+}
+
+}  // namespace
+
 SolveResult solve_config(const Config &cfg, const SolveOptions &options) {
     const ProgramSpec spec{.num_inputs=cfg.num_inputs, .num_outputs=cfg.num_outputs, .program_length=cfg.instructions};
+    // Quantified domains that were not unrolled can only be solved by CEGIS against the symbolic verifier.
+    std::unique_ptr<SymbolicVerifier> verifier;
+    if (!cfg.fully_materialized) {
+        if (options.do_all) require_materialized(cfg, "--do-all");
+        if (!cfg.quantified) throw std::runtime_error("dataset is not materialized and has no quantified spec");
+        verifier = std::make_unique<SymbolicVerifier>(cfg.quantified);
+    }
+    const bool use_cegis = options.cegis || verifier != nullptr;
     if (options.logger != nullptr) {
-        const std::string mode = options.cegis ? "cegis" : (options.do_all ? "do-all" : "batched");
+        const std::string mode = use_cegis ? "cegis" : (options.do_all ? "do-all" : "batched");
         const std::string batch =
             options.batch_size.has_value() ? std::to_string(*options.batch_size) : std::string("all");
         options.logger->log(2, "Solving with solver=" + options.solver + ", mode=" + mode + ", batch-size=" + batch +
@@ -208,9 +258,11 @@ SolveResult solve_config(const Config &cfg, const SolveOptions &options) {
 
     const auto start = std::chrono::steady_clock::now();
     std::optional<Program> program;
+    std::vector<Example> learned;  // counterexamples discovered symbolically (not part of cfg.examples)
     const z3::check_result z3_result =
-        options.cegis ? solve_with_cegis(ctx, solver, cfg, spec, options.encoding, options, program)
-                      : solve_with_batches(ctx, solver, cfg, spec, options.encoding, options);
+        use_cegis ? solve_with_cegis(ctx, solver, cfg, spec, options.encoding, options, verifier.get(), learned,
+                                     program)
+                  : solve_with_batches(ctx, solver, cfg, spec, options.encoding, options);
     const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
 
     SolveResult result;
@@ -223,12 +275,28 @@ SolveResult solve_config(const Config &cfg, const SolveOptions &options) {
 
     if (!program.has_value()) program = timed_extract_program(ctx, solver.get_model(), spec, options.profile);
     program = canonicalize_program(*program, spec.num_inputs);
-    if (options.postprocess.enabled) {
-        program = timed_post_process_program(*program, cfg.examples, spec.num_inputs, spec.num_outputs,
-                                             options.postprocess, options.profile);
+    // The example basis: the dataset's rows plus anything the symbolic verifier taught us.
+    std::vector<Example> merged;
+    std::span<const Example> basis = cfg.examples;
+    if (!learned.empty()) {
+        merged = cfg.examples;
+        merged.insert(merged.end(), learned.begin(), learned.end());
+        basis = merged;
     }
-    const std::vector<std::size_t> mismatches =
-        timed_verify_program(*program, cfg.examples, spec.num_inputs, spec.num_outputs, options.profile);
+    if (options.postprocess.enabled) {
+        PostProcessOptions postprocess = options.postprocess;
+        postprocess.verifier = verifier.get();
+        program = timed_post_process_program(*program, basis, spec.num_inputs, spec.num_outputs, postprocess,
+                                             options.profile);
+    }
+    std::vector<std::size_t> mismatches =
+        timed_verify_program(*program, basis, spec.num_inputs, spec.num_outputs, options.profile);
+    if (mismatches.empty() && verifier != nullptr) {
+        // Final proof over the entire quantified domain.
+        const std::vector<Example> remaining =
+            verifier->find_counterexamples(*program, 1, std::nullopt, options.profile);
+        if (!remaining.empty()) mismatches.push_back(basis.size());
+    }
     if (options.logger != nullptr) {
         options.logger->log(3, "Final verification found " + std::to_string(mismatches.size()) + " mismatches");
     }
@@ -241,6 +309,7 @@ SolveResult solve_config(const Config &cfg, const SolveOptions &options) {
 }
 
 std::string make_smt2(const Config &cfg, const SolveOptions &options) {
+    require_materialized(cfg, "--make-smt2");
     const ProgramSpec spec{
         .num_inputs = cfg.num_inputs, .num_outputs = cfg.num_outputs, .program_length = cfg.instructions};
     z3::context ctx;
@@ -252,6 +321,7 @@ std::string make_smt2(const Config &cfg, const SolveOptions &options) {
 }
 
 std::string make_dimacs(const Config &cfg, const SolveOptions &options) {
+    require_materialized(cfg, "--make-dimacs");
     const ProgramSpec spec{
         .num_inputs = cfg.num_inputs, .num_outputs = cfg.num_outputs, .program_length = cfg.instructions};
     z3::context ctx;

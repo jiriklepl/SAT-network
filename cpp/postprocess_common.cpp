@@ -728,23 +728,24 @@ std::vector<PackedMask> evaluate_all_sources(const Program &program, std::span<c
 }
 
 bool push_unique_candidate(std::vector<Program> &candidates, std::set<std::string> &seen, const Program &candidate,
-                           const std::string &base_key, std::span<const Example> examples, int num_inputs,
-                           int num_outputs, PostProcessGeneratorRun &generator) {
+                           const std::string &base_key, VerificationOracle &oracle,
+                           PostProcessGeneratorRun &generator) {
     Program canonical;
     try {
-        canonical = canonicalize_program(candidate, num_inputs);
+        canonical = canonicalize_program(candidate, oracle.num_inputs());
     } catch (const std::exception &) {
         generator.invalid_candidate();
         return false;
     }
     const std::string key = program_key(canonical);
     if (key == base_key || !seen.insert(key).second) return false;
-    if (const std::optional<std::string> error = validate_program_invariants(canonical, num_inputs, num_outputs)) {
+    if (const std::optional<std::string> error =
+            validate_program_invariants(canonical, oracle.num_inputs(), oracle.num_outputs())) {
         generator.invalid_candidate();
         return false;
     }
-    if (!verify_program(canonical, examples, num_inputs, num_outputs).empty()) return false;
-    candidates.push_back(canonical);
+    if (!oracle.verify_candidate(canonical, key, generator.remaining_timeout_ms())) return false;
+    candidates.push_back(std::move(canonical));
     generator.candidate_accepted();
     return true;
 }

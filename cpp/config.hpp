@@ -8,4 +8,4 @@
 
 nlohmann::json config_to_json(const Config &cfg);
 Config load_explicit_examples(const nlohmann::json &cfg);
-Config load_config(const std::string &path);
+Config load_config(const std::string &path, const DatasetLoadOptions &options = {});

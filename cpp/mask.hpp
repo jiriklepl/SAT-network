@@ -13,9 +13,11 @@ public:
 
     unsigned width() const;
     std::span<const std::uint64_t> words() const;
+    std::uint64_t word(std::size_t word_idx) const noexcept;
     bool is_zero() const;
     bool test(std::size_t idx) const;
     void set(std::size_t idx);
+    void push_back(bool bit);
     std::vector<std::size_t> set_bit_indices() const;
 
     friend bool operator==(const PackedMask &left, const PackedMask &right);

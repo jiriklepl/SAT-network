@@ -108,6 +108,7 @@ cxxopts::Options make_options() {
         ("cegis", "Use counterexample-guided solving")
         ("cegis-initial-size", "Initial number of examples for --cegis", cxxopts::value<std::size_t>()->default_value("64"))
         ("cegis-counterexamples", "Maximum counterexamples to add per CEGIS iteration", cxxopts::value<std::size_t>()->default_value("1"))
+        ("max-materialized-examples", "Largest quantified dataset to unroll into explicit examples; bigger domains are solved symbolically with CEGIS", cxxopts::value<std::size_t>())
         ("no-shuffle", "Disable shuffling of examples")
         ("seed", "Seed for shuffling examples", cxxopts::value<unsigned>()->default_value("0"))
         ("quiet", "Suppress informational output")
@@ -150,6 +151,9 @@ CliOptions parse_args(int argc, char **argv) {
     options.cegis = parsed.contains("cegis");
     options.cegis_initial_size = parsed["cegis-initial-size"].as<std::size_t>();
     options.cegis_counterexamples = parsed["cegis-counterexamples"].as<std::size_t>();
+    if (parsed.contains("max-materialized-examples")) {
+        options.max_materialized_examples = parsed["max-materialized-examples"].as<std::size_t>();
+    }
     options.no_shuffle = parsed.contains("no-shuffle");
     options.seed = parsed["seed"].as<unsigned>();
     options.quiet = parsed.contains("quiet");
