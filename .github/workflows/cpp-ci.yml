@@ -8,19 +8,19 @@ jobs:
   build-and-test:
     strategy:
       matrix:
-        compiler: [g++-14, clang++-20]
+        compiler: [g++-15, clang++-22]
         include:
-          - compiler: g++-14
-            name: "GCC 14"
-            install: sudo apt-get install -y g++-14
-          - compiler: clang++-20
-            name: "Clang 20"
-            install: sudo apt-get install -y clang-20
-    runs-on: ubuntu-24.04
+          - compiler: g++-15
+            name: "GCC 15"
+            install: sudo apt-get install -y g++-15
+          - compiler: clang++-22
+            name: "Clang 22"
+            install: sudo apt-get install -y clang-22
+    runs-on: ubuntu-26.04
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
