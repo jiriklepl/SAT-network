@@ -740,7 +740,9 @@ std::shared_ptr<QuantifiedSpec> compile_dataset_spec(const nlohmann::json &spec,
     compiled->num_outputs = static_cast<int>(eval_static_expr(spec.at("num_outputs")));
     const int default_instructions =
         spec.contains("instructions") ? static_cast<int>(eval_static_expr(spec.at("instructions"))) : kDefaultProgramLength;
-    compiled->instructions = runtime_cfg.value("instructions", default_instructions);
+    compiled->instructions = runtime_cfg.contains("instructions")
+                                 ? static_cast<int>(eval_static_expr(runtime_cfg.at("instructions")))
+                                 : default_instructions;
 
     if (spec.contains("forall")) {
         for (const auto &q_json : spec.at("forall")) {
