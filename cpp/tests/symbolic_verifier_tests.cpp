@@ -293,3 +293,244 @@ TEST_CASE("symbolic datasets reject operations that need every row") {
     REQUIRE_THROWS(solve_config(cfg, do_all));
 }
 
+TEST_CASE("symbolic lowering matches native evaluation across all scalar and boolean operators") {
+    // Exercises every BinaryOp, UnaryOp, Ternary, Popcount, Count, TupleIndex (static & dynamic),
+    // Quantifier::Range, Quantifier::Values, Quantifier::Tuple, and where filtering in both
+    // let_row (Lowering::to_int) and outputs (Lowering::to_bool / Lowering::emit).
+    nlohmann::json spec = {
+        {"instructions", 6},
+        {"let", {{"w", "required_bits(4)"}}},
+        {"num_inputs", "2 + w + 6"},
+        {"num_outputs", 18},
+        {"forall",
+         nlohmann::json::array({
+             nlohmann::json{{"var", "a"}, {"range", {0, 4}}},
+             nlohmann::json{{"var", "b"}, {"values", {0, 1, 2, 3}}},
+             nlohmann::json{{"var", "cells"}, {"tuple", {{"size", 3}, {"range", {0, 4}}}}},
+         })},
+        {"let_row",
+         {
+             // Relational operators evaluated as integers via Lowering::to_int:
+             {"r_eq", "a == b"},
+             {"r_ne", "a != b"},
+             {"r_lt", "a < b"},
+             {"r_le", "a <= b"},
+             {"r_gt", "a > b"},
+             {"r_ge", "a >= b"},
+             // Logical operators evaluated as integers via Lowering::to_int:
+             {"r_and", "(a == 1) && (b == 2)"},
+             {"r_or", "(a == 0) || (b == 3)"},
+             {"r_not", "!(a == b)"},
+             // Arithmetic, bitwise, shift, unary operators in Lowering::to_int:
+             {"r_arith", "((a + b) * 3 - (a / (b + 1))) % (b + 2)"},
+             {"r_neg", "(-a) + (~b)"},
+             {"r_shift", "((a + 1) << (b & 1)) + ((a - 3) >> 1)"},
+             {"r_bitops", "(a & b) ^ (a | b)"},
+             // Functions and tuple operations in Lowering::to_int:
+             {"r_pop", "popcount(a ^ b) + popcount(~a)"},
+             {"r_cnt_all", "count(cells, a)"},
+             {"r_cnt_tail", "count(cells, b, 1)"},
+             {"r_dyn_cell", "cells[a % 3]"},
+             {"r_tern", "r_eq ? (r_arith + r_dyn_cell) : (r_pop + r_cnt_all + r_cnt_tail)"},
+             {"r_bit_fn", "bit(a == 2)"},
+         }},
+        {"where", "!(a == 3 && b == 3) && cells[0] <= 2"},
+        {"inputs", {"bits(a, 2)", "bits(b, w)", "state_bits(cells, 2)"}},
+        {"outputs",
+         {
+             "bit(r_eq)",
+             "bit(r_ne)",
+             "bit(r_lt)",
+             "bit(r_le)",
+             "bit(r_gt)",
+             "bit(r_ge)",
+             "bit(r_and)",
+             "bit(r_or)",
+             "bit(r_not)",
+             "bits(r_arith, 2)",
+             "bit((r_neg & 1) != 0)",
+             "bit((r_shift & 1) != 0)",
+             "bit((r_bitops & 1) != 0)",
+             "bit((r_tern & 1) != 0)",
+             "bit(r_bit_fn)",
+             "a == 0 ? null : bit(cells[0] == cells[2])",
+             "true ? bit(false || (a + b >= 3)) : bit(true)",
+         }},
+    };
+
+    const Config exact = build_dataset_from_config(spec);
+    REQUIRE(exact.fully_materialized);
+    REQUIRE(exact.examples.size() == (4 * 4 - 1) * 3 * 4 * 4);
+
+    SymbolicVerifier verifier(exact.quantified);
+    std::mt19937 rng(20261017);
+    for (int round = 0; round < 20; ++round) {
+        const Program program = random_program(rng, exact.num_inputs, exact.num_outputs, 6);
+        const bool has_mismatch =
+            !verify_program(program, exact.examples, exact.num_inputs, exact.num_outputs).empty();
+        const std::vector<Example> counterexamples = verifier.find_counterexamples(program, 4);
+        REQUIRE(has_mismatch == !counterexamples.empty());
+        REQUIRE(counterexamples.size() <= 4);
+        for (const Example &cex : counterexamples) {
+            REQUIRE_FALSE(
+                verify_program(program, std::span<const Example>(&cex, 1), exact.num_inputs, exact.num_outputs)
+                    .empty());
+        }
+    }
+}
+
+TEST_CASE("symbolic verifier handles empty quantifier domains") {
+    {
+        const Config cfg = build_dataset_from_config(xor_spec(1), force_symbolic());
+        auto empty_range = std::const_pointer_cast<QuantifiedSpec>(cfg.quantified);
+        empty_range->quantifiers[0].spec = Quantifier::Range{.slot = 0, .start = 3, .end = 3};
+        SymbolicVerifier range_verifier(empty_range);
+        Program p{.instrs = {}, .outputs = {kSourceConstantOne}};
+        REQUIRE(range_verifier.find_counterexamples(p).empty());
+    }
+    {
+        const Config cfg = build_dataset_from_config(xor_spec(1), force_symbolic());
+        auto empty_values = std::const_pointer_cast<QuantifiedSpec>(cfg.quantified);
+        empty_values->quantifiers[0].spec = Quantifier::Values{.slot = 0, .values = {}};
+        SymbolicVerifier values_verifier(empty_values);
+        Program p{.instrs = {}, .outputs = {kSourceConstantOne}};
+        REQUIRE(values_verifier.find_counterexamples(p).empty());
+    }
+}
+
+TEST_CASE("symbolic verifier rejects out-of-range and invalid specifications") {
+    REQUIRE_THROWS_AS(SymbolicVerifier(nullptr), std::invalid_argument);
+
+    {
+        const Config cfg = build_dataset_from_config(xor_spec(1), force_symbolic());
+        auto neg_range = std::const_pointer_cast<QuantifiedSpec>(cfg.quantified);
+        neg_range->quantifiers[0].spec = Quantifier::Range{.slot = 0, .start = -1, .end = 2};
+        REQUIRE_THROWS(SymbolicVerifier(neg_range));
+    }
+    {
+        const Config cfg = build_dataset_from_config(xor_spec(1), force_symbolic());
+        auto huge_range = std::const_pointer_cast<QuantifiedSpec>(cfg.quantified);
+        huge_range->quantifiers[0].spec = Quantifier::Range{.slot = 0, .start = 0, .end = (std::int64_t{1} << 30) + 1};
+        REQUIRE_THROWS(SymbolicVerifier(huge_range));
+    }
+    {
+        const Config cfg = build_dataset_from_config(xor_spec(1), force_symbolic());
+        auto neg_values = std::const_pointer_cast<QuantifiedSpec>(cfg.quantified);
+        neg_values->quantifiers[0].spec = Quantifier::Values{.slot = 0, .values = {0, -1}};
+        REQUIRE_THROWS(SymbolicVerifier(neg_values));
+    }
+    const Config base = build_dataset_from_config(xor_spec(1), force_symbolic());
+
+    // Dynamic required_bits() must be rejected by SymbolicVerifier
+    {
+        nlohmann::json bad_req_bits = {
+            {"instructions", 1},
+            {"num_inputs", 1},
+            {"num_outputs", 1},
+            {"forall", nlohmann::json::array({nlohmann::json{{"var", "a"}, {"range", {1, 3}}}})},
+            {"inputs", {"bit(a)"}},
+            {"outputs", {"bit(required_bits(a))"}},
+        };
+        const Config cfg = build_dataset_from_config(bad_req_bits, force_symbolic());
+        REQUIRE_THROWS(SymbolicVerifier(cfg.quantified));
+    }
+
+    // Dynamic count() start index must be rejected by SymbolicVerifier
+    {
+        nlohmann::json bad_count_start = {
+            {"instructions", 1},
+            {"num_inputs", 2},
+            {"num_outputs", 1},
+            {"forall",
+             nlohmann::json::array({
+                 nlohmann::json{{"var", "a"}, {"range", {0, 2}}},
+                 nlohmann::json{{"var", "cells"}, {"tuple", {{"size", 2}, {"range", {0, 2}}}}},
+             })},
+            {"inputs", {"state_bits(cells, 1)"}},
+            {"outputs", {"bit(count(cells, 1, a))"}},
+        };
+        const Config cfg = build_dataset_from_config(bad_count_start, force_symbolic());
+        REQUIRE_THROWS(SymbolicVerifier(cfg.quantified));
+    }
+
+    // Dynamic bits() width must be rejected by SymbolicVerifier
+    {
+        nlohmann::json bad_bits_width = {
+            {"instructions", 1},
+            {"num_inputs", 1},
+            {"num_outputs", 1},
+            {"forall", nlohmann::json::array({nlohmann::json{{"var", "a"}, {"range", {1, 2}}}})},
+            {"inputs", {"bit(a)"}},
+            {"outputs", {"bits(a, a)"}},
+        };
+        const Config cfg = build_dataset_from_config(bad_bits_width, force_symbolic());
+        REQUIRE_THROWS(SymbolicVerifier(cfg.quantified));
+    }
+
+    // Mismatched ternary emitter branch widths must be rejected by SymbolicVerifier
+    {
+        nlohmann::json bad_ternary_emit = {
+            {"instructions", 1},
+            {"num_inputs", 1},
+            {"num_outputs", 1},
+            {"forall", nlohmann::json::array({nlohmann::json{{"var", "a"}, {"range", {0, 2}}}})},
+            {"inputs", {"bit(a)"}},
+            {"outputs", {"a == 0 ? bits(a, 1) : bits(a, 2)"}},
+        };
+        // force_symbolic with basis_size=1 where corner a=0 has width 1
+        DatasetLoadOptions opts;
+        opts.max_materialized_examples = 0;
+        opts.basis_size = 1;
+        const Config cfg = build_dataset_from_config(bad_ternary_emit, opts);
+        REQUIRE_THROWS(SymbolicVerifier(cfg.quantified));
+    }
+
+    SymbolicVerifier verifier(base.quantified);
+    // Wrong output count
+    REQUIRE_THROWS_AS(verifier.find_counterexamples(Program{.instrs = {}, .outputs = {}}), std::invalid_argument);
+    // Out-of-bounds source wire
+    REQUIRE_THROWS_AS(verifier.find_counterexamples(Program{.instrs = {}, .outputs = {99}}), std::invalid_argument);
+    // Unknown opcode
+    REQUIRE_THROWS_AS(
+        verifier.find_counterexamples(Program{.instrs = {{99, 1, 2}}, .outputs = {3}}), std::invalid_argument);
+}
+
+TEST_CASE("VerificationOracle caches verified keys, tracks basis generation, and handles timeouts") {
+    const Config cfg = build_dataset_from_config(xor_spec(1), force_symbolic());
+    SymbolicVerifier verifier(cfg.quantified);
+    ProfileData profile;
+
+    std::vector<Example> init_basis = {cfg.examples.front()};
+    VerificationOracle oracle(init_basis, cfg.num_inputs, cfg.num_outputs, &verifier, &profile);
+    REQUIRE(oracle.basis_generation() == 0);
+    REQUIRE(oracle.examples().size() == 1);
+
+    // Wrong program: OUT0 = I0 (matches (0,0)->0 but fails on (0,1)->1)
+    const Program wrong_prog{.instrs = {}, .outputs = {input_source(0)}};
+    REQUIRE_FALSE(oracle.verify_candidate(wrong_prog, "wrong_key", std::nullopt, 2));
+    REQUIRE(oracle.basis_generation() == 1);
+    REQUIRE(oracle.examples().size() > 1);
+    REQUIRE(profile.symbolic_verifier_checks == 1);
+
+    // Correct program: T0 = XOR(I0, I1), OUT0 = T0
+    const Program right_prog{.instrs = {{kOpXor, input_source(0), input_source(1)}}, .outputs = {temp_source(0, 2)}};
+    // Timeout <= 0 before verification causes conservative rejection without a Z3 check
+    bool timed_out = false;
+    REQUIRE(verifier.find_counterexamples(right_prog, 1, 0, &profile, &timed_out).empty());
+    REQUIRE(timed_out);
+    REQUIRE_FALSE(oracle.verify_candidate(right_prog, "right_key", 0, 1));
+    REQUIRE(profile.symbolic_verifier_checks == 1);
+
+    // Normal verification succeeds and caches "right_key"
+    REQUIRE(oracle.verify_candidate(right_prog, "right_key", std::nullopt, 1));
+    REQUIRE(profile.symbolic_verifier_checks == 2);
+
+    // Second call with the same canonical key hits the cache without running Z3
+    REQUIRE(oracle.verify_candidate(right_prog, "right_key", std::nullopt, 1));
+    REQUIRE(profile.symbolic_verifier_checks == 2);
+
+    // Pre-marking a key also skips Z3 verification
+    oracle.mark_verified("pre_marked_key");
+    REQUIRE(oracle.verify_candidate(right_prog, "pre_marked_key", std::nullopt, 1));
+    REQUIRE(profile.symbolic_verifier_checks == 2);
+}
