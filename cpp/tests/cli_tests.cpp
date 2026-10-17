@@ -209,4 +209,30 @@ TEST_CASE("usage text mentions main input modes") {
     REQUIRE(out.str().find("--post-process-replace-patience") != std::string::npos);
     REQUIRE(out.str().find("--generator-timeout") != std::string::npos);
     REQUIRE(out.str().find("--list-datasets") != std::string::npos);
+    REQUIRE(out.str().find("--max-materialized-examples") != std::string::npos);
+}
+
+TEST_CASE("CLI parses max-materialized-examples, batching, seed, do-all, and dump-dataset") {
+    const char *argv[] = {
+        "sat_synth_cpp",
+        "--dataset",
+        "adder",
+        "--max-materialized-examples",
+        "128",
+        "--batch-size",
+        "16",
+        "--do-all",
+        "--seed",
+        "99",
+        "--dump-dataset",
+    };
+    CliOptions options = parse_args(static_cast<int>(std::size(argv)), const_cast<char **>(argv));
+    REQUIRE(options.dataset_name == "adder");
+    REQUIRE(options.max_materialized_examples.has_value());
+    REQUIRE(*options.max_materialized_examples == 128);
+    REQUIRE(options.batch_size.has_value());
+    REQUIRE(*options.batch_size == 16);
+    REQUIRE(options.do_all);
+    REQUIRE(options.seed == 99U);
+    REQUIRE(options.dump_dataset);
 }
