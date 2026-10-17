@@ -13,17 +13,23 @@ from main import OP_BY_LABEL, _verify_program
 
 def _cpp_binary() -> Path | None:
     env_path = os.environ.get("SAT_SYNTH_CPP")
-    candidates = []
     if env_path:
-        candidates.append(Path(env_path))
-    candidates.extend([
-        Path("build/sat_synth_cpp"),
-        Path("cmake-build-debug/sat_synth_cpp"),
-    ])
-    for candidate in candidates:
+        candidate = Path(env_path)
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return candidate
-    return None
+        return None
+    candidates = [
+        Path("build/release/sat_synth_cpp"),
+        Path("build/release-with-debug-info/sat_synth_cpp"),
+        Path("build/debug/sat_synth_cpp"),
+        Path("build/debug-sanitize/sat_synth_cpp"),
+        Path("build/sat_synth_cpp"),
+        Path("cmake-build-debug/sat_synth_cpp"),
+    ]
+    valid = [c for c in candidates if c.is_file() and os.access(c, os.X_OK)]
+    if not valid:
+        return None
+    return max(valid, key=lambda c: c.stat().st_mtime)
 
 
 def _parse_source(raw: str, num_inputs: int) -> int:
@@ -886,6 +892,27 @@ class CppSolverIntegrationTests(unittest.TestCase):
         self.assertRegex(proc.stderr, r"PROFILE post_processing_mask_candidates_materialized=[1-9]")
         self.assertRegex(proc.stderr, r"PROFILE post_processing_resynthesis_windows_considered=[1-9]")
         self.assertRegex(proc.stderr, r"PROFILE post_processing_resynthesis_candidates_materialized=[1-9]")
+
+    def test_symbolic_cegis_and_post_process_via_max_materialized_examples(self) -> None:
+        examples, num_inputs, num_outputs = get_plugin("adder")(get_plugin_config("adder"))
+        proc = self.run_cpp_args(
+            [
+                "--dataset",
+                "adder",
+                "--instructions",
+                "6",
+                "--max-materialized-examples",
+                "2",
+                "--cegis-initial-size",
+                "2",
+                "--post-process",
+                "--profile",
+            ]
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertRegex(proc.stderr, r"PROFILE symbolic_verifier_checks=[1-9]")
+        instrs, outputs = _parse_program(proc.stdout, num_inputs, num_outputs)
+        self.assertEqual(_verify_program(instrs, outputs, examples, num_outputs), [])
 
 
 if __name__ == "__main__":
