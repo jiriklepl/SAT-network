@@ -158,3 +158,173 @@ TEST_CASE("declarative quantified dataset specs and parameter constraints are ev
     REQUIRE(inline_quantified.examples[3].output(0) == false);
 }
 
+TEST_CASE("expression parser and native evaluator cover all operators and built-in functions") {
+    nlohmann::json spec = {
+        {"params",
+         {
+             {"flag", {{"default", true}, {"path", {"custom.flag", "fallback.flag"}}}},
+             {"offset", {{"default", 3}, {"path", "custom.offset"}}},
+         }},
+        {"let",
+         {
+             {"w", "required_bits(4)"},
+             {"derived", "+offset + (flag ? 1 : 0)"},
+         }},
+        {"instructions", "derived"},
+        {"num_inputs", "w + 2"},
+        {"num_outputs", 12},
+        {"forall",
+         nlohmann::json::array({
+             nlohmann::json{{"var", "a"}, {"values", {1, 3}}},
+             nlohmann::json{{"var", "cells"}, {"tuple", {{"size", 2}, {"range", {0, 2}}}}},
+         })},
+        {"let_row",
+         {
+             {"sum_cells", "cells[0] + cells[1]"},
+             {"dyn_cell", "cells[a == 3 ? 1 : 0]"},
+             {"cnt_ones", "count(cells, 1)"},
+             {"cnt_tail", "count(cells, 1, 1)"},
+             {"pop", "popcount(a)"},
+         }},
+        {"where", "!(a == 1 && cells[0] == 1 && cells[1] == 1)"},
+        {"inputs", {"bits(a, w)", "state_bits(cells, 1)"}},
+        {"outputs",
+         {
+             "bit(a == 3 && sum_cells >= 1)",
+             "bit(a == 1 || sum_cells == 0)",
+             "bit((a + 5) / 2 == 3 && (a + 5) % 2 == 0)",
+             "bit((a << 1) >> 1 == a)",
+             "bit(((a & 1) ^ (a | 2)) != 0)",
+             "bit((-a < 0) && (~0 < 0))",
+             "bit(dyn_cell <= 1 && dyn_cell >= 0)",
+             "bit(cnt_ones > cnt_tail)",
+             "bit(pop == (a == 3 ? 2 : 1))",
+             "a == 1 ? null : bit(true)",
+             "bit(false)",
+             "sum_cells == 1",
+         }},
+    };
+
+    const Config cfg = build_dataset_from_config(spec);
+    REQUIRE(cfg.instructions == 4);
+    REQUIRE(cfg.num_inputs == 4);
+    REQUIRE(cfg.num_outputs == 12);
+    // Total domain is 2 * 2 * 2 = 8, minus 1 filtered by `where` = 7
+    REQUIRE(cfg.examples.size() == 7);
+    // First row: a=1, cells=(0, 0) -> a==1 so output 9 is null (don't care), output 10 is false
+    REQUIRE_FALSE(cfg.examples.front().output(9).has_value());
+    REQUIRE(cfg.examples.front().output(10) == false);
+}
+
+TEST_CASE("expression parser and dataset compiler reject invalid expressions and configs") {
+    // Unknown dataset or path traversal
+    REQUIRE_THROWS(build_dataset_from_config(nlohmann::json{{"type", "../adder"}}));
+    REQUIRE_THROWS(build_dataset_from_config(nlohmann::json{{"type", "a/b"}}));
+    REQUIRE_THROWS(build_dataset_from_config(nlohmann::json::object()));
+
+    auto base_spec = []() -> nlohmann::json {
+        return {
+            {"instructions", 1},
+            {"num_inputs", 1},
+            {"num_outputs", 1},
+            {"forall", nlohmann::json::array({nlohmann::json{{"var", "a"}, {"range", {0, 2}}}})},
+            {"inputs", {"bit(a)"}},
+            {"outputs", {"bit(a)"}},
+        };
+    };
+
+    // Cyclic static let
+    {
+        nlohmann::json s = base_spec();
+        s["let"] = {{"x", "y + 1"}, {"y", "x + 1"}};
+        REQUIRE_THROWS(build_dataset_from_config(s));
+    }
+
+    // Cyclic let_row
+    {
+        nlohmann::json s = base_spec();
+        s["let_row"] = {{"x", "y + 1"}, {"y", "x + 1"}};
+        s["outputs"] = {"bit(x)"};
+        REQUIRE_THROWS(build_dataset_from_config(s));
+    }
+
+    // Division by zero and modulo by zero
+    {
+        nlohmann::json s = base_spec();
+        s["outputs"] = {"bit(1 / 0)"};
+        require_throws_message(s, "Division by zero in dataset expression");
+    }
+    {
+        nlohmann::json s = base_spec();
+        s["outputs"] = {"bit(1 % 0)"};
+        require_throws_message(s, "Modulo by zero in dataset expression");
+    }
+
+    // Unknown variable, unknown tuple, unknown function, trailing characters
+    {
+        nlohmann::json s = base_spec();
+        s["outputs"] = {"bit(unknown_var)"};
+        REQUIRE_THROWS(build_dataset_from_config(s));
+    }
+    {
+        nlohmann::json s = base_spec();
+        s["outputs"] = {"bit(unknown_tuple[0])"};
+        REQUIRE_THROWS(build_dataset_from_config(s));
+    }
+    {
+        nlohmann::json s = base_spec();
+        s["outputs"] = {"bit(unknown_fn(a))"};
+        REQUIRE_THROWS(build_dataset_from_config(s));
+    }
+    {
+        nlohmann::json s = base_spec();
+        s["outputs"] = {"bit(a) trailing"};
+        REQUIRE_THROWS(build_dataset_from_config(s));
+    }
+
+    // Tuple index out of bounds
+    {
+        nlohmann::json s = base_spec();
+        s["forall"] = nlohmann::json::array({nlohmann::json{{"var", "cells"}, {"tuple", {{"size", 2}, {"range", {0, 2}}}}}});
+        s["inputs"] = {"state_bits(cells, 1)"};
+        s["num_inputs"] = 2;
+        s["outputs"] = {"bit(cells[5])"};
+        require_throws_message(s, "Tuple index out of bounds");
+    }
+
+    // Null in inputs or scalar context, bit-list in scalar context, negative bits width
+    {
+        nlohmann::json s = base_spec();
+        s["inputs"] = {"null"};
+        require_throws_message(s, "input values cannot be null");
+    }
+    {
+        nlohmann::json s = base_spec();
+        s["outputs"] = {"bit(1 + null)"};
+        require_throws_message(s, "null cannot be evaluated as a scalar");
+    }
+    {
+        nlohmann::json s = base_spec();
+        s["outputs"] = {"bit(1 + bits(a, 1))"};
+        require_throws_message(s, "Bit-list expression cannot be evaluated as a scalar");
+    }
+    {
+        nlohmann::json s = base_spec();
+        s["outputs"] = {"bits(a, -1)"};
+        require_throws_message(s, "bits() width must be non-negative");
+    }
+
+    // Empty dataset after where filtering
+    {
+        nlohmann::json s = base_spec();
+        s["where"] = "0";
+        require_throws_message(s, "Dataset contains no examples");
+    }
+
+    // Zero max_examples in sample_section
+    {
+        nlohmann::json sampled_life = default_dataset_config("life");
+        sampled_life["life"] = {{"max_examples", 0}};
+        require_throws_message(sampled_life, "life.max_examples must be positive");
+    }
+}
