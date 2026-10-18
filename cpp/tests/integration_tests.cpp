@@ -305,7 +305,7 @@ TEST_CASE("CLI exports SMT2, DIMACS, and BLIF formats and validates export const
         REQUIRE(res.stdout_text.contains("assert"));
         REQUIRE(res.stdout_text.contains("b0"));
         REQUIRE(res.stdout_text.contains("b1"));
-        REQUIRE(!res.stdout_text.contains("T0:"));
+        REQUIRE_FALSE(res.stdout_text.contains("T0:"));
     }
 
     SECTION("--make-smt2 accepts assumptions") {
@@ -332,7 +332,7 @@ TEST_CASE("CLI exports SMT2, DIMACS, and BLIF formats and validates export const
         const CliRunResult res = invoke_cli_config(config, {"--make-dimacs", "--batch-size", "2", "--no-shuffle"});
         REQUIRE(res.returncode == 0);
         REQUIRE(res.stdout_text.contains("p cnf "));
-        REQUIRE(!res.stdout_text.contains("T0:"));
+        REQUIRE_FALSE(res.stdout_text.contains("T0:"));
     }
 
     SECTION("--make-blif outputs truth table and rejects don't-care outputs") {
@@ -343,7 +343,7 @@ TEST_CASE("CLI exports SMT2, DIMACS, and BLIF formats and validates export const
         REQUIRE(res.stdout_text.contains(".outputs OUT0"));
         REQUIRE(res.stdout_text.contains("01 1"));
         REQUIRE(res.stdout_text.contains("10 1"));
-        REQUIRE(!res.stdout_text.contains("T0:"));
+        REQUIRE_FALSE(res.stdout_text.contains("T0:"));
 
         const json dc_config = {
             {"num_inputs", 1},
@@ -365,7 +365,7 @@ TEST_CASE("CLI exports SMT2, DIMACS, and BLIF formats and validates export const
         REQUIRE(res.stdout_text.contains("10 1"));
         REQUIRE(res.stdout_text.contains("01 1"));
         REQUIRE(res.stdout_text.contains(".names T0 OUT0"));
-        REQUIRE(!res.stdout_text.contains("T0:"));
+        REQUIRE_FALSE(res.stdout_text.contains("T0:"));
     }
 }
 
@@ -389,8 +389,8 @@ TEST_CASE("CLI post-processing workflows shorten programs and preserve semantics
         REQUIRE(res.stdout_text.contains(".model spec"));
         REQUIRE(res.stdout_text.contains(".names I0 I1 T0"));
         REQUIRE(res.stdout_text.contains(".names T0 OUT0"));
-        REQUIRE(!res.stdout_text.contains("T1"));
-        REQUIRE(!res.stdout_text.contains("T0:"));
+        REQUIRE_FALSE(res.stdout_text.contains("T1"));
+        REQUIRE_FALSE(res.stdout_text.contains("T0:"));
     }
 
     SECTION("resynthesis post-processing shortens assumed program and works with --output-blif") {
@@ -426,7 +426,7 @@ TEST_CASE("CLI post-processing workflows shorten programs and preserve semantics
         REQUIRE(blif_res.returncode == 0);
         REQUIRE(blif_res.stdout_text.contains(".model spec"));
         REQUIRE(blif_res.stdout_text.contains(".names T0 OUT0"));
-        REQUIRE(!blif_res.stdout_text.contains("T1"));
+        REQUIRE_FALSE(blif_res.stdout_text.contains("T1"));
     }
 
     SECTION("score phases, replace patience, and random score reproducibility") {
@@ -507,8 +507,8 @@ TEST_CASE("CLI profiling, verbosity, and symbolic CEGIS end-to-end") {
 
         const CliRunResult quiet_res = invoke_cli_config(xor1, {"--quiet", "--profile", "--no-shuffle"});
         REQUIRE(quiet_res.returncode == 0);
-        REQUIRE(!quiet_res.stderr_text.contains("Built program structure"));
-        REQUIRE(!quiet_res.stderr_text.contains("SAT in "));
+        REQUIRE_FALSE(quiet_res.stderr_text.contains("Built program structure"));
+        REQUIRE_FALSE(quiet_res.stderr_text.contains("SAT in "));
         REQUIRE(quiet_res.stderr_text.contains("PROFILE dataset_generation_seconds="));
 
         const CliRunResult verb_res = invoke_cli_config(
