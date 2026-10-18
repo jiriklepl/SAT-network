@@ -29,18 +29,18 @@ TEST_CASE("available datasets include the expected built-ins") {
 }
 
 TEST_CASE("built-in datasets generate expected basic shapes") {
-    Config adder = build_dataset_from_config(nlohmann::json{{"type", "adder"}, {"num_inputs", 2}, {"instructions", 2}});
+    const Config adder = build_dataset_from_config(nlohmann::json{{"type", "adder"}, {"num_inputs", 2}, {"instructions", 2}});
     REQUIRE(adder.num_inputs == 2);
     REQUIRE(adder.num_outputs == 2);
     REQUIRE(adder.instructions == 2);
     REQUIRE(adder.examples.size() == 4);
 
-    Config traffic = build_dataset_from_config(default_dataset_config("traffic"));
+    const Config traffic = build_dataset_from_config(default_dataset_config("traffic"));
     REQUIRE(traffic.num_inputs == 7);
     REQUIRE(traffic.num_outputs == 2);
     REQUIRE(traffic.examples.size() == 54);
 
-    Config life_compressed = build_dataset_from_config(default_dataset_config("life-compressed"));
+    const Config life_compressed = build_dataset_from_config(default_dataset_config("life-compressed"));
     REQUIRE(life_compressed.num_inputs == 7);
     REQUIRE(life_compressed.num_outputs == 1);
     REQUIRE(life_compressed.examples.size() == 96);
@@ -62,7 +62,7 @@ TEST_CASE("dataset generator rejects unknown and unsupported sampled configs") {
 }
 
 TEST_CASE("specific dataset rows match documented rules") {
-    Config adder = build_dataset_from_config(nlohmann::json{{"type", "adder"}, {"num_inputs", 2}});
+    const Config adder = build_dataset_from_config(nlohmann::json{{"type", "adder"}, {"num_inputs", 2}});
     REQUIRE_FALSE(adder.examples[0].input(0));
     REQUIRE_FALSE(adder.examples[0].input(1));
     REQUIRE(adder.examples[0].output_count() == 2);
@@ -73,7 +73,7 @@ TEST_CASE("specific dataset rows match documented rules") {
     REQUIRE(adder.examples[3].output(0) == false);
     REQUIRE(adder.examples[3].output(1) == true);
 
-    Config critters = build_dataset_from_config(default_dataset_config("critters"));
+    const Config critters = build_dataset_from_config(default_dataset_config("critters"));
     REQUIRE_FALSE(critters.examples.front().input(0));
     REQUIRE_FALSE(critters.examples.front().input(1));
     REQUIRE_FALSE(critters.examples.front().input(2));
@@ -85,7 +85,7 @@ TEST_CASE("specific dataset rows match documented rules") {
 }
 
 TEST_CASE("compact deterministic parametric datasets are supported") {
-    Config excitable = build_dataset_from_config(nlohmann::json{
+    const Config excitable = build_dataset_from_config(nlohmann::json{
         {"type", "excitable"},
         {"instructions", 32},
         {"excitable", {{"states", 3}}},
@@ -94,7 +94,7 @@ TEST_CASE("compact deterministic parametric datasets are supported") {
     REQUIRE(excitable.num_outputs == 2);
     REQUIRE(excitable.examples.size() == 19683);
 
-    Config cyclic = build_dataset_from_config(nlohmann::json{
+    const Config cyclic = build_dataset_from_config(nlohmann::json{
         {"type", "cyclic"},
         {"instructions", 48},
         {"cyclic", {{"states", 3}}},
@@ -103,7 +103,7 @@ TEST_CASE("compact deterministic parametric datasets are supported") {
     REQUIRE(cyclic.num_outputs == 2);
     REQUIRE(cyclic.examples.size() == 19683);
 
-    Config excitable_compressed = build_dataset_from_config(nlohmann::json{
+    const Config excitable_compressed = build_dataset_from_config(nlohmann::json{
         {"type", "excitable-compressed"},
         {"instructions", 12},
         {"excitable-compressed", {{"states", 3}}},
@@ -112,7 +112,7 @@ TEST_CASE("compact deterministic parametric datasets are supported") {
     REQUIRE(excitable_compressed.num_outputs == 2);
     REQUIRE(excitable_compressed.examples.size() == 144);
 
-    Config cyclic_compressed = build_dataset_from_config(nlohmann::json{
+    const Config cyclic_compressed = build_dataset_from_config(nlohmann::json{
         {"type", "cyclic-compressed"},
         {"instructions", 18},
         {"cyclic-compressed", {{"states", 3}}},
@@ -136,7 +136,7 @@ TEST_CASE("declarative quantified dataset specs and parameter constraints are ev
         },
         "cyclic.states must be at least 2");
 
-    Config inline_quantified = build_dataset_from_config(nlohmann::json{
+    const Config inline_quantified = build_dataset_from_config(nlohmann::json{
         {"instructions", 3},
         {"num_inputs", 2},
         {"num_outputs", 1},

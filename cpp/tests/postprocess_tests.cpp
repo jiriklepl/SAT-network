@@ -76,11 +76,11 @@ std::vector<Example> all_examples(int num_inputs, bool (*output_fn)(const std::v
 }  // namespace
 
 TEST_CASE("canonicalization orders operands and structurally sorts ready instructions") {
-    Program program{
+    const Program program{
         {Instruction{kOpOr, 2, 1}, Instruction{kOpAnd, 2, 1}, Instruction{kOpXor, 3, 4}},
         {5},
     };
-    Program canonical = canonicalize_program(program, 2);
+    const Program canonical = canonicalize_program(program, 2);
     REQUIRE(canonical.instrs.size() == 3);
     REQUIRE(canonical.instrs[0].op == kOpAnd);
     REQUIRE(canonical.instrs[0].s1 == 1);
@@ -96,11 +96,11 @@ TEST_CASE("canonicalization orders operands and structurally sorts ready instruc
 }
 
 TEST_CASE("canonicalization merges duplicate reachable instructions") {
-    Program program{
+    const Program program{
         {Instruction{kOpAnd, 2, 1}, Instruction{kOpAnd, 1, 2}},
         {3, 4},
     };
-    Program canonical = canonicalize_program(program, 2);
+    const Program canonical = canonicalize_program(program, 2);
     REQUIRE(canonical.instrs.size() == 1);
     REQUIRE(canonical.instrs[0].op == kOpAnd);
     REQUIRE(canonical.instrs[0].s1 == 1);
@@ -110,7 +110,7 @@ TEST_CASE("canonicalization merges duplicate reachable instructions") {
 }
 
 TEST_CASE("post-process canonicalizes result without requiring a score improvement") {
-    Program program{
+    const Program program{
         {Instruction{kOpOr, 2, 1}, Instruction{kOpAnd, 2, 1}, Instruction{kOpXor, 3, 4}},
         {5},
     };
@@ -118,7 +118,7 @@ TEST_CASE("post-process canonicalizes result without requiring a score improveme
         all_examples(2, [](const std::vector<int> &inputs) { return (inputs[0] != 0) != (inputs[1] != 0); });
     PostProcessOptions options = enabled_options();
     options.score_phases = {{{PostProcessScoreMetric::ProgramLength, false}}};
-    Program processed = post_process_program(program, examples, 2, 1, options);
+    const Program processed = post_process_program(program, examples, 2, 1, options);
     require_equivalent(processed, examples, 2, 1);
     require_canonical(processed, 2);
 }
@@ -130,7 +130,7 @@ TEST_CASE("post-process score metrics compute expected structural values") {
         {{false, true}, {false}},
         {{true, true}, {false}},
     };
-    Program program{{Instruction{kOpAnd, 1, 2}, Instruction{kOpXor, 3, 1}}, {4}};
+    const Program program{{Instruction{kOpAnd, 1, 2}, Instruction{kOpXor, 3, 1}}, {4}};
     const PackedExamples packed = pack_examples(examples, 2, 1);
     const PostProcessScorePhase phase{
         {.metric = PostProcessScoreMetric::ProgramLength, .descending = false},
@@ -192,28 +192,28 @@ TEST_CASE("post-process score random metric is seed deterministic") {
 }
 
 TEST_CASE("post-process score phases can accept improvement from a later phase") {
-    Program program{{Instruction{kOpAnd, kSourceConstantOne, 1}}, {2}};
+    const Program program{{Instruction{kOpAnd, kSourceConstantOne, 1}}, {2}};
     PostProcessOptions options = enabled_options();
     options.score_phases = {
         {{PostProcessScoreMetric::ProgramLength, true}},
         {{PostProcessScoreMetric::ProgramLength, false}},
     };
-    Program simplified = post_process_program(program, identity_examples(), 1, 1, options);
+    const Program simplified = post_process_program(program, identity_examples(), 1, 1, options);
     REQUIRE(simplified.instrs.empty());
     REQUIRE(simplified.outputs == std::vector<int>{1});
 }
 
 TEST_CASE("post-process leaves an already minimal correct program equivalent") {
-    Program program{{Instruction{kOpXor, 1, 2}}, {3}};
-    Program simplified = post_process_program(program, xor_examples(), 2, 1, enabled_options());
+    const Program program{{Instruction{kOpXor, 1, 2}}, {3}};
+    const Program simplified = post_process_program(program, xor_examples(), 2, 1, enabled_options());
     REQUIRE(simplified.instrs.size() == 1);
     REQUIRE(simplified.outputs == std::vector<int>{3});
     require_equivalent(simplified, xor_examples(), 2, 1);
 }
 
 TEST_CASE("post-process removes unused instructions") {
-    Program program{{Instruction{kOpXor, 1, 2}, Instruction{kOpAnd, 1, 2}}, {3}};
-    Program simplified = post_process_program(program, xor_examples(), 2, 1, enabled_options());
+    const Program program{{Instruction{kOpXor, 1, 2}, Instruction{kOpAnd, 1, 2}}, {3}};
+    const Program simplified = post_process_program(program, xor_examples(), 2, 1, enabled_options());
     REQUIRE(simplified.instrs.size() == 1);
     REQUIRE(simplified.outputs == std::vector<int>{3});
     require_equivalent(simplified, xor_examples(), 2, 1);
@@ -224,48 +224,48 @@ TEST_CASE("post-process simplifies output selectors under don't-cares") {
         {{false}, {std::nullopt}},
         {{true}, {true}},
     };
-    Program program{{Instruction{kOpOr, kSourceConstantOne, 1}}, {2}};
-    Program simplified = post_process_program(program, examples, 1, 1, enabled_options());
+    const Program program{{Instruction{kOpOr, kSourceConstantOne, 1}}, {2}};
+    const Program simplified = post_process_program(program, examples, 1, 1, enabled_options());
     REQUIRE(simplified.instrs.empty());
     REQUIRE(simplified.outputs == std::vector<int>{0});
     require_equivalent(simplified, examples, 1, 1);
 }
 
 TEST_CASE("post-process applies algebraic identities and annihilators") {
-    Program and_identity{{Instruction{kOpAnd, kSourceConstantOne, 1}}, {2}};
-    Program simplified_and = post_process_program(and_identity, identity_examples(), 1, 1, enabled_options());
+    const Program and_identity{{Instruction{kOpAnd, kSourceConstantOne, 1}}, {2}};
+    const Program simplified_and = post_process_program(and_identity, identity_examples(), 1, 1, enabled_options());
     REQUIRE(simplified_and.instrs.empty());
     REQUIRE(simplified_and.outputs == std::vector<int>{1});
 
-    Program false_source{{Instruction{kOpXor, 1, 1}, Instruction{kOpOr, 1, 2}}, {3}};
-    Program simplified_or = post_process_program(false_source, identity_examples(), 1, 1, enabled_options());
+    const Program false_source{{Instruction{kOpXor, 1, 1}, Instruction{kOpOr, 1, 2}}, {3}};
+    const Program simplified_or = post_process_program(false_source, identity_examples(), 1, 1, enabled_options());
     REQUIRE(simplified_or.instrs.empty());
     REQUIRE(simplified_or.outputs == std::vector<int>{1});
 
-    Program xor_self{{Instruction{kOpXor, 1, 1}, Instruction{kOpXor, 2, 2}}, {3}};
+    const Program xor_self{{Instruction{kOpXor, 1, 1}, Instruction{kOpXor, 2, 2}}, {3}};
     std::vector<Example> false_examples = {
         {{false}, {false}},
         {{true}, {false}},
     };
-    Program simplified_xor = post_process_program(xor_self, false_examples, 1, 1, enabled_options());
+    const Program simplified_xor = post_process_program(xor_self, false_examples, 1, 1, enabled_options());
     REQUIRE(simplified_xor.instrs.size() <= 1);
     require_equivalent(simplified_xor, false_examples, 1, 1);
 }
 
 TEST_CASE("post-process applies absorption and XOR cancellation") {
-    Program absorption{{Instruction{kOpOr, 1, 2}, Instruction{kOpAnd, 1, 3}}, {4}};
+    const Program absorption{{Instruction{kOpOr, 1, 2}, Instruction{kOpAnd, 1, 3}}, {4}};
     std::vector<Example> first_input_examples = {
         {{false, false}, {false}},
         {{false, true}, {false}},
         {{true, false}, {true}},
         {{true, true}, {true}},
     };
-    Program simplified_absorption = post_process_program(absorption, first_input_examples, 2, 1, enabled_options());
+    const Program simplified_absorption = post_process_program(absorption, first_input_examples, 2, 1, enabled_options());
     REQUIRE(simplified_absorption.instrs.empty());
     REQUIRE(simplified_absorption.outputs == std::vector<int>{1});
 
-    Program cancellation{{Instruction{kOpXor, 1, 2}, Instruction{kOpXor, 3, 2}}, {4}};
-    Program simplified_cancellation = post_process_program(cancellation, first_input_examples, 2, 1, enabled_options());
+    const Program cancellation{{Instruction{kOpXor, 1, 2}, Instruction{kOpXor, 3, 2}}, {4}};
+    const Program simplified_cancellation = post_process_program(cancellation, first_input_examples, 2, 1, enabled_options());
     REQUIRE(simplified_cancellation.instrs.empty());
     REQUIRE(simplified_cancellation.outputs == std::vector<int>{1});
 }
@@ -275,8 +275,8 @@ TEST_CASE("post-process tie-breaking picks the earliest matching source") {
         {{false, false}, {false}},
         {{true, true}, {true}},
     };
-    Program program{{Instruction{kOpAnd, 1, 2}}, {3}};
-    Program simplified = post_process_program(program, examples, 2, 1, enabled_options());
+    const Program program{{Instruction{kOpAnd, 1, 2}}, {3}};
+    const Program simplified = post_process_program(program, examples, 2, 1, enabled_options());
     REQUIRE(simplified.instrs.empty());
     REQUIRE(simplified.outputs == std::vector<int>{1});
     require_equivalent(simplified, examples, 2, 1);
@@ -288,11 +288,11 @@ TEST_CASE("post-process local SAT resynthesis reduces a two-node window") {
         {{false, true, true}, {true}},    {{true, false, true}, {true}},  {{true, true, false}, {true}},
         {{true, true, true}, {true}},
     };
-    Program program{{Instruction{kOpAnd, 1, 2}, Instruction{kOpOr, 4, 3}}, {5}};
+    const Program program{{Instruction{kOpAnd, 1, 2}, Instruction{kOpOr, 4, 3}}, {5}};
     PostProcessOptions options = enabled_options();
     options.resynthesis_maxnodes = 2;
     options.resynthesis_patience = 1;
-    Program simplified = post_process_program(program, examples, 3, 1, options);
+    const Program simplified = post_process_program(program, examples, 3, 1, options);
     REQUIRE(simplified.instrs.size() == 1);
     require_equivalent(simplified, examples, 3, 1);
 }
@@ -300,23 +300,23 @@ TEST_CASE("post-process local SAT resynthesis reduces a two-node window") {
 TEST_CASE("post-process XOR common cancellation removes duplicate nested XOR operand") {
     std::vector<Example> examples =
         all_examples(3, [](const std::vector<int> &inputs) { return (inputs[1] != 0) != (inputs[2] != 0); });
-    Program program{
+    const Program program{
         {Instruction{kOpXor, 1, 2}, Instruction{kOpXor, 1, 3}, Instruction{kOpXor, 4, 5}},
         {6},
     };
-    Program simplified = post_process_program(program, examples, 3, 1, enabled_options());
+    const Program simplified = post_process_program(program, examples, 3, 1, enabled_options());
     REQUIRE(simplified.instrs.size() == 1);
     require_equivalent(simplified, examples, 3, 1);
 }
 
 TEST_CASE("post-process single-use bypass can remove an equivalent user") {
     std::vector<Example> examples = xor_examples();
-    Program program{
+    const Program program{
         {Instruction{kOpAnd, kSourceConstantOne, 1}, Instruction{kOpXor, 3, 2}, Instruction{kOpXor, 1, 2},
          Instruction{kOpOr, 4, 5}},
         {6},
     };
-    Program simplified = post_process_program(program, examples, 2, 1, enabled_options());
+    const Program simplified = post_process_program(program, examples, 2, 1, enabled_options());
     REQUIRE(simplified.instrs.size() == 1);
     require_equivalent(simplified, examples, 2, 1);
 }
@@ -324,13 +324,13 @@ TEST_CASE("post-process single-use bypass can remove an equivalent user") {
 TEST_CASE("post-process existing regroup can reuse an existing inner node") {
     std::vector<Example> examples = all_examples(
         3, [](const std::vector<int> &inputs) { return (inputs[0] != 0) || (inputs[1] != 0) || (inputs[2] != 0); });
-    Program program{
+    const Program program{
         {Instruction{kOpOr, 1, 2}, Instruction{kOpOr, 2, 3}, Instruction{kOpOr, 4, 3}},
         {6},
     };
     PostProcessOptions options = enabled_options();
     options.score_phases = {{{PostProcessScoreMetric::ProgramLength, false}}};
-    Program simplified = post_process_program(program, examples, 3, 1, options);
+    const Program simplified = post_process_program(program, examples, 3, 1, options);
     REQUIRE(simplified.instrs.size() <= 2);
     require_equivalent(simplified, examples, 3, 1);
 }
@@ -338,8 +338,8 @@ TEST_CASE("post-process existing regroup can reuse an existing inner node") {
 TEST_CASE("post-process equivalent operand swap rewrites to earlier equivalent source") {
     std::vector<Example> examples =
         all_examples(2, [](const std::vector<int> &inputs) { return (inputs[0] != 0) != (inputs[1] != 0); });
-    Program program{{Instruction{kOpAnd, kSourceConstantOne, 1}, Instruction{kOpXor, 3, 2}}, {4}};
-    Program simplified = post_process_program(program, examples, 2, 1, enabled_options());
+    const Program program{{Instruction{kOpAnd, kSourceConstantOne, 1}, Instruction{kOpXor, 3, 2}}, {4}};
+    const Program simplified = post_process_program(program, examples, 2, 1, enabled_options());
     REQUIRE(simplified.instrs.size() == 1);
     require_equivalent(simplified, examples, 2, 1);
 }
@@ -347,16 +347,16 @@ TEST_CASE("post-process equivalent operand swap rewrites to earlier equivalent s
 TEST_CASE("post-process replacement search respects finite and unlimited patience") {
     std::vector<Example> examples =
         all_examples(2, [](const std::vector<int> &inputs) { return (inputs[0] != 0) || (inputs[1] != 0); });
-    Program program{{Instruction{kOpOr, 1, 2}}, {3}};
+    const Program program{{Instruction{kOpOr, 1, 2}}, {3}};
     PostProcessOptions finite = enabled_options();
     finite.replace_patience = 1;
     finite.random_seed = 4;
-    Program finite_result = post_process_program(program, examples, 2, 1, finite);
+    const Program finite_result = post_process_program(program, examples, 2, 1, finite);
     require_equivalent(finite_result, examples, 2, 1);
 
     PostProcessOptions unlimited = finite;
     unlimited.replace_patience = 0;
-    Program unlimited_result = post_process_program(program, examples, 2, 1, unlimited);
+    const Program unlimited_result = post_process_program(program, examples, 2, 1, unlimited);
     require_equivalent(unlimited_result, examples, 2, 1);
 }
 
@@ -367,11 +367,11 @@ TEST_CASE("post-process replacement search accepts output-preserving internal va
         {{true, false, true}, {true}},
         {{false, true, true}, {true}},
     };
-    Program program{{Instruction{kOpAnd, 1, 2}, Instruction{kOpOr, 4, 3}}, {5}};
+    const Program program{{Instruction{kOpAnd, 1, 2}, Instruction{kOpOr, 4, 3}}, {5}};
     PostProcessOptions options = enabled_options();
     options.replace_patience = 0;
     ProfileData profile;
-    Program simplified = post_process_program(program, examples, 3, 1, options, &profile);
+    const Program simplified = post_process_program(program, examples, 3, 1, options, &profile);
     require_equivalent(simplified, examples, 3, 1);
     REQUIRE(profile.post_processing_replacement_candidates_considered > 0);
     REQUIRE(profile.post_processing_replacement_candidates_materialized > 0);
@@ -384,7 +384,7 @@ TEST_CASE("post-process candidate cap does not starve replacement search") {
         {{true, false, true}, {true}},
         {{false, true, true}, {true}},
     };
-    Program program{
+    const Program program{
         {Instruction{kOpAnd, kSourceConstantOne, 3}, Instruction{kOpAnd, 1, 2}, Instruction{kOpOr, 5, 4}},
         {6},
     };
@@ -392,7 +392,7 @@ TEST_CASE("post-process candidate cap does not starve replacement search") {
     options.beam_candidates = 1;
     options.replace_patience = 0;
     ProfileData profile;
-    Program simplified = post_process_program(program, examples, 3, 1, options, &profile);
+    const Program simplified = post_process_program(program, examples, 3, 1, options, &profile);
     require_equivalent(simplified, examples, 3, 1);
     REQUIRE(profile.post_processing_mask_candidates_materialized > 0);
     REQUIRE(profile.post_processing_replacement_candidates_materialized > 0);
@@ -401,17 +401,17 @@ TEST_CASE("post-process candidate cap does not starve replacement search") {
 TEST_CASE("post-process replacement search is seed reproducible") {
     std::vector<Example> examples =
         all_examples(2, [](const std::vector<int> &inputs) { return (inputs[0] != 0) || (inputs[1] != 0); });
-    Program program{{Instruction{kOpOr, 1, 2}}, {3}};
+    const Program program{{Instruction{kOpOr, 1, 2}}, {3}};
     PostProcessOptions options = enabled_options();
     options.random_seed = 11;
-    Program first = post_process_program(program, examples, 2, 1, options);
-    Program second = post_process_program(program, examples, 2, 1, options);
+    const Program first = post_process_program(program, examples, 2, 1, options);
+    const Program second = post_process_program(program, examples, 2, 1, options);
     REQUIRE(program_key(first) == program_key(second));
     require_equivalent(first, examples, 2, 1);
 }
 
 TEST_CASE("post-process rejects invalid input programs with a logic error") {
-    Program invalid{{Instruction{kOpXor, 1, 4}}, {3}};
+    const Program invalid{{Instruction{kOpXor, 1, 4}}, {3}};
     REQUIRE_THROWS_AS(post_process_program(invalid, xor_examples(), 2, 1, enabled_options()), std::logic_error);
 }
 
@@ -422,11 +422,11 @@ TEST_CASE("post-process local SAT resynthesis preserves multiple outputs") {
         {{true, false, true}, {false, true}},    {{true, true, false}, {true, true}},
         {{true, true, true}, {true, true}},
     };
-    Program program{{Instruction{kOpAnd, 1, 2}, Instruction{kOpOr, 4, 3}}, {4, 5}};
+    const Program program{{Instruction{kOpAnd, 1, 2}, Instruction{kOpOr, 4, 3}}, {4, 5}};
     PostProcessOptions options = enabled_options();
     options.resynthesis_maxnodes = 2;
     options.resynthesis_patience = 0;
-    Program simplified = post_process_program(program, examples, 3, 2, options);
+    const Program simplified = post_process_program(program, examples, 3, 2, options);
     require_equivalent(simplified, examples, 3, 2);
 }
 
@@ -436,17 +436,17 @@ TEST_CASE("post-process local SAT resynthesis remains correct with don't-care ou
         {{false, true, true}, {true}},    {{true, false, false}, {std::nullopt}}, {{true, false, true}, {true}},
         {{true, true, false}, {true}},    {{true, true, true}, {true}},
     };
-    Program program{{Instruction{kOpAnd, 1, 2}, Instruction{kOpOr, 4, 3}}, {5}};
+    const Program program{{Instruction{kOpAnd, 1, 2}, Instruction{kOpOr, 4, 3}}, {5}};
     PostProcessOptions options = enabled_options();
     options.resynthesis_maxnodes = 2;
     options.resynthesis_patience = 1;
     options.generator_timeout_seconds = 0.001;
-    Program simplified = post_process_program(program, examples, 3, 1, options);
+    const Program simplified = post_process_program(program, examples, 3, 1, options);
     require_equivalent(simplified, examples, 3, 1);
 
     options.generator_timeout_seconds = 0.0;
-    simplified = post_process_program(program, examples, 3, 1, options);
-    require_equivalent(simplified, examples, 3, 1);
+    const Program other_simplified = post_process_program(program, examples, 3, 1, options);
+    require_equivalent(other_simplified, examples, 3, 1);
 }
 
 TEST_CASE("post-process local SAT resynthesis keeps later users source-valid") {
@@ -455,14 +455,14 @@ TEST_CASE("post-process local SAT resynthesis keeps later users source-valid") {
         {{false, true, true, true}, {false}},    {{true, false, true, true}, {false}},
         {{true, true, false, false}, {true}},    {{true, true, true, false}, {true}},
     };
-    Program program{
+    const Program program{
         {Instruction{kOpAnd, 1, 2}, Instruction{kOpOr, 3, 5}, Instruction{kOpXor, 6, 4}},
         {7},
     };
     PostProcessOptions options = enabled_options();
     options.resynthesis_maxnodes = 2;
     options.resynthesis_patience = 0;
-    Program simplified = post_process_program(program, examples, 4, 1, options);
+    const Program simplified = post_process_program(program, examples, 4, 1, options);
     require_equivalent(simplified, examples, 4, 1);
 }
 
@@ -473,14 +473,14 @@ TEST_CASE("post-process local SAT resynthesis materializes fresh temps before su
         {{true, true, false, false}, {true}},    {{true, true, true, false}, {true}},
         {{true, true, true, true}, {false}},
     };
-    Program program{
+    const Program program{
         {Instruction{kOpAnd, 1, 2}, Instruction{kOpOr, 5, 3}, Instruction{kOpOr, 6, 3}, Instruction{kOpXor, 7, 4}},
         {8},
     };
     PostProcessOptions options = enabled_options();
     options.resynthesis_maxnodes = 3;
     options.resynthesis_patience = 0;
-    Program simplified = post_process_program(program, examples, 4, 1, options);
+    const Program simplified = post_process_program(program, examples, 4, 1, options);
     REQUIRE(simplified.instrs.size() <= 3);
     require_equivalent(simplified, examples, 4, 1);
 }
@@ -491,14 +491,14 @@ TEST_CASE("post-process local SAT resynthesis preserves mixed window outputs") {
         {{false, true, false, true}, {false, true}},    {{true, false, true, true}, {true, false}},
         {{true, true, false, false}, {true, true}},     {{true, true, true, true}, {true, false}},
     };
-    Program program{
+    const Program program{
         {Instruction{kOpAnd, 1, 2}, Instruction{kOpOr, 5, 3}, Instruction{kOpOr, 6, 3}, Instruction{kOpXor, 7, 4}},
         {6, 8},
     };
     PostProcessOptions options = enabled_options();
     options.resynthesis_maxnodes = 2;
     options.resynthesis_patience = 0;
-    Program simplified = post_process_program(program, examples, 4, 2, options);
+    const Program simplified = post_process_program(program, examples, 4, 2, options);
     REQUIRE(simplified.instrs.size() <= 3);
     require_equivalent(simplified, examples, 4, 2);
 }
@@ -507,14 +507,14 @@ TEST_CASE("post-process local SAT resynthesis handles more than one mask word") 
     std::vector<Example> examples = all_examples(7, [](const std::vector<int> &inputs) {
         return (((inputs[0] != 0) && (inputs[1] != 0)) || (inputs[2] != 0)) != (inputs[3] != 0);
     });
-    Program program{
+    const Program program{
         {Instruction{kOpAnd, 1, 2}, Instruction{kOpOr, 8, 3}, Instruction{kOpOr, 9, 3}, Instruction{kOpXor, 10, 4}},
         {11},
     };
     PostProcessOptions options = enabled_options();
     options.resynthesis_maxnodes = 3;
     options.resynthesis_patience = 0;
-    Program simplified = post_process_program(program, examples, 7, 1, options);
+    const Program simplified = post_process_program(program, examples, 7, 1, options);
     REQUIRE(simplified.instrs.size() <= 3);
     require_equivalent(simplified, examples, 7, 1);
 }
@@ -525,12 +525,12 @@ TEST_CASE("post-process local SAT resynthesis updates profile counters") {
         {{false, true, true}, {true}},    {{true, false, true}, {true}},  {{true, true, false}, {true}},
         {{true, true, true}, {true}},
     };
-    Program program{{Instruction{kOpAnd, 1, 2}, Instruction{kOpOr, 4, 3}}, {5}};
+    const Program program{{Instruction{kOpAnd, 1, 2}, Instruction{kOpOr, 4, 3}}, {5}};
     PostProcessOptions options = enabled_options();
     options.resynthesis_maxnodes = 2;
     options.resynthesis_patience = 1;
     ProfileData profile;
-    Program simplified = post_process_program(program, examples, 3, 1, options, &profile);
+    const Program simplified = post_process_program(program, examples, 3, 1, options, &profile);
     require_equivalent(simplified, examples, 3, 1);
     REQUIRE(profile.post_processing_mask_generator_seconds >= 0.0);
     REQUIRE(profile.post_processing_replacement_generator_seconds >= 0.0);

@@ -13,7 +13,7 @@ TEST_CASE("explicit configs parse and dump don't-care outputs") {
                      })},
     };
 
-    Config cfg = load_explicit_examples(raw);
+    const Config cfg = load_explicit_examples(raw);
     REQUIRE(cfg.num_inputs == 1);
     REQUIRE(cfg.num_outputs == 1);
     REQUIRE(cfg.instructions == 0);
@@ -56,7 +56,7 @@ TEST_CASE("explicit config parser rejects invalid shapes and values") {
 }
 
 TEST_CASE("typed configs delegate to C++ dataset generation") {
-    Config cfg = build_dataset_from_config(nlohmann::json{{"type", "adder"}, {"num_inputs", 2}, {"instructions", 2}});
+    const Config cfg = build_dataset_from_config(nlohmann::json{{"type", "adder"}, {"num_inputs", 2}, {"instructions", 2}});
     REQUIRE(cfg.num_inputs == 2);
     REQUIRE(cfg.num_outputs == 2);
     REQUIRE(cfg.instructions == 2);
