@@ -192,7 +192,7 @@ json make_xor_config(int instructions = 1) {
 TEST_CASE("CLI --help prints usage and returns 0") {
     const CliRunResult res = invoke_cli_args({"--help"});
     REQUIRE(res.returncode == 0);
-    REQUIRE(!res.stdout_text.contains("Usage: sat_synth_cpp"));
+    REQUIRE(res.stdout_text.contains("Usage: sat_synth_cpp"));
 }
 
 TEST_CASE("CLI solves XOR with CEGIS") {
@@ -290,7 +290,7 @@ TEST_CASE("CLI handles --assume from file, stdin, contradictory assumptions, and
     SECTION("missing assume file returns exit code 2") {
         const CliRunResult res = invoke_cli_config(config, {"--assume", "/tmp/missing-sat-synth-assume-file.txt"});
         REQUIRE(res.returncode == 2);
-        REQUIRE(!res.stderr_text.contains("Assume file not found"));
+        REQUIRE(res.stderr_text.contains("Assume file not found"));
     }
 }
 
@@ -300,20 +300,20 @@ TEST_CASE("CLI exports SMT2, DIMACS, and BLIF formats and validates export const
     SECTION("--make-smt2 outputs SMT-LIB2") {
         const CliRunResult res = invoke_cli_config(config, {"--make-smt2", "--batch-size", "2", "--no-shuffle"});
         REQUIRE(res.returncode == 0);
-        REQUIRE(!res.stdout_text.contains("OP_0"));
-        REQUIRE(!res.stdout_text.contains("OUT_0_idx"));
-        REQUIRE(!res.stdout_text.contains("assert"));
-        REQUIRE(!res.stdout_text.contains("b0"));
-        REQUIRE(!res.stdout_text.contains("b1"));
-        REQUIRE(res.stdout_text.contains("T0:"));
+        REQUIRE(res.stdout_text.contains("OP_0"));
+        REQUIRE(res.stdout_text.contains("OUT_0_idx"));
+        REQUIRE(res.stdout_text.contains("assert"));
+        REQUIRE(res.stdout_text.contains("b0"));
+        REQUIRE(res.stdout_text.contains("b1"));
+        REQUIRE(!res.stdout_text.contains("T0:"));
     }
 
     SECTION("--make-smt2 accepts assumptions") {
         const TempFile assume_file("T0: XOR(I0, I1)\nOUT0: T0\n", ".txt");
         const CliRunResult res = invoke_cli_config(config, {"--make-smt2", "--assume", assume_file.path.string()});
         REQUIRE(res.returncode == 0);
-        REQUIRE(!res.stdout_text.contains("OP_0"));
-        REQUIRE(!res.stdout_text.contains("OUT_0_idx"));
+        REQUIRE(res.stdout_text.contains("OP_0"));
+        REQUIRE(res.stdout_text.contains("OUT_0_idx"));
     }
 
     SECTION("--cegis with --make-smt2 or --make-dimacs is rejected") {
@@ -331,19 +331,19 @@ TEST_CASE("CLI exports SMT2, DIMACS, and BLIF formats and validates export const
     SECTION("--make-dimacs outputs CNF") {
         const CliRunResult res = invoke_cli_config(config, {"--make-dimacs", "--batch-size", "2", "--no-shuffle"});
         REQUIRE(res.returncode == 0);
-        REQUIRE(!res.stdout_text.contains("p cnf "));
-        REQUIRE(res.stdout_text.contains("T0:"));
+        REQUIRE(res.stdout_text.contains("p cnf "));
+        REQUIRE(!res.stdout_text.contains("T0:"));
     }
 
     SECTION("--make-blif outputs truth table and rejects don't-care outputs") {
         const CliRunResult res = invoke_cli_config(config, {"--make-blif"});
         REQUIRE(res.returncode == 0);
-        REQUIRE(!res.stdout_text.contains(".model synth_program"));
-        REQUIRE(!res.stdout_text.contains(".inputs I0 I1"));
-        REQUIRE(!res.stdout_text.contains(".outputs OUT0"));
-        REQUIRE(!res.stdout_text.contains("01 1"));
-        REQUIRE(!res.stdout_text.contains("10 1"));
-        REQUIRE(res.stdout_text.contains("T0:"));
+        REQUIRE(res.stdout_text.contains(".model synth_program"));
+        REQUIRE(res.stdout_text.contains(".inputs I0 I1"));
+        REQUIRE(res.stdout_text.contains(".outputs OUT0"));
+        REQUIRE(res.stdout_text.contains("01 1"));
+        REQUIRE(res.stdout_text.contains("10 1"));
+        REQUIRE(!res.stdout_text.contains("T0:"));
 
         const json dc_config = {
             {"num_inputs", 1},
@@ -353,19 +353,19 @@ TEST_CASE("CLI exports SMT2, DIMACS, and BLIF formats and validates export const
         };
         const CliRunResult dc_res = invoke_cli_config(dc_config, {"--make-blif"});
         REQUIRE(dc_res.returncode == 2);
-        REQUIRE(!dc_res.stderr_text.contains("Cannot export BLIF with don't-care outputs"));
+        REQUIRE(dc_res.stderr_text.contains("Cannot export BLIF with don't-care outputs"));
     }
 
     SECTION("--output-blif emits solved program") {
         const CliRunResult res =
             invoke_cli_config(config, {"--output-blif", "--assume", "-"}, "T0: XOR(I0, I1)\nOUT0: T0\n");
         REQUIRE(res.returncode == 0);
-        REQUIRE(!res.stdout_text.contains(".model spec"));
-        REQUIRE(!res.stdout_text.contains(".names I0 I1 T0"));
-        REQUIRE(!res.stdout_text.contains("10 1"));
-        REQUIRE(!res.stdout_text.contains("01 1"));
-        REQUIRE(!res.stdout_text.contains(".names T0 OUT0"));
-        REQUIRE(res.stdout_text.contains("T0:"));
+        REQUIRE(res.stdout_text.contains(".model spec"));
+        REQUIRE(res.stdout_text.contains(".names I0 I1 T0"));
+        REQUIRE(res.stdout_text.contains("10 1"));
+        REQUIRE(res.stdout_text.contains("01 1"));
+        REQUIRE(res.stdout_text.contains(".names T0 OUT0"));
+        REQUIRE(!res.stdout_text.contains("T0:"));
     }
 }
 
@@ -386,11 +386,11 @@ TEST_CASE("CLI post-processing workflows shorten programs and preserve semantics
         const CliRunResult res = invoke_cli_config(xor2, {"--output-blif", "--post-process", "--assume", "-"},
                                                    "T0: XOR(I0, I1)\nT1: AND(1, T0)\nOUT0: T1\n");
         REQUIRE(res.returncode == 0);
-        REQUIRE(!res.stdout_text.contains(".model spec"));
-        REQUIRE(!res.stdout_text.contains(".names I0 I1 T0"));
-        REQUIRE(!res.stdout_text.contains(".names T0 OUT0"));
-        REQUIRE(res.stdout_text.contains("T1"));
-        REQUIRE(res.stdout_text.contains("T0:"));
+        REQUIRE(res.stdout_text.contains(".model spec"));
+        REQUIRE(res.stdout_text.contains(".names I0 I1 T0"));
+        REQUIRE(res.stdout_text.contains(".names T0 OUT0"));
+        REQUIRE(!res.stdout_text.contains("T1"));
+        REQUIRE(!res.stdout_text.contains("T0:"));
     }
 
     SECTION("resynthesis post-processing shortens assumed program and works with --output-blif") {
@@ -424,9 +424,9 @@ TEST_CASE("CLI post-processing workflows shorten programs and preserve semantics
             {"--output-blif", "--post-process", "--post-process-resynthesis-maxnodes", "2", "--assume", "-"},
             "T0: AND(I0, I1)\nT1: OR(I2, T0)\nOUT0: T1\n");
         REQUIRE(blif_res.returncode == 0);
-        REQUIRE(!blif_res.stdout_text.contains(".model spec"));
-        REQUIRE(!blif_res.stdout_text.contains(".names T0 OUT0"));
-        REQUIRE(blif_res.stdout_text.contains("T1"));
+        REQUIRE(blif_res.stdout_text.contains(".model spec"));
+        REQUIRE(blif_res.stdout_text.contains(".names T0 OUT0"));
+        REQUIRE(!blif_res.stdout_text.contains("T1"));
     }
 
     SECTION("score phases, replace patience, and random score reproducibility") {
@@ -468,9 +468,9 @@ TEST_CASE("CLI post-processing workflows shorten programs and preserve semantics
 TEST_CASE("CLI dataset listing, dumping, and validation") {
     const CliRunResult list_res = invoke_cli_args({"--list-datasets"});
     REQUIRE(list_res.returncode == 0);
-    REQUIRE(!list_res.stdout_text.contains("adder\n"));
-    REQUIRE(!list_res.stdout_text.contains("gol\n"));
-    REQUIRE(!list_res.stdout_text.contains("traffic\n"));
+    REQUIRE(list_res.stdout_text.contains("adder\n"));
+    REQUIRE(list_res.stdout_text.contains("gol\n"));
+    REQUIRE(list_res.stdout_text.contains("traffic\n"));
 
     for (const std::string &name : {"adder", "gol", "gol1", "gol2", "sloppy-adder", "sloppy-adder3", "life-compressed",
                                     "maze-compressed", "brian-compressed", "fire-compressed", "wire-compressed",
@@ -492,7 +492,7 @@ TEST_CASE("CLI dataset listing, dumping, and validation") {
          }) {
         const CliRunResult reject_res = invoke_cli_config(bad_cfg, {"--dump-dataset"});
         REQUIRE(reject_res.returncode != 0);
-        REQUIRE(!reject_res.stderr_text.contains("max_examples sampling is not supported"));
+        REQUIRE(reject_res.stderr_text.contains("max_examples sampling is not supported"));
     }
 }
 
@@ -502,22 +502,22 @@ TEST_CASE("CLI profiling, verbosity, and symbolic CEGIS end-to-end") {
     SECTION("default, quiet, and verbose logging") {
         const CliRunResult def_res = invoke_cli_config(xor1, {"--no-shuffle"});
         REQUIRE(def_res.returncode == 0);
-        REQUIRE(!def_res.stderr_text.contains("Built program structure with 1 instructions"));
-        REQUIRE(!def_res.stderr_text.contains("SAT in "));
+        REQUIRE(def_res.stderr_text.contains("Built program structure with 1 instructions"));
+        REQUIRE(def_res.stderr_text.contains("SAT in "));
 
         const CliRunResult quiet_res = invoke_cli_config(xor1, {"--quiet", "--profile", "--no-shuffle"});
         REQUIRE(quiet_res.returncode == 0);
-        REQUIRE(quiet_res.stderr_text.contains("Built program structure"));
-        REQUIRE(quiet_res.stderr_text.contains("SAT in "));
-        REQUIRE(!quiet_res.stderr_text.contains("PROFILE dataset_generation_seconds="));
+        REQUIRE(!quiet_res.stderr_text.contains("Built program structure"));
+        REQUIRE(!quiet_res.stderr_text.contains("SAT in "));
+        REQUIRE(quiet_res.stderr_text.contains("PROFILE dataset_generation_seconds="));
 
         const CliRunResult verb_res = invoke_cli_config(
             xor1, {"-v", "--cegis", "--cegis-initial-size", "1", "--cegis-counterexamples", "1", "--no-shuffle"});
         REQUIRE(verb_res.returncode == 0);
-        REQUIRE(!verb_res.stderr_text.contains("Loaded configuration with 4 examples"));
-        REQUIRE(!verb_res.stderr_text.contains("Solving with solver="));
-        REQUIRE(!verb_res.stderr_text.contains("CEGIS starting with 1/4 examples"));
-        REQUIRE(!verb_res.stderr_text.contains("CEGIS added "));
+        REQUIRE(verb_res.stderr_text.contains("Loaded configuration with 4 examples"));
+        REQUIRE(verb_res.stderr_text.contains("Solving with solver="));
+        REQUIRE(verb_res.stderr_text.contains("CEGIS starting with 1/4 examples"));
+        REQUIRE(verb_res.stderr_text.contains("CEGIS added "));
     }
 
     SECTION("trace logging and profile counters for post-processing") {
@@ -528,11 +528,11 @@ TEST_CASE("CLI profiling, verbosity, and symbolic CEGIS end-to-end") {
              "--no-shuffle"},
             "T0: XOR(I0, I1)\nT1: AND(1, T0)\nOUT0: T1\n");
         REQUIRE(res.returncode == 0);
-        REQUIRE(!res.stderr_text.contains("Post-process phase 1/1"));
-        REQUIRE(!res.stderr_text.contains("Post-process round 1"));
-        REQUIRE(!res.stderr_text.contains("PROFILE post_processing_runs=1"));
-        REQUIRE(!res.stderr_text.contains("PROFILE post_processing_input_instructions=2"));
-        REQUIRE(!res.stderr_text.contains("PROFILE post_processing_output_instructions=1"));
+        REQUIRE(res.stderr_text.contains("Post-process phase 1/1"));
+        REQUIRE(res.stderr_text.contains("Post-process round 1"));
+        REQUIRE(res.stderr_text.contains("PROFILE post_processing_runs=1"));
+        REQUIRE(res.stderr_text.contains("PROFILE post_processing_input_instructions=2"));
+        REQUIRE(res.stderr_text.contains("PROFILE post_processing_output_instructions=1"));
         REQUIRE(std::regex_search(res.stderr_text,
                                   std::regex("PROFILE post_processing_mask_candidates_considered=[1-9]")));
         REQUIRE(std::regex_search(res.stderr_text,
