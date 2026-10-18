@@ -24,10 +24,10 @@ TEST_CASE("program BLIF emission matches supported logic gates") {
     std::ostringstream emitted;
     emit_program_blif(emitted, program, 2);
     REQUIRE(emitted.str().find(".model spec\n") == 0);
-    REQUIRE(emitted.str().find(".names I0 I1 T0\n11 1\n") != std::string::npos);
-    REQUIRE(emitted.str().find(".names I0 I1 T1\n10 1\n01 1\n") != std::string::npos);
-    REQUIRE(emitted.str().find(".names T0 T1 T2\n10 1\n01 1\n11 1\n") != std::string::npos);
-    REQUIRE(emitted.str().find(".names T2 OUT0\n1 1\n.end\n") != std::string::npos);
+    REQUIRE(emitted.str().contains(".names I0 I1 T0\n11 1\n"));
+    REQUIRE(emitted.str().contains(".names I0 I1 T1\n10 1\n01 1\n"));
+    REQUIRE(emitted.str().contains(".names T0 T1 T2\n10 1\n01 1\n11 1\n"));
+    REQUIRE(emitted.str().contains(".names T2 OUT0\n1 1\n.end\n"));
 
     Program duplicate_and{{Instruction{kOpAnd, 1, 1}}, {2}};
     REQUIRE_THROWS(emit_program_blif(emitted, duplicate_and, 1));

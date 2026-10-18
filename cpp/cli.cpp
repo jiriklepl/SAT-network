@@ -400,7 +400,7 @@ int run_cli(int argc, char **argv, std::istream &in, std::ostream &out, std::ost
 
         if (!cli.no_shuffle) {
             std::mt19937 rng(cli.seed);
-            std::shuffle(cfg.examples.begin(), cfg.examples.end(), rng);
+            std::ranges::shuffle(cfg.examples, rng);
         }
 
         SolveOptions solve_options = make_solve_options(cli, logger);

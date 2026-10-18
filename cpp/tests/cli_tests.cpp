@@ -194,22 +194,22 @@ TEST_CASE("CLI list-datasets works without config or dataset") {
 TEST_CASE("usage text mentions main input modes") {
     std::ostringstream out;
     print_usage(out);
-    REQUIRE(out.str().find("--config") != std::string::npos);
-    REQUIRE(out.str().find("--dataset") != std::string::npos);
-    REQUIRE(out.str().find("--assume") != std::string::npos);
-    REQUIRE(out.str().find("--make-smt2") != std::string::npos);
-    REQUIRE(out.str().find("--make-dimacs") != std::string::npos);
-    REQUIRE(out.str().find("--make-blif") != std::string::npos);
-    REQUIRE(out.str().find("--output-blif") != std::string::npos);
-    REQUIRE(out.str().find("--profile") != std::string::npos);
-    REQUIRE(out.str().find("--verbose") != std::string::npos);
-    REQUIRE(out.str().find("--post-process") != std::string::npos);
-    REQUIRE(out.str().find("--post-process-resynthesis-maxnodes") != std::string::npos);
-    REQUIRE(out.str().find("--post-process-score") != std::string::npos);
-    REQUIRE(out.str().find("--post-process-replace-patience") != std::string::npos);
-    REQUIRE(out.str().find("--generator-timeout") != std::string::npos);
-    REQUIRE(out.str().find("--list-datasets") != std::string::npos);
-    REQUIRE(out.str().find("--max-materialized-examples") != std::string::npos);
+    REQUIRE(out.str().contains("--config"));
+    REQUIRE(out.str().contains("--dataset"));
+    REQUIRE(out.str().contains("--assume"));
+    REQUIRE(out.str().contains("--make-smt2"));
+    REQUIRE(out.str().contains("--make-dimacs"));
+    REQUIRE(out.str().contains("--make-blif"));
+    REQUIRE(out.str().contains("--output-blif"));
+    REQUIRE(out.str().contains("--profile"));
+    REQUIRE(out.str().contains("--verbose"));
+    REQUIRE(out.str().contains("--post-process"));
+    REQUIRE(out.str().contains("--post-process-resynthesis-maxnodes"));
+    REQUIRE(out.str().contains("--post-process-score"));
+    REQUIRE(out.str().contains("--post-process-replace-patience"));
+    REQUIRE(out.str().contains("--generator-timeout"));
+    REQUIRE(out.str().contains("--list-datasets"));
+    REQUIRE(out.str().contains("--max-materialized-examples"));
 }
 
 TEST_CASE("CLI parses max-materialized-examples, batching, seed, do-all, and dump-dataset") {

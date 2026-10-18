@@ -103,8 +103,7 @@ std::filesystem::path datasets_directory() {
 }
 
 nlohmann::json load_dataset_spec(const std::string &name) {
-    if (name.empty() || name.find('/') != std::string::npos || name.find('\\') != std::string::npos ||
-        name.find("..") != std::string::npos) {
+    if (name.empty() || name.contains('/') || name.contains('\\') || name.contains("..")) {
         throw std::runtime_error("unknown dataset: " + name);
     }
     const std::filesystem::path path = datasets_directory() / (name + ".json");

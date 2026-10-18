@@ -450,7 +450,7 @@ std::vector<Program> generate_mask_simplification_candidates(const Program &base
             }
         }
         std::mt19937_64 rng(stable_seed(options.random_seed, base_key, instr_idx));
-        std::shuffle(replacements.begin(), replacements.end(), rng);
+        std::ranges::shuffle(replacements, rng);
 
         std::size_t valid_replacements_for_node = 0;
         for (const auto &[op, s1, s2] : replacements) {

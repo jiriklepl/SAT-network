@@ -166,18 +166,18 @@ TEST_CASE("solver exports SMT2 with structure, assumptions, and examples") {
     options.assumptions.outputs.push_back({0, 3});
 
     std::string smt2 = make_smt2(xor_config(1), options);
-    REQUIRE(smt2.find("OP_0") != std::string::npos);
-    REQUIRE(smt2.find("S1_0") != std::string::npos);
-    REQUIRE(smt2.find("OUT_0_idx") != std::string::npos);
-    REQUIRE(smt2.find("b0") != std::string::npos);
-    REQUIRE(smt2.find("b1") != std::string::npos);
-    REQUIRE(smt2.find("assert") != std::string::npos);
+    REQUIRE(smt2.contains("OP_0"));
+    REQUIRE(smt2.contains("S1_0"));
+    REQUIRE(smt2.contains("OUT_0_idx"));
+    REQUIRE(smt2.contains("b0"));
+    REQUIRE(smt2.contains("b1"));
+    REQUIRE(smt2.contains("assert"));
 }
 
 TEST_CASE("solver exports DIMACS CNF") {
     SolveOptions options;
     options.batch_size = 2;
     std::string dimacs = make_dimacs(xor_config(1), options);
-    REQUIRE(dimacs.find("p cnf ") != std::string::npos);
-    REQUIRE(dimacs.find("c ") != std::string::npos);
+    REQUIRE(dimacs.contains("p cnf "));
+    REQUIRE(dimacs.contains("c "));
 }
