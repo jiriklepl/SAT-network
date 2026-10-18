@@ -9,11 +9,25 @@
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=2G
 
-if [ ! -f ./.venv/bin/activate ]; then
-    echo "Cannot find virtual environment. Please create one first." >&2
+set -euo pipefail
+
+BIN="${SAT_SYNTH_CPP:-}"
+if [ -z "$BIN" ]; then
+    for candidate in \
+        ./build/release/sat_synth_cpp \
+        ./build/release-with-debug-info/sat_synth_cpp \
+        ./build/debug/sat_synth_cpp \
+        ./build/sat_synth_cpp; do
+        if [ -x "$candidate" ]; then
+            BIN="$candidate"
+            break
+        fi
+    done
+fi
+
+if [ -z "$BIN" ] || [ ! -x "$BIN" ]; then
+    echo "Cannot find sat_synth_cpp binary. Build it first with: cmake --preset release && cmake --build --preset release -j" >&2
     exit 1
 fi
 
-. ./.venv/bin/activate
-
-./main.py "$@"
+exec "$BIN" "$@"

@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(SAT_SYNTH_ENABLE_SANITIZERS "Build project targets with AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+option(SAT_SYNTH_ENABLE_PYTHON_TESTS "Run legacy Python parity integration tests via CTest" OFF)
 
 include(FetchContent)
 
@@ -32,6 +33,7 @@ FetchContent_MakeAvailable(nlohmann_json cxxopts Catch2)
 
 find_path(Z3_INCLUDE_DIR z3++.h)
 find_library(Z3_LIBRARY z3 REQUIRED)
+find_path(BOOST_INCLUDE_DIR boost/dynamic_bitset.hpp REQUIRED)
 
 if(NOT Z3_INCLUDE_DIR OR NOT Z3_LIBRARY)
   message(FATAL_ERROR "Could not find Z3 headers/library")
@@ -63,7 +65,7 @@ add_library(sat_synth_core
   cpp/solver.cpp
   cpp/symbolic_verifier.cpp
 )
-target_include_directories(sat_synth_core PUBLIC cpp ${Z3_INCLUDE_DIR})
+target_include_directories(sat_synth_core PUBLIC cpp ${Z3_INCLUDE_DIR} ${BOOST_INCLUDE_DIR})
 target_link_libraries(sat_synth_core PUBLIC ${Z3_LIBRARY} cxxopts::cxxopts nlohmann_json::nlohmann_json)
 if(SAT_SYNTH_ENABLE_SANITIZERS)
   target_link_libraries(sat_synth_core PUBLIC sat_synth_sanitizers)
@@ -80,6 +82,7 @@ if(BUILD_TESTING)
     cpp/tests/cli_tests.cpp
     cpp/tests/config_tests.cpp
     cpp/tests/datasets_tests.cpp
+    cpp/tests/integration_tests.cpp
     cpp/tests/mask_tests.cpp
     cpp/tests/postprocess_tests.cpp
     cpp/tests/program_tests.cpp
@@ -92,22 +95,24 @@ if(BUILD_TESTING)
   endif()
   add_test(NAME cpp_unit_tests COMMAND cpp_unit_tests)
 
-  find_package(Python3 COMPONENTS Interpreter)
-  set(SAT_NETWORK_TEST_PYTHON "" CACHE FILEPATH "Python interpreter for integration tests")
-  if(NOT SAT_NETWORK_TEST_PYTHON AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.venv/bin/python")
-    set(SAT_NETWORK_TEST_PYTHON "${CMAKE_CURRENT_SOURCE_DIR}/.venv/bin/python")
-  elseif(NOT SAT_NETWORK_TEST_PYTHON)
-    set(SAT_NETWORK_TEST_PYTHON ${Python3_EXECUTABLE})
-  endif()
-  if(SAT_NETWORK_TEST_PYTHON)
-    set(SAT_NETWORK_INTEGRATION_TEST_ENV SAT_SYNTH_CPP=$<TARGET_FILE:sat_synth_cpp>)
-    add_test(
-      NAME cpp_solver_integration
-      COMMAND
-        ${CMAKE_COMMAND} -E env
-        ${SAT_NETWORK_INTEGRATION_TEST_ENV}
-        ${SAT_NETWORK_TEST_PYTHON} -m unittest test_cpp_solver
-      WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-    )
+  if(SAT_SYNTH_ENABLE_PYTHON_TESTS)
+    find_package(Python3 COMPONENTS Interpreter)
+    set(SAT_NETWORK_TEST_PYTHON "" CACHE FILEPATH "Python interpreter for integration tests")
+    if(NOT SAT_NETWORK_TEST_PYTHON AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.venv/bin/python")
+      set(SAT_NETWORK_TEST_PYTHON "${CMAKE_CURRENT_SOURCE_DIR}/.venv/bin/python")
+    elseif(NOT SAT_NETWORK_TEST_PYTHON)
+      set(SAT_NETWORK_TEST_PYTHON ${Python3_EXECUTABLE})
+    endif()
+    if(SAT_NETWORK_TEST_PYTHON)
+      set(SAT_NETWORK_INTEGRATION_TEST_ENV SAT_SYNTH_CPP=$<TARGET_FILE:sat_synth_cpp>)
+      add_test(
+        NAME cpp_solver_integration
+        COMMAND
+          ${CMAKE_COMMAND} -E env
+          ${SAT_NETWORK_INTEGRATION_TEST_ENV}
+          ${SAT_NETWORK_TEST_PYTHON} -m unittest test_cpp_solver
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+      )
+    endif()
   endif()
 endif()

@@ -1,26 +1,44 @@
 #include "cli.hpp"
 
+#include "assumptions.hpp"
+#include "config.hpp"
+#include "datasets.hpp"
+#include "logging.hpp"
 #include "postprocess.hpp"
+#include "profile.hpp"
+#include "program.hpp"
+#include "solver.hpp"
 
 #include <cxxopts.hpp>
 
+#include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdlib>
-
 #include <exception>
+#include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <random>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 namespace {
 
+using Clock = std::chrono::steady_clock;
+
+double elapsed_seconds(Clock::time_point start) {
+    return std::chrono::duration<double>(Clock::now() - start).count();
+}
+
 [[noreturn]] void usage_error(const std::string &message) {
     throw std::runtime_error(message);
 }
 
-std::string trim(std::string value) {
+std::string trim(std::string_view value) {
     auto first = value.begin();
     while (first != value.end() && std::isspace(static_cast<unsigned char>(*first)) != 0) {
         ++first;
@@ -119,6 +137,145 @@ cxxopts::Options make_options() {
     return options;
 }
 
+bool exports_full_dataset(const CliOptions &cli) {
+    return cli.dump_dataset || cli.make_blif || cli.make_smt2 || cli.make_dimacs;
+}
+
+Config load_requested_config(const CliOptions &cli) {
+    DatasetLoadOptions load_options;
+    load_options.max_materialized_examples =
+        cli.max_materialized_examples.value_or(exports_full_dataset(cli) ? kExportMaxMaterializedExamples
+                                                                         : kDefaultMaxMaterializedExamples);
+    load_options.basis_size = std::max(cli.cegis_initial_size, static_cast<std::size_t>(kDefaultBasisSize));
+    load_options.seed = cli.seed;
+    Config cfg = cli.config_path.empty()
+                     ? build_dataset_from_config(default_dataset_config(cli.dataset_name), load_options)
+                     : load_config(cli.config_path, load_options);
+    if (exports_full_dataset(cli) && !cfg.fully_materialized) {
+        throw std::runtime_error("the quantified dataset has " + std::to_string(cfg.domain_size) +
+                                 " rows, which exceeds --max-materialized-examples (" +
+                                 std::to_string(load_options.max_materialized_examples) +
+                                 "); it cannot be exported without unrolling");
+    }
+    if (cli.instructions.has_value()) cfg.instructions = *cli.instructions;
+    if (cfg.instructions < 0) throw std::runtime_error("--instructions must be non-negative");
+    return cfg;
+}
+
+SolveOptions make_solve_options(const CliOptions &cli, const Logger &logger) {
+    return {
+        .solver = cli.solver,
+        .encoding = {.encode_boolean = cli.encode_boolean,
+                     .force_ordered = cli.force_ordered,
+                     .force_useful = cli.force_useful,
+                     .balanced_select = cli.balanced_select},
+        .assumptions = {},
+        .batch_size = cli.batch_size,
+        .do_all = cli.do_all,
+        .cegis = cli.cegis,
+        .cegis_initial_size = cli.cegis_initial_size,
+        .cegis_counterexamples = cli.cegis_counterexamples,
+        .postprocess =
+            {
+                .enabled = cli.post_process,
+                .beam_width = cli.post_process_beam_width,
+                .beam_rounds = cli.post_process_beam_rounds,
+                .beam_candidates = cli.post_process_beam_candidates,
+                .score_phases = cli.post_process_score_phases,
+                .random_seed = cli.seed,
+                .replace_patience = cli.post_process_replace_patience,
+                .resynthesis_maxnodes = cli.post_process_resynthesis_maxnodes,
+                .resynthesis_patience = cli.post_process_resynthesis_patience,
+                .generator_timeout_seconds = cli.generator_timeout,
+                .logger = &logger,
+            },
+        .logger = &logger,
+    };
+}
+
+void print_profile(std::ostream &err, const ProfileData &profile) {
+    err << std::fixed << std::setprecision(6);
+    err << "PROFILE dataset_generation_seconds=" << profile.dataset_generation_seconds << "\n";
+    err << "PROFILE structure_encoding_seconds=" << profile.structure_encoding_seconds << "\n";
+    err << "PROFILE example_packing_seconds=" << profile.example_packing_seconds << "\n";
+    err << "PROFILE example_encoding_seconds=" << profile.example_encoding_seconds << "\n";
+    err << "PROFILE z3_solve_seconds=" << profile.z3_solve_seconds << "\n";
+    err << "PROFILE model_extraction_seconds=" << profile.model_extraction_seconds << "\n";
+    err << "PROFILE post_processing_seconds=" << profile.post_processing_seconds << "\n";
+    err << "PROFILE post_processing_mask_generator_seconds=" << profile.post_processing_mask_generator_seconds << "\n";
+    err << "PROFILE post_processing_replacement_generator_seconds="
+        << profile.post_processing_replacement_generator_seconds << "\n";
+    err << "PROFILE post_processing_resynthesis_generator_seconds="
+        << profile.post_processing_resynthesis_generator_seconds << "\n";
+    err << "PROFILE packed_verification_seconds=" << profile.packed_verification_seconds << "\n";
+    err << "PROFILE symbolic_verifier_seconds=" << profile.symbolic_verifier_seconds << "\n";
+    err << "PROFILE structure_constraints=" << profile.structure_constraints << "\n";
+    err << "PROFILE example_constraints=" << profile.example_constraints << "\n";
+    err << "PROFILE example_batches=" << profile.example_batches << "\n";
+    err << "PROFILE packed_examples=" << profile.packed_examples << "\n";
+    err << "PROFILE solver_checks=" << profile.solver_checks << "\n";
+    err << "PROFILE model_extractions=" << profile.model_extractions << "\n";
+    err << "PROFILE post_processing_runs=" << profile.post_processing_runs << "\n";
+    err << "PROFILE post_processing_input_instructions=" << profile.post_processing_input_instructions << "\n";
+    err << "PROFILE post_processing_output_instructions=" << profile.post_processing_output_instructions << "\n";
+    err << "PROFILE post_processing_mask_candidates_considered="
+        << profile.post_processing_mask_candidates_considered << "\n";
+    err << "PROFILE post_processing_mask_candidates_materialized="
+        << profile.post_processing_mask_candidates_materialized << "\n";
+    err << "PROFILE post_processing_mask_candidates_accepted=" << profile.post_processing_mask_candidates_accepted
+        << "\n";
+    err << "PROFILE post_processing_mask_invalid_candidates=" << profile.post_processing_mask_invalid_candidates
+        << "\n";
+    err << "PROFILE post_processing_mask_timeout_exits=" << profile.post_processing_mask_timeout_exits << "\n";
+    err << "PROFILE post_processing_replacement_candidates_considered="
+        << profile.post_processing_replacement_candidates_considered << "\n";
+    err << "PROFILE post_processing_replacement_candidates_materialized="
+        << profile.post_processing_replacement_candidates_materialized << "\n";
+    err << "PROFILE post_processing_replacement_candidates_accepted="
+        << profile.post_processing_replacement_candidates_accepted << "\n";
+    err << "PROFILE post_processing_replacement_invalid_candidates="
+        << profile.post_processing_replacement_invalid_candidates << "\n";
+    err << "PROFILE post_processing_replacement_timeout_exits="
+        << profile.post_processing_replacement_timeout_exits << "\n";
+    err << "PROFILE post_processing_resynthesis_windows_considered="
+        << profile.post_processing_resynthesis_windows_considered << "\n";
+    err << "PROFILE post_processing_resynthesis_windows_sat=" << profile.post_processing_resynthesis_windows_sat
+        << "\n";
+    err << "PROFILE post_processing_resynthesis_candidates_considered="
+        << profile.post_processing_resynthesis_candidates_considered << "\n";
+    err << "PROFILE post_processing_resynthesis_candidates_materialized="
+        << profile.post_processing_resynthesis_candidates_materialized << "\n";
+    err << "PROFILE post_processing_resynthesis_invalid_candidates="
+        << profile.post_processing_resynthesis_invalid_candidates << "\n";
+    err << "PROFILE post_processing_resynthesis_candidates_accepted="
+        << profile.post_processing_resynthesis_candidates_accepted << "\n";
+    err << "PROFILE post_processing_resynthesis_timeout_exits="
+        << profile.post_processing_resynthesis_timeout_exits << "\n";
+    err << "PROFILE verification_examples=" << profile.verification_examples << "\n";
+    err << "PROFILE symbolic_verifier_checks=" << profile.symbolic_verifier_checks << "\n";
+    err << "PROFILE symbolic_counterexamples=" << profile.symbolic_counterexamples << "\n";
+    err << "PROFILE bv_cache_hits=" << profile.bv_cache_hits << "\n";
+    err << "PROFILE bv_cache_misses=" << profile.bv_cache_misses << "\n";
+}
+
+Assumptions load_assumptions(const CliOptions &cli, const Config &cfg, std::istream &in) {
+    if (cli.assume_path.empty()) {
+        return {};
+    }
+
+    const ProgramSpec spec{
+        .num_inputs = cfg.num_inputs, .num_outputs = cfg.num_outputs, .program_length = cfg.instructions};
+    if (cli.assume_path == "-") {
+        return parse_assumptions(in, spec);
+    }
+
+    std::ifstream file(cli.assume_path);
+    if (!file) {
+        throw std::runtime_error("Assume file not found: " + cli.assume_path);
+    }
+    return parse_assumptions(file, spec);
+}
+
 }  // namespace
 
 void print_usage(std::ostream &out) {
@@ -131,12 +288,13 @@ void print_usage(std::ostream &out) {
 CliOptions parse_args(int argc, char **argv) {
     cxxopts::Options parser = make_options();
     const cxxopts::ParseResult parsed = parser.parse(argc, argv);
-    if (parsed.contains("help")) {
-        print_usage(std::cout);
-        std::exit(0);
-    }
 
     CliOptions options;
+    if (parsed.contains("help")) {
+        options.help = true;
+        return options;
+    }
+
     if (parsed.contains("config")) options.config_path = parsed["config"].as<std::string>();
     if (parsed.contains("dataset")) options.dataset_name = parsed["dataset"].as<std::string>();
     if (parsed.contains("assume")) options.assume_path = parsed["assume"].as<std::string>();
@@ -205,4 +363,95 @@ CliOptions parse_args(int argc, char **argv) {
     options.post_process_resynthesis_patience = static_cast<std::size_t>(post_process_resynthesis_patience);
     options.generator_timeout = generator_timeout;
     return options;
+}
+
+int run_cli(int argc, char **argv, std::istream &in, std::ostream &out, std::ostream &err) {
+    try {
+        const CliOptions cli = parse_args(argc, argv);
+        if (cli.help) {
+            print_usage(out);
+            return 0;
+        }
+        const Logger logger(cli.verbosity, err);
+        if (cli.list_datasets) {
+            for (const auto &name : available_dataset_names()) {
+                out << name << "\n";
+            }
+            return 0;
+        }
+
+        ProfileData profile;
+        const auto dataset_start = Clock::now();
+        Config cfg = load_requested_config(cli);
+        if (cli.profile) profile.dataset_generation_seconds = elapsed_seconds(dataset_start);
+        logger.log(2, "Loaded configuration with " + std::to_string(cfg.examples.size()) + " examples, " +
+                          std::to_string(cfg.num_inputs) + " inputs, " + std::to_string(cfg.num_outputs) +
+                          " outputs, and " + std::to_string(cfg.instructions) + " instructions");
+        if (cli.dump_dataset) {
+            out << config_to_json(cfg).dump(2) << "\n";
+            if (cli.profile) print_profile(err, profile);
+            return 0;
+        }
+        if (cli.make_blif) {
+            export_spec_blif(out, cfg.examples, cfg.num_inputs, cfg.num_outputs);
+            if (cli.profile) print_profile(err, profile);
+            return 0;
+        }
+
+        if (!cli.no_shuffle) {
+            std::mt19937 rng(cli.seed);
+            std::shuffle(cfg.examples.begin(), cfg.examples.end(), rng);
+        }
+
+        SolveOptions solve_options = make_solve_options(cli, logger);
+        if (cli.profile) solve_options.profile = &profile;
+        solve_options.assumptions = load_assumptions(cli, cfg, in);
+
+        if (cli.make_smt2) {
+            out << make_smt2(cfg, solve_options);
+            if (cli.profile) print_profile(err, profile);
+            return 0;
+        }
+        if (cli.make_dimacs) {
+            out << make_dimacs(cfg, solve_options);
+            if (cli.profile) print_profile(err, profile);
+            return 0;
+        }
+
+        logger.log(1, "Built program structure with " + std::to_string(cfg.instructions) + " instructions");
+        const SolveResult result = solve_config(cfg, solve_options);
+        if (result.status == SolveStatus::Sat) {
+            if (cli.output_blif) {
+                emit_program_blif(out, *result.program, cfg.num_inputs);
+            } else {
+                emit_program(out, *result.program, cfg.num_inputs);
+            }
+            logger.log(1, "SAT in " + std::to_string(result.elapsed_seconds) + " seconds");
+            if (cli.profile) print_profile(err, profile);
+            return 0;
+        }
+        if (result.status == SolveStatus::VerificationFailed) {
+            if (result.program.has_value()) {
+                if (cli.output_blif) {
+                    emit_program_blif(out, *result.program, cfg.num_inputs);
+                } else {
+                    emit_program(out, *result.program, cfg.num_inputs);
+                }
+            }
+            err << "Total mismatches: " << result.mismatch_count << "\n";
+            if (cli.profile) print_profile(err, profile);
+            return 1;
+        }
+        if (result.status == SolveStatus::Unsat) {
+            logger.log(1, "UNSAT in " + std::to_string(result.elapsed_seconds) + " seconds");
+            if (cli.profile) print_profile(err, profile);
+            return 1;
+        }
+        logger.log(1, "UNKNOWN in " + std::to_string(result.elapsed_seconds) + " seconds");
+        if (cli.profile) print_profile(err, profile);
+        return 1;
+    } catch (const std::exception &exc) {
+        err << exc.what() << "\n";
+        return 2;
+    }
 }

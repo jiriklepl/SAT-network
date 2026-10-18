@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+"""DEPRECATED: This Python reference implementation is superseded by `sat_synth_cpp`.
+
+Use the C++ solver (`build/release/sat_synth_cpp`) for faster solving, bounded memory usage,
+and symbolic quantified CEGIS support. See `cpp/README.md` for build and usage details.
+"""
 
 import argparse
 from dataclasses import dataclass
@@ -2261,7 +2266,9 @@ def main() -> None:
     )
     logger = logging.getLogger(__name__)
 
-    parser = argparse.ArgumentParser(description="Synthesize a logic program with z3")
+    parser = argparse.ArgumentParser(
+        description="Synthesize a logic program with z3 (DEPRECATED: superseded by sat_synth_cpp; see cpp/README.md)"
+    )
 
     parser.add_argument("--dataset", choices=list(available_plugins().keys()), default="gol", help="Choose a built-in dataset config")
     parser.add_argument("--config", type=str, default=None, help="Path to a custom JSON config")
@@ -2333,6 +2340,7 @@ def main() -> None:
     else:
         logger.setLevel(logging.INFO)
         logging.getLogger("z3").setLevel(logging.INFO)
+        logger.warning("DEPRECATED: main.py is superseded by sat_synth_cpp (see cpp/README.md).")
 
     if args.post_process_beam_width < 1:
         raise SystemExit("--post-process-beam-width must be at least 1")

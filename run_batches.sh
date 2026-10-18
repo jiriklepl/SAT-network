@@ -2,6 +2,7 @@
 
 set -euo pipefail
 
+dataset="${DATASET:-gol}"
 instructions=(14 15 16)
 batch_sizes=(8 16)
 
@@ -15,9 +16,9 @@ do_all_flags=("--do-all" "")
 
 num_batches=$(( ${#instructions[@]} * ${#batch_sizes[@]} * ${#encode_boolean_flags[@]} * ${#force_ordered_flags[@]} * ${#force_useful_flags[@]} * ${#shuffle_flags[@]} * ${#do_all_flags[@]} ))
 
-echo "Will create $num_batches jobs"
+echo "Will create $num_batches jobs for dataset '$dataset'"
 
-srun --ntasks=1 --cpus-per-task=2 --mem=2G --time=1:00 --partition mpi-homo-short bash setup.sh
+srun --ntasks=1 --cpus-per-task=2 --mem=2G --time=5:00 --partition mpi-homo-short bash setup.sh
 
 for instr in "${instructions[@]}"; do
     for batch_size in "${batch_sizes[@]}"; do
@@ -26,7 +27,7 @@ for instr in "${instructions[@]}"; do
                 for force_useful in "${force_useful_flags[@]}"; do
                     for shuffle in "${shuffle_flags[@]}"; do
                         for do_all in "${do_all_flags[@]}"; do
-                            sbatch batch.sh --instructions "$instr" --batch-size "$batch_size" $encode_boolean $force_ordered $force_useful $shuffle $do_all
+                            sbatch batch.sh --dataset "$dataset" --instructions "$instr" --batch-size "$batch_size" $encode_boolean $force_ordered $force_useful $shuffle $do_all
                         done
                     done
                 done

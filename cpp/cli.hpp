@@ -46,7 +46,9 @@ struct CliOptions {
     std::size_t post_process_resynthesis_maxnodes = 5;
     std::size_t post_process_resynthesis_patience = 1;
     double generator_timeout = 0.0;
+    bool help = false;
 };
 
 void print_usage(std::ostream &out);
 CliOptions parse_args(int argc, char **argv);
+int run_cli(int argc, char **argv, std::istream &in, std::ostream &out, std::ostream &err);
