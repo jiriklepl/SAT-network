@@ -2,14 +2,18 @@
 
 #include "datasets.hpp"
 #include "mask.hpp"
+#include "string_utils.hpp"
 
 #include <cstddef>
 
 #include <algorithm>
+#include <istream>
 #include <ostream>
 #include <span>
+#include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 const std::vector<LogicOperator> &logic_operators() {
@@ -23,6 +27,10 @@ const std::vector<LogicOperator> &logic_operators() {
 
 std::string bv_name(const std::string &prefix, int idx) {
     return prefix + "_" + std::to_string(idx);
+}
+
+std::string output_selector_name(int out_idx) {
+    return "OUT_" + std::to_string(out_idx) + "_idx";
 }
 
 int op_rank(int code) {
@@ -80,6 +88,40 @@ std::string format_source(int idx, int num_inputs) {
     return "T" + std::to_string(temp_index_from_source(idx, num_inputs));
 }
 
+int parse_source(std::string_view text, int num_inputs, std::optional<int> max_program_length) {
+    const std::string_view tok = trim_view(text);
+    if (tok == "1") return kSourceConstantOne;
+    if (tok.starts_with("I")) {
+        std::size_t parsed = 0;
+        const std::string sub(tok.substr(1));
+        int idx = 0;
+        try {
+            idx = std::stoi(sub, &parsed);
+        } catch (const std::exception &) {
+            throw std::runtime_error("Invalid input index in source: " + std::string(tok));
+        }
+        if (parsed != sub.size() || idx < 0 || idx >= num_inputs) {
+            throw std::runtime_error("Input index out of range: " + std::string(tok));
+        }
+        return input_source(idx);
+    }
+    if (tok.starts_with("T")) {
+        std::size_t parsed = 0;
+        const std::string sub(tok.substr(1));
+        int idx = 0;
+        try {
+            idx = std::stoi(sub, &parsed);
+        } catch (const std::exception &) {
+            throw std::runtime_error("Invalid temporary index in source: " + std::string(tok));
+        }
+        if (parsed != sub.size() || idx < 0 || (max_program_length.has_value() && idx >= *max_program_length)) {
+            throw std::runtime_error("Temporary index out of range: " + std::string(tok));
+        }
+        return temp_source(idx, num_inputs);
+    }
+    throw std::runtime_error("Unknown source argument: " + std::string(tok));
+}
+
 void PackedExamples::append_example(const Example &ex) {
     if (ex.input_count() != input_masks.size() || ex.output_count() != output_values.size()) {
         throw std::runtime_error("Example length does not match PackedExamples dimensions");
@@ -102,31 +144,14 @@ PackedExamples PackedExamples::slice_words(std::size_t start_example, std::size_
     const std::size_t actual_count = std::min<std::size_t>(count, width - start_example);
     PackedExamples result;
     result.width = static_cast<unsigned>(actual_count);
-    auto slice_mask = [&](const PackedMask &src) {
-        if (actual_count == 0) return PackedMask(0);
-        if (start_example % 64 == 0) {
-            const std::size_t first_word = start_example / 64;
-            const std::size_t num_words = (actual_count + 63) / 64;
-            std::vector<std::uint64_t> words(num_words, 0);
-            for (std::size_t w = 0; w < num_words; ++w) {
-                words[w] = src.word(first_word + w);
-            }
-            return PackedMask(result.width, std::move(words));
-        }
-        PackedMask dst(result.width);
-        for (std::size_t idx = 0; idx < actual_count; ++idx) {
-            if (src.test(start_example + idx)) {
-                dst.set(idx);
-            }
-        }
-        return dst;
-    };
     result.input_masks.reserve(input_masks.size());
-    for (const auto &m : input_masks) result.input_masks.push_back(slice_mask(m));
+    for (const auto &m : input_masks) result.input_masks.push_back(m.slice(start_example, actual_count));
     result.output_values.reserve(output_values.size());
-    for (const auto &m : output_values) result.output_values.push_back(slice_mask(m));
+    for (const auto &m : output_values) result.output_values.push_back(m.slice(start_example, actual_count));
     result.output_dont_care_masks.reserve(output_dont_care_masks.size());
-    for (const auto &m : output_dont_care_masks) result.output_dont_care_masks.push_back(slice_mask(m));
+    for (const auto &m : output_dont_care_masks) {
+        result.output_dont_care_masks.push_back(m.slice(start_example, actual_count));
+    }
     return result;
 }
 
@@ -156,21 +181,30 @@ PackedExamples pack_examples(std::span<const Example> examples, int num_inputs, 
     return packed;
 }
 
-std::vector<PackedMask> evaluate_program_masks(const Program &program, std::span<const PackedMask> input_masks,
-                                               const PackedMask &all_examples_mask) {
+std::vector<PackedMask> evaluate_all_sources(const Program &program, std::span<const PackedMask> input_masks,
+                                             const PackedMask &all_examples_mask) {
     std::vector<PackedMask> values;
+    values.reserve(1 + input_masks.size() + program.instrs.size());
     values.push_back(all_examples_mask);
     values.insert(values.end(), input_masks.begin(), input_masks.end());
     for (const auto &instr : program.instrs) {
         const PackedMask value =
             instr.op < 0 ? PackedMask(all_examples_mask.width())
-                         : (apply_operator_mask(instr.op, values[instr.s1], values[instr.s2]) & all_examples_mask);
+                         : (apply_operator_mask(instr.op, values[static_cast<std::size_t>(instr.s1)],
+                                                values[static_cast<std::size_t>(instr.s2)]) &
+                            all_examples_mask);
         values.push_back(value);
     }
+    return values;
+}
+
+std::vector<PackedMask> evaluate_program_masks(const Program &program, std::span<const PackedMask> input_masks,
+                                               const PackedMask &all_examples_mask) {
+    const std::vector<PackedMask> values = evaluate_all_sources(program, input_masks, all_examples_mask);
     std::vector<PackedMask> outputs;
     outputs.reserve(program.outputs.size());
     for (const int selector : program.outputs) {
-        outputs.push_back(values[selector]);
+        outputs.push_back(values[static_cast<std::size_t>(selector)]);
     }
     return outputs;
 }
@@ -195,7 +229,7 @@ std::vector<std::size_t> verify_program_packed(const Program &program, const Pac
     PackedMask mismatch_mask(packed.width);
     for (int out_idx = 0; out_idx < num_outputs; ++out_idx) {
         const PackedMask care_mask = full_mask ^ packed.output_dont_care_masks[out_idx];
-        mismatch_mask = mismatch_mask | ((actual[out_idx] ^ packed.output_values[out_idx]) & care_mask);
+        mismatch_mask |= ((actual[out_idx] ^ packed.output_values[out_idx]) & care_mask);
     }
     return mismatch_mask.set_bit_indices();
 }
@@ -216,6 +250,65 @@ void emit_program(std::ostream &out, const Program &program, int num_inputs) {
     for (std::size_t out_idx = 0; out_idx < program.outputs.size(); ++out_idx) {
         out << "OUT" << out_idx << ": " << format_source(program.outputs[out_idx], num_inputs) << "\n";
     }
+}
+
+Program parse_program(std::istream &in, int num_inputs, int num_outputs) {
+    Program program;
+    program.outputs.assign(static_cast<std::size_t>(num_outputs), -1);
+    std::string raw_line;
+    while (std::getline(in, raw_line)) {
+        const std::string_view line = trim_view(raw_line);
+        if (line.empty() || line.front() == '#') continue;
+        const auto colon = line.find(':');
+        if (colon == std::string_view::npos) {
+            throw std::runtime_error("Invalid program line (missing colon): " + std::string(line));
+        }
+        const std::string_view lhs = trim_view(line.substr(0, colon));
+        const std::string_view rhs = trim_view(line.substr(colon + 1));
+        if (lhs.starts_with("T")) {
+            const auto lparen = rhs.find('(');
+            const auto comma = rhs.find(',', lparen);
+            const auto rparen = rhs.rfind(')');
+            if (lparen == std::string_view::npos || comma == std::string_view::npos ||
+                rparen == std::string_view::npos || rparen <= comma) {
+                throw std::runtime_error("Invalid instruction syntax: " + std::string(line));
+            }
+            const std::string_view op_name = trim_view(rhs.substr(0, lparen));
+            const std::string_view left_tok = trim_view(rhs.substr(lparen + 1, comma - lparen - 1));
+            const std::string_view right_tok = trim_view(rhs.substr(comma + 1, rparen - comma - 1));
+            program.instrs.push_back({
+                .op = op_code_by_label(std::string(op_name)),
+                .s1 = parse_source(left_tok, num_inputs),
+                .s2 = parse_source(right_tok, num_inputs),
+            });
+        } else if (lhs.starts_with("OUT")) {
+            const std::string sub(lhs.substr(3));
+            std::size_t parsed = 0;
+            int out_idx = 0;
+            try {
+                out_idx = std::stoi(sub, &parsed);
+            } catch (const std::exception &) {
+                throw std::runtime_error("Invalid output index: " + std::string(lhs));
+            }
+            if (parsed != sub.size() || out_idx < 0 || out_idx >= num_outputs) {
+                throw std::runtime_error("Output index out of range: " + std::string(lhs));
+            }
+            program.outputs[static_cast<std::size_t>(out_idx)] = parse_source(rhs, num_inputs);
+        } else {
+            throw std::runtime_error("Unexpected program line prefix: " + std::string(line));
+        }
+    }
+    for (std::size_t idx = 0; idx < program.outputs.size(); ++idx) {
+        if (program.outputs[idx] < 0) {
+            throw std::runtime_error("Output OUT" + std::to_string(idx) + " was not defined in program");
+        }
+    }
+    return program;
+}
+
+Program parse_program(std::string_view text, int num_inputs, int num_outputs) {
+    std::istringstream stream{std::string(text)};
+    return parse_program(stream, num_inputs, num_outputs);
 }
 
 void emit_program_blif(std::ostream &out, const Program &program, int num_inputs) {

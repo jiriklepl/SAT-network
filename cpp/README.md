@@ -48,72 +48,75 @@ A dataset config can either provide explicit `examples` or a declarative quantif
 
 ```json
 {
-  "type": "adder",
+  "instructions": 32,
+  "defaults": {
+    "excitable": {
+      "states": 8
+    }
+  },
   "params": {
-    "num_inputs": 4
+    "state_count": { "path": "excitable.states", "default": 8 }
   },
   "constraints": [
     {
-      "check": "$num_inputs >= 2 and $num_inputs % 2 == 0",
-      "error": "adder num_inputs must be an even integer >= 2"
+      "check": "state_count >= 3",
+      "error": "excitable.states must be at least 3"
     }
   ],
   "let": {
-    "half": "$num_inputs // 2",
-    "out_bits": "$half + 1"
+    "bits_per_state": "required_bits(state_count)"
   },
-  "instructions": "3 * $half",
+  "num_inputs": "9 * bits_per_state",
+  "num_outputs": "bits_per_state",
+  "sample_section": "excitable",
   "forall": [
-    { "name": "a", "type": "range", "stop": "1 << $half" },
-    { "name": "b", "type": "range", "stop": "1 << $half" }
+    { "var": "states", "tuple": { "size": 9, "range": [0, "state_count"] } }
   ],
-  "let_row": [
-    { "name": "total", "value": "$a + $b" }
-  ],
-  "where": "true",
-  "inputs": {
-    "concat": [
-      { "bits_be": ["$a", "$half"] },
-      { "bits_be": ["$b", "$half"] }
-    ]
+  "let_row": {
+    "center": "states[0]",
+    "next_state": "center == 0 ? (count(states, 1, 1) > 0 ? 1 : 0) : (center == state_count - 1 ? 0 : center + 1)"
   },
-  "outputs": {
-    "bits_be": ["$total", "$out_bits"]
-  }
+  "inputs": [
+    "state_bits(states, bits_per_state)"
+  ],
+  "outputs": [
+    "bits(next_state, bits_per_state)"
+  ]
 }
 ```
 
 ### Schema Reference
 
-- **`params`** *(object, optional)*: Default parameter dictionary. Can be overridden at the top level of a user config or nested under a section matching `"type"`.
+- **`defaults`** *(object, optional)*: Default runtime configuration object returned by `default_dataset_config(name)`.
+- **`params`** *(object, optional)*: Parameter bindings `{"<name>": {"path": "<dotted.path>" | ["<path1>", ...], "default": <int|bool>}}` resolved against the runtime config.
 - **`constraints`** *(array, optional)*: Static validation rules `{"check": "<expr>", "error": "<message>"}` evaluated before building the dataset.
-- **`let`** *(object, optional)*: Static constants evaluated in lexicographical/dependency order before quantification.
-- **`instructions`** *(integer or expression string, optional)*: Default SSA instruction budget (e.g. `14` or `"3 * $half"`).
+- **`let`** *(object, optional)*: Static scalar constants evaluated in dependency order before quantification.
+- **`num_inputs`** / **`num_outputs`** *(integer or expression string)*: Declared circuit input and output bit widths.
+- **`instructions`** *(integer or expression string, optional)*: Default SSA instruction budget (defaults to `16`).
 - **`forall`** *(array of domains)*: Quantified variables spanning the input domain:
-  - `{"name": "x", "type": "bits", "width": "<expr>"}`: Bit-tuple of length `width` (`0`/`1` elements).
-  - `{"name": "x", "type": "tuples", "length": "<expr>", "base": "<expr>"}`: Tuple of `length` integers in `[0, base - 1]`.
-  - `{"name": "x", "type": "range", "start": "<expr>", "stop": "<expr>"}`: Integer in `[start, stop - 1]` (`start` defaults to `0`).
-- **`let_row`** *(array of `{"name": "<id>", "value": <expr>}`, optional)*: Per-row intermediate bindings evaluated in array order; each binding can reference `$forall` variables and earlier `let_row` variables.
-- **`where`** *(expression, optional)*: Boolean domain filter predicate. Only assignments where `where` evaluates to true are required to satisfy the input/output mapping.
-- **`inputs`** / **`outputs`**: Bit-vector expressions (or arrays of boolean/`null` expressions) defining the circuit inputs and expected outputs (`null` denotes a don't-care output bit).
+  - `{"var": "x", "range": ["<start_expr>", "<end_expr>"]}`: Scalar integer in `[start, end - 1]`.
+  - `{"var": "x", "values": ["<expr1>", "<expr2>", ...]}`: Scalar integer taking each listed value in order.
+  - `{"var": "x", "tuple": {"size": "<size_expr>", "range": ["<start_expr>", "<end_expr>"]}}`: Tuple of `size` integers each in `[start, end - 1]`.
+- **`let_row`** *(object, optional)*: Per-row intermediate scalar bindings `{"<name>": "<expr>"}` evaluated in dependency order for each point.
+- **`where`** *(expression string, optional)*: Boolean domain filter predicate. Only assignments where `where` evaluates to non-zero are included.
+- **`inputs`** / **`outputs`** *(array of expression strings)*: Bit-emitting expressions defining the circuit inputs and expected outputs (`null` denotes a don't-care output bit).
 
 ### Supported Expressions & Built-in Functions
 
-- **Variables & Indexing**: Reference variables with `"$name"`, index tuples with `"$cells[0]"`, or use JSON objects `{"var": "name"}` and `{"index": [<list>, <idx>]}`.
-- **Operators**:
+- **Variables & Indexing**: Reference scalar variables by identifier (`state_count`, `center`) and index tuple variables with `states[0]`. Literals include integers, `true` (`1`), `false` (`0`), and `null` (don't-care output).
+- **Operators** (C-style precedence):
   - Ternary conditional: `cond ? then_expr : else_expr`
-  - Logical: `or`, `and`, `not`
+  - Logical: `||`, `&&`, `!`
+  - Bitwise: `|`, `^`, `&`, `~`, `<<`, `>>`
   - Comparisons: `==`, `!=`, `<`, `<=`, `>`, `>=`
-  - Bitwise: `|`, `^`, `&`, `<<`, `>>`
-  - Arithmetic: `+`, `-`, `*`, `//` (floor division), `%` (modulo)
+  - Arithmetic: `+`, `-`, `*`, `/` (truncating integer division), `%` (modulo)
 - **Built-in Functions**:
-  - `sum(list)` / `popcount(int)`: Sum of tuple elements or 32-bit population count.
-  - `count_eq(list, value)`: Count elements in `list` equal to `value`.
-  - `bit(value, bit_index)`: Extract a single bit `(value >> bit_index) & 1`.
-  - `bits_be(value, width)` / `bits_le(value, width)`: Expand integer `value` into `width` bits (big-endian MSB-first or little-endian LSB-first).
-  - `int_be(list)` / `int_le(list)`: Pack a bit list into an integer.
-  - `concat(list_of_lists)`: Flatten/concatenate bit lists.
-  - `rotate_left_2x2(cells)`: Rotate a 4-cell $2 \times 2$ block `[a, b, c, d]` into `[b, d, a, c]`.
+  - `required_bits(n)`: Minimum bit width needed to represent states `0 .. n - 1` (`max(1, bit_width(n - 1))`).
+  - `popcount(x)`: 64-bit population count of `x`.
+  - `count(tuple_var, target[, start_index])`: Count elements in `tuple_var[start_index:]` equal to `target`.
+  - `bit(expr)`: Emit a single boolean bit (`expr != 0`).
+  - `bits(value, width)`: Emit `width` LSB-first bits `((value >> i) & 1) != 0` for `i in 0 .. width - 1`.
+  - `state_bits(tuple_var, width)`: For each element `s` in `tuple_var`, emit `bits(s, width)`.
 
 When the total domain size exceeds `--max-materialized-examples` (default `65536` for solving), `sat_synth_cpp` avoids unrolling the truth table into RAM and automatically switches to symbolic QF_BV CEGIS (`SymbolicVerifier`).
 

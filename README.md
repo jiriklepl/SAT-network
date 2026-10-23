@@ -40,13 +40,11 @@ ctest --test-dir build/release --output-on-failure
 
 ## Building Reference Assumptions (`build_assumptions.py`)
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python3 -m pip install -r requirements.txt
+`build_assumptions.py` reads the declarative dataset specifications in `cpp/datasets/*.json` directly using only the Python standard library:
 
+```bash
 python3 build_assumptions.py --dataset life-compressed --output /tmp/life-compressed.assume
-./build/release/sat_synth_cpp --dataset life-compressed --assume /tmp/life-compressed.assume --post-process
+./build/release/sat_synth_cpp --dataset life-compressed --instructions 28 --assume /tmp/life-compressed.assume --post-process
 ```
 
 `build_assumptions.py` emits a complete program in the `--assume` file format accepted by `sat_synth_cpp` (and legacy `main.py`).

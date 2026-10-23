@@ -190,7 +190,7 @@ PackedTestEncoding build_test(z3::context &ctx, ExprCache &cache, const PackedEx
 
     std::vector<z3::expr> outputs;
     for (int out_idx = 0; out_idx < spec.num_outputs; ++out_idx) {
-        const z3::expr selector = bv_const(ctx, "OUT_" + std::to_string(out_idx) + "_idx", spec.idx_bits());
+        const z3::expr selector = bv_const(ctx, output_selector_name(out_idx), spec.idx_bits());
         if (options.encode_boolean) {
             const z3::expr out_expr = bv_const(ctx, "OUTVAL_" + tag + "_" + std::to_string(out_idx), packed.width);
             for (std::size_t source_idx = 0; source_idx < values.size(); ++source_idx) {
@@ -239,7 +239,7 @@ std::vector<z3::expr> build_program(z3::context &ctx, const ProgramSpec &spec, c
     }
     output_selectors.reserve(spec.num_outputs);
     for (int out_idx = 0; out_idx < spec.num_outputs; ++out_idx) {
-        output_selectors.push_back(bv_const(ctx, "OUT_" + std::to_string(out_idx) + "_idx", spec.idx_bits()));
+        output_selectors.push_back(bv_const(ctx, output_selector_name(out_idx), spec.idx_bits()));
     }
 
     for (int instr = 0; instr < spec.program_length; ++instr) {
@@ -346,7 +346,7 @@ std::vector<z3::expr> build_assumption_constraints(z3::context &ctx, const Progr
                               bv_val(ctx, static_cast<uint64_t>(instr.s2), spec.idx_bits()));
     }
     for (const auto &output : assumptions.outputs) {
-        constraints.push_back(bv_const(ctx, "OUT_" + std::to_string(output.out_idx) + "_idx", spec.idx_bits()) ==
+        constraints.push_back(bv_const(ctx, output_selector_name(output.out_idx), spec.idx_bits()) ==
                               bv_val(ctx, static_cast<uint64_t>(output.source), spec.idx_bits()));
     }
     return constraints;
@@ -399,9 +399,9 @@ Program extract_program(z3::context &ctx, const z3::model &model, const ProgramS
         program.instrs.push_back({known_op(op) ? op : -1, s1, s2});
     }
     for (int out_idx = 0; out_idx < spec.num_outputs; ++out_idx) {
-        program.outputs.push_back(static_cast<int>(
-            model_bv_uint64(model, bv_const(ctx, "OUT_" + std::to_string(out_idx) + "_idx", spec.idx_bits()),
-                            "OUT_" + std::to_string(out_idx) + "_idx")));
+        const std::string name = output_selector_name(out_idx);
+        program.outputs.push_back(
+            static_cast<int>(model_bv_uint64(model, bv_const(ctx, name, spec.idx_bits()), name)));
     }
     return program;
 }

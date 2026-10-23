@@ -81,65 +81,8 @@ CliRunResult invoke_cli_config(const json &config_json, const std::vector<std::s
     return invoke_cli_args(args, stdin_text);
 }
 
-std::string trim_copy(std::string s) {
-    while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front())) != 0) {
-        s.erase(s.begin());
-    }
-    while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back())) != 0) {
-        s.pop_back();
-    }
-    return s;
-}
-
-int parse_source_token(const std::string &raw, int num_inputs) {
-    const std::string tok = trim_copy(raw);
-    if (tok == "1") return kSourceConstantOne;
-    if (tok.starts_with("I")) return input_source(std::stoi(tok.substr(1)));
-    if (tok.starts_with("T")) return temp_source(std::stoi(tok.substr(1)), num_inputs);
-    FAIL("Unexpected source token: " << tok);
-    return 0;
-}
-
 Program parse_emitted_program(const std::string &text, int num_inputs, int num_outputs) {
-    Program program;
-    program.outputs.assign(static_cast<std::size_t>(num_outputs), -1);
-    std::istringstream lines(text);
-    std::string raw_line;
-    while (std::getline(lines, raw_line)) {
-        const std::string line = trim_copy(raw_line);
-        if (line.empty()) continue;
-        const auto colon = line.find(':');
-        REQUIRE(colon != std::string::npos);
-        const std::string lhs = trim_copy(line.substr(0, colon));
-        const std::string rhs = trim_copy(line.substr(colon + 1));
-        if (lhs.starts_with("T")) {
-            const auto lparen = rhs.find('(');
-            const auto comma = rhs.find(',', lparen);
-            const auto rparen = rhs.rfind(')');
-            REQUIRE(lparen != std::string::npos);
-            REQUIRE(comma != std::string::npos);
-            REQUIRE(rparen != std::string::npos);
-            const std::string op_name = trim_copy(rhs.substr(0, lparen));
-            const std::string left_tok = trim_copy(rhs.substr(lparen + 1, comma - lparen - 1));
-            const std::string right_tok = trim_copy(rhs.substr(comma + 1, rparen - comma - 1));
-            program.instrs.push_back({
-                .op = op_code_by_label(op_name),
-                .s1 = parse_source_token(left_tok, num_inputs),
-                .s2 = parse_source_token(right_tok, num_inputs),
-            });
-        } else if (lhs.starts_with("OUT")) {
-            const int out_idx = std::stoi(lhs.substr(3));
-            REQUIRE(out_idx >= 0);
-            REQUIRE(out_idx < num_outputs);
-            program.outputs[static_cast<std::size_t>(out_idx)] = parse_source_token(rhs, num_inputs);
-        } else {
-            FAIL("Unexpected program line: " << line);
-        }
-    }
-    for (int out_src : program.outputs) {
-        REQUIRE(out_src >= 0);
-    }
-    return program;
+    return parse_program(text, num_inputs, num_outputs);
 }
 
 std::vector<Example> examples_from_json(const json &examples_json) {

@@ -15,10 +15,33 @@ TEST_CASE("program source formatting and text emission match Python format") {
     REQUIRE(format_source(2, 2) == "I1");
     REQUIRE(format_source(3, 2) == "T0");
 
+    REQUIRE(parse_source("1", 2) == 0);
+    REQUIRE(parse_source("I0", 2) == 1);
+    REQUIRE(parse_source("I1", 2) == 2);
+    REQUIRE(parse_source("T0", 2) == 3);
+    REQUIRE_THROWS(parse_source("I2", 2));
+    REQUIRE_THROWS(parse_source("T5", 2, 5));
+    REQUIRE_THROWS(parse_source("X", 2));
+
+    REQUIRE(is_commutative_op(kOpAnd));
+    REQUIRE(is_commutative_op(kOpXor));
+    REQUIRE(is_commutative_op(kOpOr));
+    REQUIRE_FALSE(is_commutative_op(-1));
+
+    REQUIRE(output_selector_name(0) == "OUT_0_idx");
+    REQUIRE(output_selector_name(4) == "OUT_4_idx");
+
     const Program xor_program{{Instruction{kOpXor, 1, 2}}, {3}};
     std::ostringstream emitted;
     emit_program(emitted, xor_program, 2);
     REQUIRE(emitted.str() == "T0: XOR(I0, I1)\nOUT0: T0\n");
+
+    const Program parsed = parse_program(emitted.str(), 2, 1);
+    REQUIRE(parsed.instrs.size() == 1);
+    REQUIRE(parsed.instrs[0].op == kOpXor);
+    REQUIRE(parsed.instrs[0].s1 == 1);
+    REQUIRE(parsed.instrs[0].s2 == 2);
+    REQUIRE(parsed.outputs == std::vector<int>{3});
 }
 
 TEST_CASE("program BLIF emission matches supported logic gates") {

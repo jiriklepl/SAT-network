@@ -26,8 +26,18 @@ from main import (
     _operator_sort_key,
     _post_process_program,
 )
-from build_assumptions import build_assumption_lines
+from build_assumptions import (
+    available_dataset_names,
+    build_assumption_lines,
+    build_dataset_from_config,
+    default_dataset_config,
+)
 from dataset_plugins import available_plugins, get_plugin, get_plugin_config
+
+
+def _load_spec_dataset(name: str):
+    examples, num_inputs, num_outputs, _, _, _ = build_dataset_from_config(default_dataset_config(name))
+    return examples, num_inputs, num_outputs
 
 
 def _bits(value: int, width: int) -> list[bool]:
@@ -304,7 +314,7 @@ class MainEncodingTests(unittest.TestCase):
             self.assertEqual(_eval_assumption_lines(lines, ex["inputs"], 1), ex["outputs"])
 
     def test_build_assumptions_circuit_uses_life_compressed_circuit(self) -> None:
-        examples, num_inputs, num_outputs = get_plugin("life-compressed")(get_plugin_config("life-compressed"))
+        examples, num_inputs, num_outputs = _load_spec_dataset("life-compressed")
         lines, required_instructions = build_assumption_lines(
             examples,
             num_inputs,
@@ -325,7 +335,7 @@ class MainEncodingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unknown assumption strategy"):
             build_assumption_lines([], 0, 0, strategy="auto")
 
-    def test_build_assumptions_circuit_matches_cellular_automata_plugins(self) -> None:
+    def test_build_assumptions_circuit_matches_cellular_automata_specs(self) -> None:
         for name in [
             "gol",
             "life",
@@ -344,7 +354,7 @@ class MainEncodingTests(unittest.TestCase):
             "cyclic-compressed",
         ]:
             with self.subTest(name=name):
-                examples, num_inputs, num_outputs = get_plugin(name)(get_plugin_config(name))
+                examples, num_inputs, num_outputs = _load_spec_dataset(name)
                 lines, required_instructions = build_assumption_lines(
                     examples,
                     num_inputs,
@@ -356,9 +366,15 @@ class MainEncodingTests(unittest.TestCase):
                 for ex in examples:
                     self.assertEqual(_eval_assumption_lines(lines, ex["inputs"], num_outputs), ex["outputs"])
 
-    def test_cellular_automata_plugins_are_registered(self) -> None:
-        plugins = available_plugins()
+    def test_declarative_dataset_specs_are_registered_and_match_plugins(self) -> None:
+        spec_names = set(available_dataset_names())
         for name in [
+            "adder",
+            "gol",
+            "gol1",
+            "gol2",
+            "sloppy-adder",
+            "sloppy-adder3",
             "life",
             "life-compressed",
             "maze",
@@ -377,28 +393,35 @@ class MainEncodingTests(unittest.TestCase):
             "critters",
             "traffic",
         ]:
-            self.assertIn(name, plugins)
-            examples, num_inputs, num_outputs = get_plugin(name)(get_plugin_config(name))
+            self.assertIn(name, spec_names)
+            examples, num_inputs, num_outputs, _, fully_materialized, _ = build_dataset_from_config(
+                default_dataset_config(name)
+            )
             self.assertGreater(len(examples), 0)
             self.assertGreater(num_inputs, 0)
             self.assertGreater(num_outputs, 0)
+            if fully_materialized and name not in {"wire", "excitable", "cyclic"}:
+                py_examples, py_in, py_out = get_plugin(name)(get_plugin_config(name))
+                self.assertEqual(num_inputs, py_in)
+                self.assertEqual(num_outputs, py_out)
+                self.assertEqual(examples, py_examples)
 
     def test_life_raw_plugin_birth_rule(self) -> None:
-        examples, _, _ = get_plugin("life")(get_plugin_config("life"))
+        examples, _, _ = _load_spec_dataset("life")
         by_input = {tuple(ex["inputs"]): ex["outputs"] for ex in examples}
 
         states = [0, 1, 1, 1, 0, 0, 0, 0, 0]
         self.assertEqual(by_input[tuple(_state_bits(states, 1))], [True])
 
     def test_life_compressed_birth_rule(self) -> None:
-        examples, num_inputs, num_outputs = get_plugin("life-compressed")(get_plugin_config("life-compressed"))
+        examples, num_inputs, num_outputs = _load_spec_dataset("life-compressed")
         by_input = {tuple(ex["inputs"]): ex["outputs"] for ex in examples}
 
         self.assertEqual((len(examples), num_inputs, num_outputs), (96, 7, 1))
         self.assertEqual(by_input[tuple(_bits(1, 2) + _bits(1, 2) + _bits(1, 2) + [False])], [True])
 
     def test_fire_plugin_spread_and_ash_rules(self) -> None:
-        examples, _, _ = get_plugin("fire")(get_plugin_config("fire"))
+        examples, _, _ = _load_spec_dataset("fire")
         by_input = {tuple(ex["inputs"]): ex["outputs"] for ex in examples}
 
         tree_with_fire_neighbor = [1, 2, 0, 0, 0]
@@ -408,7 +431,7 @@ class MainEncodingTests(unittest.TestCase):
         self.assertEqual(by_input[tuple(_state_bits(ash_without_fire_neighbor, 2))], _bits(0, 2))
 
     def test_fire_compressed_spread_and_ash_rules(self) -> None:
-        examples, num_inputs, num_outputs = get_plugin("fire-compressed")(get_plugin_config("fire-compressed"))
+        examples, num_inputs, num_outputs = _load_spec_dataset("fire-compressed")
         by_input = {tuple(ex["inputs"]): ex["outputs"] for ex in examples}
 
         self.assertEqual((len(examples), num_inputs, num_outputs), (48, 6, 2))
@@ -416,15 +439,15 @@ class MainEncodingTests(unittest.TestCase):
         self.assertEqual(by_input[tuple(_bits(0, 1) + _bits(0, 2) + _bits(0, 1) + _bits(3, 2))], _bits(0, 2))
 
     def test_wire_compressed_head_count_rule(self) -> None:
-        examples, _, _ = get_plugin("wire-compressed")(get_plugin_config("wire-compressed"))
+        examples, _, _ = _load_spec_dataset("wire-compressed")
         by_input = {tuple(ex["inputs"]): ex["outputs"] for ex in examples}
 
         self.assertEqual(by_input[tuple(_bits(1, 2) + _bits(0, 2) + _bits(1, 2) + _bits(1, 2))], _bits(2, 2))
         self.assertEqual(by_input[tuple(_bits(1, 2) + _bits(1, 2) + _bits(1, 2) + _bits(1, 2))], _bits(1, 2))
 
     def test_excitable_and_cyclic_compressed_predicates(self) -> None:
-        excitable_examples, excitable_inputs, excitable_outputs = get_plugin("excitable-compressed")(get_plugin_config("excitable-compressed"))
-        cyclic_examples, cyclic_inputs, cyclic_outputs = get_plugin("cyclic-compressed")(get_plugin_config("cyclic-compressed"))
+        excitable_examples, excitable_inputs, excitable_outputs = _load_spec_dataset("excitable-compressed")
+        cyclic_examples, cyclic_inputs, cyclic_outputs = _load_spec_dataset("cyclic-compressed")
 
         excitable_by_input = {tuple(ex["inputs"]): ex["outputs"] for ex in excitable_examples}
         cyclic_by_input = {tuple(ex["inputs"]): ex["outputs"] for ex in cyclic_examples}
@@ -436,14 +459,14 @@ class MainEncodingTests(unittest.TestCase):
         self.assertEqual(cyclic_by_input[tuple(_bits(1, 2) + _bits(0, 2) + _bits(0, 2) + _bits(31, 5))], _bits(0, 5))
 
     def test_critters_plugin_block_rules(self) -> None:
-        examples, _, _ = get_plugin("critters")(get_plugin_config("critters"))
+        examples, _, _ = _load_spec_dataset("critters")
         by_input = {tuple(ex["inputs"]): ex["outputs"] for ex in examples}
 
         self.assertEqual(by_input[(True, True, False, False)], [True, True, False, False])
         self.assertEqual(by_input[(True, True, True, False)], [True, False, False, False])
 
     def test_traffic_plugin_right_moving_substep(self) -> None:
-        examples, _, _ = get_plugin("traffic")(get_plugin_config("traffic"))
+        examples, _, _ = _load_spec_dataset("traffic")
         by_input = {tuple(ex["inputs"]): ex["outputs"] for ex in examples}
 
         right_phase = False

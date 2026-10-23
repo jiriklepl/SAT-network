@@ -22,25 +22,6 @@
 
 namespace {
 
-std::vector<std::set<int>> build_users(const Program &program, int num_inputs) {
-    std::vector<std::set<int>> users(num_inputs + 1 + program.instrs.size());
-    for (std::size_t instr_idx = 0; instr_idx < program.instrs.size(); ++instr_idx) {
-        const int source = temp_source(static_cast<int>(instr_idx), num_inputs);
-        const Instruction &instr = program.instrs[instr_idx];
-        if (instr.s1 >= 0 && static_cast<std::size_t>(instr.s1) < users.size()) users[instr.s1].insert(source);
-        if (instr.s2 >= 0 && static_cast<std::size_t>(instr.s2) < users.size()) users[instr.s2].insert(source);
-    }
-    return users;
-}
-
-std::map<int, int> build_output_uses(const Program &program) {
-    std::map<int, int> output_uses;
-    for (const int output : program.outputs) {
-        ++output_uses[output];
-    }
-    return output_uses;
-}
-
 bool outputs_limited_to_selected(int source, const std::set<int> &selected, const std::vector<std::set<int>> &users) {
     if (source < 0 || static_cast<std::size_t>(source) >= users.size()) return true;
     return std::all_of(users[static_cast<std::size_t>(source)].begin(), users[static_cast<std::size_t>(source)].end(),
@@ -48,7 +29,7 @@ bool outputs_limited_to_selected(int source, const std::set<int> &selected, cons
 }
 
 std::vector<int> component_outputs(const std::set<int> &nodes, const std::vector<std::set<int>> &users,
-                                   const std::map<int, int> &output_uses) {
+                                   const std::set<int> &output_uses) {
     std::vector<int> outputs;
     for (const int node : nodes) {
         const bool used_by_output = output_uses.contains(node);
@@ -135,39 +116,6 @@ std::vector<std::vector<int>> closed_rooted_subcomponents(int root, const std::s
     return {result.begin(), result.end()};
 }
 
-Program materialize_dag(const std::map<int, Instruction> &nodes, std::span<const int> outputs, int num_inputs) {
-    Program result;
-    std::map<int, int> remap;
-    std::set<int> visiting;
-    std::set<int> visited;
-
-    auto visit = [&](this auto &self, int source) -> int {
-        if (source <= num_inputs) return source;
-        if (const auto it = remap.find(source); it != remap.end()) return it->second;
-        const auto node = nodes.find(source);
-        if (node == nodes.end()) throw std::runtime_error("materialized DAG references missing source");
-        if (visiting.contains(source)) throw std::runtime_error("cycle in materialized DAG");
-        if (visited.contains(source)) return remap.at(source);
-
-        visiting.insert(source);
-        const int s1 = self(node->second.s1);
-        const int s2 = self(node->second.s2);
-        visiting.erase(source);
-        visited.insert(source);
-
-        const int new_source = temp_source(static_cast<int>(result.instrs.size()), num_inputs);
-        remap[source] = new_source;
-        result.instrs.push_back({node->second.op, s1, s2});
-        return new_source;
-    };
-
-    result.outputs.reserve(outputs.size());
-    for (const int output : outputs) {
-        result.outputs.push_back(visit(output));
-    }
-    return result;
-}
-
 Program apply_resynthesized_window(const Program &base, int num_inputs, std::span<const int> window_outputs,
                                    std::span<const int> external_sources, const Program &local_program) {
     std::map<int, Instruction> nodes;
@@ -224,16 +172,6 @@ Program apply_resynthesized_window(const Program &base, int num_inputs, std::spa
 
 constexpr std::size_t kMaxWindowRefinements = 8;
 
-PackedMask slice_mask_range(const PackedMask &src, std::size_t start_idx, std::size_t count) {
-    PackedMask dst(static_cast<unsigned>(count));
-    for (std::size_t i = 0; i < count; ++i) {
-        if (src.test(start_idx + i)) {
-            dst.set(i);
-        }
-    }
-    return dst;
-}
-
 }  // namespace
 
 std::vector<Program> generate_resynthesis_candidates(const Program &base, VerificationOracle &oracle,
@@ -253,7 +191,7 @@ std::vector<Program> generate_resynthesis_candidates(const Program &base, Verifi
     std::vector<PackedMask> values = evaluate_all_sources(base, oracle.packed().input_masks, all_mask);
 
     const std::vector<std::set<int>> users = build_users(base, num_inputs);
-    const std::map<int, int> output_uses = build_output_uses(base);
+    const std::set<int> output_uses(base.outputs.begin(), base.outputs.end());
     std::set<std::pair<std::vector<int>, std::vector<int>>> seen_windows;
     std::vector<std::pair<std::vector<int>, std::vector<int>>> windows;
 
@@ -355,15 +293,15 @@ std::vector<Program> generate_resynthesis_candidates(const Program &base, Verifi
             std::vector<PackedMask> delta_inputs;
             delta_inputs.reserve(external_sources.size());
             for (const int source : external_sources) {
-                delta_inputs.push_back(slice_mask_range(values[static_cast<std::size_t>(source)], prev_width, delta_count));
+                delta_inputs.push_back(values[static_cast<std::size_t>(source)].slice(prev_width, delta_count));
             }
             PackedTestEncoding delta_test = build_packed_test(
                 ctx, delta_inputs, "resynth" + std::to_string(window_idx) + "_r" + std::to_string(refine), local_spec,
                 EncodingOptions{});
             add_exprs(solver, delta_test.constraints);
             for (std::size_t out_idx = 0; out_idx < window_outputs.size(); ++out_idx) {
-                const PackedMask delta_out = slice_mask_range(
-                    values[static_cast<std::size_t>(window_outputs[out_idx])], prev_width, delta_count);
+                const PackedMask delta_out =
+                    values[static_cast<std::size_t>(window_outputs[out_idx])].slice(prev_width, delta_count);
                 solver.add(delta_test.outputs[out_idx] == packed_mask_value(ctx, delta_out));
             }
         }

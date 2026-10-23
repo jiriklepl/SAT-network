@@ -5,6 +5,8 @@
 #include "profile.hpp"
 #include "program.hpp"
 
+#include <boost/dynamic_bitset.hpp>
+
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -33,45 +35,46 @@ double elapsed_seconds(std::chrono::steady_clock::time_point start) {
     return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
 }
 
-void add_generator_seconds(ProfileData &profile, PostProcessGeneratorKind kind, double seconds) {
-    switch (kind) {
-    case PostProcessGeneratorKind::Mask:
-        profile.post_processing_mask_generator_seconds += seconds;
-        break;
-    case PostProcessGeneratorKind::Replacement:
-        profile.post_processing_replacement_generator_seconds += seconds;
-        break;
-    case PostProcessGeneratorKind::Resynthesis:
-        profile.post_processing_resynthesis_generator_seconds += seconds;
-        break;
-    }
-}
-
-void increment_timeout_exits(ProfileData &profile, PostProcessGeneratorKind kind) {
-    switch (kind) {
-    case PostProcessGeneratorKind::Mask:
-        ++profile.post_processing_mask_timeout_exits;
-        break;
-    case PostProcessGeneratorKind::Replacement:
-        ++profile.post_processing_replacement_timeout_exits;
-        break;
-    case PostProcessGeneratorKind::Resynthesis:
-        ++profile.post_processing_resynthesis_timeout_exits;
-        break;
-    }
-}
-
 }  // namespace
 
 PostProcessGeneratorRun::PostProcessGeneratorRun(ProfileData *profile, PostProcessGeneratorKind kind,
                                                  double timeout_seconds)
-    : profile_(profile), kind_(kind), timeout_seconds_(timeout_seconds), start_(std::chrono::steady_clock::now()) {}
+    : profile_(profile), kind_(kind), timeout_seconds_(timeout_seconds), start_(std::chrono::steady_clock::now()) {
+    if (profile_ != nullptr) {
+        switch (kind_) {
+        case PostProcessGeneratorKind::Mask:
+            metrics_ = {&profile_->post_processing_mask_generator_seconds,
+                        &profile_->post_processing_mask_candidates_considered,
+                        &profile_->post_processing_mask_candidates_materialized,
+                        &profile_->post_processing_mask_candidates_accepted,
+                        &profile_->post_processing_mask_invalid_candidates,
+                        &profile_->post_processing_mask_timeout_exits};
+            break;
+        case PostProcessGeneratorKind::Replacement:
+            metrics_ = {&profile_->post_processing_replacement_generator_seconds,
+                        &profile_->post_processing_replacement_candidates_considered,
+                        &profile_->post_processing_replacement_candidates_materialized,
+                        &profile_->post_processing_replacement_candidates_accepted,
+                        &profile_->post_processing_replacement_invalid_candidates,
+                        &profile_->post_processing_replacement_timeout_exits};
+            break;
+        case PostProcessGeneratorKind::Resynthesis:
+            metrics_ = {&profile_->post_processing_resynthesis_generator_seconds,
+                        &profile_->post_processing_resynthesis_candidates_considered,
+                        &profile_->post_processing_resynthesis_candidates_materialized,
+                        &profile_->post_processing_resynthesis_candidates_accepted,
+                        &profile_->post_processing_resynthesis_invalid_candidates,
+                        &profile_->post_processing_resynthesis_timeout_exits};
+            break;
+        }
+    }
+}
 
 bool PostProcessGeneratorRun::timed_out() {
     if (timeout_seconds_ <= 0.0) return false;
     const bool expired = elapsed_seconds(start_) >= timeout_seconds_;
-    if (expired && profile_ != nullptr && !timeout_recorded_) {
-        increment_timeout_exits(*profile_, kind_);
+    if (expired && metrics_.timeout_exits != nullptr && !timeout_recorded_) {
+        ++(*metrics_.timeout_exits);
         timeout_recorded_ = true;
     }
     return expired;
@@ -81,8 +84,8 @@ std::optional<int> PostProcessGeneratorRun::remaining_timeout_ms() {
     if (timeout_seconds_ <= 0.0) return std::nullopt;
     const double remaining = timeout_seconds_ - elapsed_seconds(start_);
     if (remaining <= 0.0) {
-        if (profile_ != nullptr && !timeout_recorded_) {
-            increment_timeout_exits(*profile_, kind_);
+        if (metrics_.timeout_exits != nullptr && !timeout_recorded_) {
+            ++(*metrics_.timeout_exits);
             timeout_recorded_ = true;
         }
         return 0;
@@ -91,70 +94,30 @@ std::optional<int> PostProcessGeneratorRun::remaining_timeout_ms() {
 }
 
 void PostProcessGeneratorRun::finish() {
-    if (profile_ == nullptr || finished_) return;
-    add_generator_seconds(*profile_, kind_, elapsed_seconds(start_));
+    if (metrics_.seconds == nullptr || finished_) return;
+    *metrics_.seconds += elapsed_seconds(start_);
     finished_ = true;
 }
 
 void PostProcessGeneratorRun::candidate_considered() {
-    if (profile_ == nullptr) return;
-    switch (kind_) {
-    case PostProcessGeneratorKind::Mask:
-        ++profile_->post_processing_mask_candidates_considered;
-        break;
-    case PostProcessGeneratorKind::Replacement:
-        ++profile_->post_processing_replacement_candidates_considered;
-        break;
-    case PostProcessGeneratorKind::Resynthesis:
-        ++profile_->post_processing_resynthesis_candidates_considered;
-        ++profile_->post_processing_resynthesis_windows_considered;
-        break;
+    if (metrics_.considered != nullptr) {
+        ++(*metrics_.considered);
+        if (kind_ == PostProcessGeneratorKind::Resynthesis) {
+            ++profile_->post_processing_resynthesis_windows_considered;
+        }
     }
 }
 
 void PostProcessGeneratorRun::candidate_materialized() {
-    if (profile_ == nullptr) return;
-    switch (kind_) {
-    case PostProcessGeneratorKind::Mask:
-        ++profile_->post_processing_mask_candidates_materialized;
-        break;
-    case PostProcessGeneratorKind::Replacement:
-        ++profile_->post_processing_replacement_candidates_materialized;
-        break;
-    case PostProcessGeneratorKind::Resynthesis:
-        ++profile_->post_processing_resynthesis_candidates_materialized;
-        break;
-    }
+    if (metrics_.materialized != nullptr) ++(*metrics_.materialized);
 }
 
 void PostProcessGeneratorRun::candidate_accepted() {
-    if (profile_ == nullptr) return;
-    switch (kind_) {
-    case PostProcessGeneratorKind::Mask:
-        ++profile_->post_processing_mask_candidates_accepted;
-        break;
-    case PostProcessGeneratorKind::Replacement:
-        ++profile_->post_processing_replacement_candidates_accepted;
-        break;
-    case PostProcessGeneratorKind::Resynthesis:
-        ++profile_->post_processing_resynthesis_candidates_accepted;
-        break;
-    }
+    if (metrics_.accepted != nullptr) ++(*metrics_.accepted);
 }
 
 void PostProcessGeneratorRun::invalid_candidate() {
-    if (profile_ == nullptr) return;
-    switch (kind_) {
-    case PostProcessGeneratorKind::Mask:
-        ++profile_->post_processing_mask_invalid_candidates;
-        break;
-    case PostProcessGeneratorKind::Replacement:
-        ++profile_->post_processing_replacement_invalid_candidates;
-        break;
-    case PostProcessGeneratorKind::Resynthesis:
-        ++profile_->post_processing_resynthesis_invalid_candidates;
-        break;
-    }
+    if (metrics_.invalid != nullptr) ++(*metrics_.invalid);
 }
 
 PostProcessScoreMetric post_process_score_metric_by_name(const std::string &name) {
@@ -260,11 +223,12 @@ void require_valid_program(const Program &program, int num_inputs, int num_outpu
 namespace {
 
 void mark_reachable(int source, const Program &program, int num_inputs, std::vector<bool> &reachable) {
-    std::stack<int> to_visit;
-    to_visit.push(source);
+    if (!is_temp_source(source, num_inputs, static_cast<int>(program.instrs.size()))) return;
+    std::vector<int> to_visit;
+    to_visit.push_back(source);
     while (!to_visit.empty()) {
-        const int current = to_visit.top();
-        to_visit.pop();
+        const int current = to_visit.back();
+        to_visit.pop_back();
         if (!is_temp_source(current, num_inputs, static_cast<int>(program.instrs.size()))) continue;
 
         const auto idx = static_cast<std::size_t>(temp_index_from_source(current, num_inputs));
@@ -272,8 +236,8 @@ void mark_reachable(int source, const Program &program, int num_inputs, std::vec
         reachable[idx] = true;
 
         const Instruction &instr = program.instrs[idx];
-        to_visit.push(instr.s2);
-        to_visit.push(instr.s1);
+        to_visit.push_back(instr.s2);
+        to_visit.push_back(instr.s1);
     }
 }
 
@@ -282,10 +246,6 @@ int remap_source(int source, int num_inputs, const std::vector<int> &temp_remap)
     const int idx = temp_index_from_source(source, num_inputs);
     if (idx < 0 || static_cast<std::size_t>(idx) >= temp_remap.size()) return source;
     return temp_remap[static_cast<std::size_t>(idx)];
-}
-
-bool is_commutative_op(int op) {
-    return op == kOpAnd || op == kOpXor || op == kOpOr;
 }
 
 std::pair<int, int> ordered_sources_for_op(int op, int s1, int s2) {
@@ -410,22 +370,39 @@ std::vector<int> output_depths(const Program &program, int num_inputs) {
 }
 
 std::vector<int> output_cone_sizes(const Program &program, int num_inputs) {
-    auto collect = [&](this auto &self, int source, std::set<int> &cone) -> void {
-        if (!is_temp_source(source, num_inputs, static_cast<int>(program.instrs.size())) || cone.contains(source)) {
-            return;
-        }
-        cone.insert(source);
-        const Instruction &instr = program.instrs[static_cast<std::size_t>(temp_index_from_source(source, num_inputs))];
-        self(instr.s1, cone);
-        self(instr.s2, cone);
-    };
-
+    const std::size_t n = program.instrs.size();
     std::vector<int> sizes;
     sizes.reserve(program.outputs.size());
+    std::vector<bool> visited(n, false);
+    std::vector<int> to_visit;
+
     for (const int output : program.outputs) {
-        std::set<int> cone;
-        collect(output, cone);
-        sizes.push_back(static_cast<int>(cone.size()));
+        if (!is_temp_source(output, num_inputs, static_cast<int>(n))) {
+            sizes.push_back(0);
+            continue;
+        }
+        std::ranges::fill(visited, false);
+        to_visit.clear();
+        to_visit.push_back(temp_index_from_source(output, num_inputs));
+        visited[static_cast<std::size_t>(to_visit.back())] = true;
+        int cone_size = 0;
+
+        while (!to_visit.empty()) {
+            const int curr = to_visit.back();
+            to_visit.pop_back();
+            ++cone_size;
+            const Instruction &instr = program.instrs[static_cast<std::size_t>(curr)];
+            for (const int s : {instr.s1, instr.s2}) {
+                if (is_temp_source(s, num_inputs, static_cast<int>(n))) {
+                    const int dep = temp_index_from_source(s, num_inputs);
+                    if (!visited[static_cast<std::size_t>(dep)]) {
+                        visited[static_cast<std::size_t>(dep)] = true;
+                        to_visit.push_back(dep);
+                    }
+                }
+            }
+        }
+        sizes.push_back(cone_size);
     }
     return sizes;
 }
@@ -455,35 +432,23 @@ int sum_values(const std::vector<int> &values) {
 }
 
 int independent_instruction_pairs(const Program &program, int num_inputs) {
-    std::map<std::pair<int, int>, bool> dependency_cache;
-    auto depends_on = [&](this auto &self, int source, int target) -> bool {
-        const auto key = std::make_pair(source, target);
-        if (const auto it = dependency_cache.find(key); it != dependency_cache.end()) return it->second;
-        if (source == target) {
-            dependency_cache[key] = true;
-            return true;
-        }
-        if (!is_temp_source(source, num_inputs, static_cast<int>(program.instrs.size()))) {
-            dependency_cache[key] = false;
-            return false;
-        }
-        const Instruction &instr = program.instrs[static_cast<std::size_t>(temp_index_from_source(source, num_inputs))];
-        const bool result = self(instr.s1, target) || self(instr.s2, target);
-        dependency_cache[key] = result;
-        return result;
-    };
+    const std::size_t n = program.instrs.size();
+    if (n < 2) return 0;
 
-    int count = 0;
-    for (std::size_t left_idx = 0; left_idx < program.instrs.size(); ++left_idx) {
-        const int left_source = temp_source(static_cast<int>(left_idx), num_inputs);
-        for (std::size_t right_idx = left_idx + 1; right_idx < program.instrs.size(); ++right_idx) {
-            const int right_source = temp_source(static_cast<int>(right_idx), num_inputs);
-            if (!depends_on(left_source, right_source) && !depends_on(right_source, left_source)) {
-                ++count;
+    std::vector<boost::dynamic_bitset<>> reach(n, boost::dynamic_bitset<>(n));
+    int independent_count = 0;
+    for (std::size_t i = 0; i < n; ++i) {
+        const Instruction &instr = program.instrs[i];
+        for (const int source : {instr.s1, instr.s2}) {
+            if (is_temp_source(source, num_inputs, static_cast<int>(n))) {
+                const auto dep = static_cast<std::size_t>(temp_index_from_source(source, num_inputs));
+                reach[i].set(dep);
+                reach[i] |= reach[dep];
             }
         }
+        independent_count += static_cast<int>(i - reach[i].count());
     }
-    return count;
+    return independent_count;
 }
 
 int operator_cost(const Program &program) {
@@ -494,14 +459,6 @@ int operator_cost(const Program &program) {
     return total;
 }
 
-std::size_t popcount(const PackedMask &mask) {
-    std::size_t count = 0;
-    for (const std::uint64_t word : mask.words()) {
-        count += static_cast<std::size_t>(std::popcount(word));
-    }
-    return count;
-}
-
 double node_value_entropy(const Program &program, const PackedExamples &packed) {
     const std::size_t sample_count = program.instrs.size() * static_cast<std::size_t>(packed.width);
     if (sample_count == 0) return 0.0;
@@ -510,7 +467,7 @@ double node_value_entropy(const Program &program, const PackedExamples &packed) 
     std::size_t true_count = 0;
     const auto first_temp = static_cast<std::size_t>(packed.input_masks.size() + 1);
     for (std::size_t idx = first_temp; idx < values.size(); ++idx) {
-        true_count += popcount(values[idx]);
+        true_count += values[idx].count();
     }
     const std::size_t false_count = sample_count - true_count;
     double entropy = 0.0;
@@ -542,6 +499,50 @@ void append_score_value(ProgramScore &score, double value, bool descending) {
 }
 
 }  // namespace
+
+std::vector<std::set<int>> build_users(const Program &program, int num_inputs) {
+    std::vector<std::set<int>> users(num_inputs + 1 + program.instrs.size());
+    for (std::size_t instr_idx = 0; instr_idx < program.instrs.size(); ++instr_idx) {
+        const int source = temp_source(static_cast<int>(instr_idx), num_inputs);
+        const Instruction &instr = program.instrs[instr_idx];
+        if (instr.s1 >= 0 && static_cast<std::size_t>(instr.s1) < users.size()) users[instr.s1].insert(source);
+        if (instr.s2 >= 0 && static_cast<std::size_t>(instr.s2) < users.size()) users[instr.s2].insert(source);
+    }
+    return users;
+}
+
+Program materialize_dag(const std::map<int, Instruction> &nodes, std::span<const int> outputs, int num_inputs) {
+    Program result;
+    std::map<int, int> remap;
+    std::set<int> visiting;
+    std::set<int> visited;
+
+    auto visit = [&](this auto &self, int source) -> int {
+        if (source <= num_inputs) return source;
+        if (const auto it = remap.find(source); it != remap.end()) return it->second;
+        const auto node = nodes.find(source);
+        if (node == nodes.end()) throw std::runtime_error("materialized DAG references missing source");
+        if (visiting.contains(source)) throw std::runtime_error("cycle in materialized DAG");
+        if (visited.contains(source)) return remap.at(source);
+
+        visiting.insert(source);
+        const int s1 = self(node->second.s1);
+        const int s2 = self(node->second.s2);
+        visiting.erase(source);
+        visited.insert(source);
+
+        const int new_source = temp_source(static_cast<int>(result.instrs.size()), num_inputs);
+        remap[source] = new_source;
+        result.instrs.push_back({node->second.op, s1, s2});
+        return new_source;
+    };
+
+    result.outputs.reserve(outputs.size());
+    for (const int output : outputs) {
+        result.outputs.push_back(visit(output));
+    }
+    return result;
+}
 
 Program canonicalize_program(const Program &program, int num_inputs) {
     Program current = program;
@@ -714,18 +715,6 @@ ProgramScore score_program(const Program &program, int num_inputs, const PackedE
     return score;
 }
 
-std::vector<PackedMask> evaluate_all_sources(const Program &program, std::span<const PackedMask> input_masks,
-                                             const PackedMask &all_examples_mask) {
-    std::vector<PackedMask> values;
-    values.push_back(all_examples_mask);
-    values.insert(values.end(), input_masks.begin(), input_masks.end());
-    for (const auto &instr : program.instrs) {
-        values.push_back(apply_operator_mask(instr.op, values[static_cast<std::size_t>(instr.s1)],
-                                             values[static_cast<std::size_t>(instr.s2)]) &
-                         all_examples_mask);
-    }
-    return values;
-}
 
 bool push_unique_candidate(std::vector<Program> &candidates, std::set<std::string> &seen, const Program &candidate,
                            const std::string &base_key, VerificationOracle &oracle,

@@ -55,13 +55,8 @@ void push_bits(BitList &out, std::int64_t value, std::int64_t width) {
 }
 
 std::int64_t required_bits(std::int64_t state_count) {
-    std::int64_t max_value = std::max<std::int64_t>(0, state_count - 1);
-    std::int64_t width = 0;
-    do {
-        ++width;
-        max_value >>= 1;
-    } while (max_value != 0);
-    return width;
+    const auto max_value = static_cast<std::uint64_t>(std::max<std::int64_t>(0, state_count - 1));
+    return std::max<std::int64_t>(1, std::bit_width(max_value));
 }
 
 Example make_example(const BitList &inputs, const BitList &outputs, int num_inputs, int num_outputs) {
@@ -1109,9 +1104,7 @@ Config build_dataset_from_config(const nlohmann::json &cfg, const DatasetLoadOpt
         EvalEnv env = compiled->env;
         for_each_point(*compiled, env, [&dataset, compiled](EvalEnv &point) {
             if (auto example = compiled->evaluate_point(point)) {
-                if (example) {
-                    dataset.examples.push_back(std::move(*example));
-                }
+                dataset.examples.push_back(std::move(*example));
             }
         });
     } else {

@@ -232,10 +232,24 @@ void require_materialized(const Config &cfg, const std::string &what) {
                              " rows and was not unrolled; raise --max-materialized-examples to unroll it");
 }
 
+z3::solver create_base_solver(z3::context &ctx, const ProgramSpec &spec, const SolveOptions &options) {
+    z3::solver solver = make_solver(ctx, options.solver);
+    add_exprs(solver, build_program(ctx, spec, options.encoding, options.profile));
+    add_exprs(solver, build_assumption_constraints(ctx, spec, options.assumptions));
+    return solver;
+}
+
+z3::solver create_fully_constrained_solver(z3::context &ctx, const Config &cfg, const ProgramSpec &spec,
+                                          const SolveOptions &options) {
+    z3::solver solver = create_base_solver(ctx, spec, options);
+    add_all_example_constraints(ctx, solver, cfg, spec, options.encoding, options);
+    return solver;
+}
+
 }  // namespace
 
 SolveResult solve_config(const Config &cfg, const SolveOptions &options) {
-    const ProgramSpec spec{.num_inputs=cfg.num_inputs, .num_outputs=cfg.num_outputs, .program_length=cfg.instructions};
+    const ProgramSpec spec = make_program_spec(cfg);
     // Quantified domains that were not unrolled can only be solved by CEGIS against the symbolic verifier.
     std::unique_ptr<SymbolicVerifier> verifier;
     if (!cfg.fully_materialized) {
@@ -252,9 +266,7 @@ SolveResult solve_config(const Config &cfg, const SolveOptions &options) {
                                    ", " + encoding_summary(options.encoding));
     }
     z3::context ctx;
-    z3::solver solver = make_solver(ctx, options.solver);
-    add_exprs(solver, build_program(ctx, spec, options.encoding, options.profile));
-    add_exprs(solver, build_assumption_constraints(ctx, spec, options.assumptions));
+    z3::solver solver = create_base_solver(ctx, spec, options);
 
     const auto start = std::chrono::steady_clock::now();
     std::optional<Program> program;
@@ -310,25 +322,17 @@ SolveResult solve_config(const Config &cfg, const SolveOptions &options) {
 
 std::string make_smt2(const Config &cfg, const SolveOptions &options) {
     require_materialized(cfg, "--make-smt2");
-    const ProgramSpec spec{
-        .num_inputs = cfg.num_inputs, .num_outputs = cfg.num_outputs, .program_length = cfg.instructions};
+    const ProgramSpec spec = make_program_spec(cfg);
     z3::context ctx;
-    z3::solver solver = make_solver(ctx, options.solver);
-    add_exprs(solver, build_program(ctx, spec, options.encoding, options.profile));
-    add_exprs(solver, build_assumption_constraints(ctx, spec, options.assumptions));
-    add_all_example_constraints(ctx, solver, cfg, spec, options.encoding, options);
+    z3::solver solver = create_fully_constrained_solver(ctx, cfg, spec, options);
     return solver.to_smt2();
 }
 
 std::string make_dimacs(const Config &cfg, const SolveOptions &options) {
     require_materialized(cfg, "--make-dimacs");
-    const ProgramSpec spec{
-        .num_inputs = cfg.num_inputs, .num_outputs = cfg.num_outputs, .program_length = cfg.instructions};
+    const ProgramSpec spec = make_program_spec(cfg);
     z3::context ctx;
-    z3::solver solver = make_solver(ctx, options.solver);
-    add_exprs(solver, build_program(ctx, spec, options.encoding, options.profile));
-    add_exprs(solver, build_assumption_constraints(ctx, spec, options.assumptions));
-    add_all_example_constraints(ctx, solver, cfg, spec, options.encoding, options);
+    z3::solver solver = create_fully_constrained_solver(ctx, cfg, spec, options);
 
     z3::goal goal(ctx);
     goal.add(solver.assertions());

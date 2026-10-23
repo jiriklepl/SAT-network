@@ -31,6 +31,24 @@ std::string score_phase_summary(const PostProcessScorePhase &phase) {
     return out.str();
 }
 
+struct ScoredCandidate {
+    Program program;
+    ProgramScore score;
+};
+
+std::vector<ScoredCandidate> score_and_sort_candidates(std::vector<Program> candidates, int num_inputs,
+                                                       const PackedExamples &packed, const PostProcessScorePhase &phase,
+                                                       unsigned random_seed) {
+    std::vector<ScoredCandidate> scored;
+    scored.reserve(candidates.size());
+    for (auto &cand : candidates) {
+        ProgramScore score = score_program(cand, num_inputs, packed, phase, random_seed);
+        scored.push_back({std::move(cand), std::move(score)});
+    }
+    std::ranges::sort(scored, [](const auto &left, const auto &right) { return left.score < right.score; });
+    return scored;
+}
+
 std::vector<Program> generate_candidates(const Program &program, VerificationOracle &oracle,
                                          const PostProcessOptions &options, const PostProcessScorePhase &phase,
                                          ProfileData *profile) {
@@ -66,12 +84,15 @@ std::vector<Program> generate_candidates(const Program &program, VerificationOra
                                    std::to_string(after_resynthesis - before_resynthesis) + " candidates");
     }
 
-    std::ranges::sort(candidates, [&](const Program &left, const Program &right) {
-        return score_program(left, num_inputs, oracle.packed(), phase, options.random_seed) <
-               score_program(right, num_inputs, oracle.packed(), phase, options.random_seed);
-    });
-    if (max_candidates != 0 && candidates.size() > max_candidates) candidates.resize(max_candidates);
-    return candidates;
+    std::vector<ScoredCandidate> scored =
+        score_and_sort_candidates(std::move(candidates), num_inputs, oracle.packed(), phase, options.random_seed);
+    if (max_candidates != 0 && scored.size() > max_candidates) scored.resize(max_candidates);
+    std::vector<Program> result;
+    result.reserve(scored.size());
+    for (auto &item : scored) {
+        result.push_back(std::move(item.program));
+    }
+    return result;
 }
 
 Program run_score_phase(const Program &start, VerificationOracle &oracle, const PostProcessOptions &options,
@@ -110,27 +131,25 @@ Program run_score_phase(const Program &start, VerificationOracle &oracle, const 
             options.logger->log(3, "Post-process round " + std::to_string(round + 1) + " generated " +
                                        std::to_string(next.size()) + " new candidates");
         }
-        std::ranges::sort(next, [&](const Program &left, const Program &right) {
-            return score_program(left, num_inputs, oracle.packed(), phase, options.random_seed) <
-                   score_program(right, num_inputs, oracle.packed(), phase, options.random_seed);
-        });
-        if (next.size() > options.beam_width) next.resize(options.beam_width);
+        std::vector<ScoredCandidate> scored =
+            score_and_sort_candidates(std::move(next), num_inputs, oracle.packed(), phase, options.random_seed);
+        if (scored.size() > options.beam_width) scored.resize(options.beam_width);
 
         bool improved = false;
-        for (const Program &candidate : next) {
-            const ProgramScore score =
-                score_program(candidate, num_inputs, oracle.packed(), phase, options.random_seed);
-            if (score < best_score) {
-                best = candidate;
-                best_score = score;
-                improved = true;
-            }
+        if (!scored.empty() && scored.front().score < best_score) {
+            best = scored.front().program;
+            best_score = scored.front().score;
+            improved = true;
         }
         if (improved && options.logger != nullptr) {
             options.logger->log(2, "Post-process round " + std::to_string(round + 1) + " improved to " +
                                        std::to_string(best.instrs.size()) + " instructions");
         }
-        beam = std::move(next);
+        beam.clear();
+        beam.reserve(scored.size());
+        for (auto &item : scored) {
+            beam.push_back(std::move(item.program));
+        }
         if (options.beam_rounds == 0 && !improved) break;
     }
 

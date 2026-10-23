@@ -8,6 +8,7 @@
 #include "profile.hpp"
 #include "program.hpp"
 #include "solver.hpp"
+#include "string_utils.hpp"
 
 #include <cxxopts.hpp>
 
@@ -38,53 +39,27 @@ double elapsed_seconds(Clock::time_point start) {
     throw std::runtime_error(message);
 }
 
-std::string trim(std::string_view value) {
-    auto first = value.begin();
-    while (first != value.end() && std::isspace(static_cast<unsigned char>(*first)) != 0) {
-        ++first;
-    }
-    auto last = value.end();
-    while (last != first && std::isspace(static_cast<unsigned char>(*(last - 1))) != 0) {
-        --last;
-    }
-    return {first, last};
-}
-
-std::vector<std::string> split_preserving_empty(const std::string &value, char delimiter) {
-    std::vector<std::string> parts;
-    std::size_t start = 0;
-    while (true) {
-        const std::size_t pos = value.find(delimiter, start);
-        if (pos == std::string::npos) {
-            parts.push_back(value.substr(start));
-            break;
-        }
-        parts.push_back(value.substr(start, pos - start));
-        start = pos + 1;
-    }
-    return parts;
-}
-
-std::vector<PostProcessScorePhase> parse_post_process_score(const std::string &value) {
+std::vector<PostProcessScorePhase> parse_post_process_score(std::string_view value) {
     std::vector<PostProcessScorePhase> phases;
-    for (const std::string &raw_phase : split_preserving_empty(value, ';')) {
-        const std::string phase_text = trim(raw_phase);
+    for (const auto raw_phase : split_view_preserving_empty(value, ';')) {
+        const auto phase_text = trim_view(raw_phase);
         if (phase_text.empty()) usage_error("--post-process-score contains an empty phase");
         PostProcessScorePhase phase;
-        for (const std::string &raw_metric : split_preserving_empty(phase_text, ',')) {
-            std::string metric_text = trim(raw_metric);
+        for (const auto raw_metric : split_view_preserving_empty(phase_text, ',')) {
+            auto metric_text = trim_view(raw_metric);
             if (metric_text.empty()) usage_error("--post-process-score contains an empty metric");
             bool descending = false;
             if (metric_text.front() == '-') {
                 descending = true;
-                metric_text.erase(metric_text.begin());
-                metric_text = trim(metric_text);
+                metric_text.remove_prefix(1);
+                metric_text = trim_view(metric_text);
             }
             if (metric_text.empty()) usage_error("--post-process-score contains an empty metric");
             try {
-                phase.push_back({.metric=post_process_score_metric_by_name(metric_text), .descending=descending});
+                phase.push_back(
+                    {.metric = post_process_score_metric_by_name(std::string(metric_text)), .descending = descending});
             } catch (const std::exception &) {
-                usage_error("Unsupported --post-process-score metric: " + metric_text);
+                usage_error("Unsupported --post-process-score metric: " + std::string(metric_text));
             }
         }
         phases.push_back(std::move(phase));
@@ -195,67 +170,60 @@ SolveOptions make_solve_options(const CliOptions &cli, const Logger &logger) {
 
 void print_profile(std::ostream &err, const ProfileData &profile) {
     err << std::fixed << std::setprecision(6);
-    err << "PROFILE dataset_generation_seconds=" << profile.dataset_generation_seconds << "\n";
-    err << "PROFILE structure_encoding_seconds=" << profile.structure_encoding_seconds << "\n";
-    err << "PROFILE example_packing_seconds=" << profile.example_packing_seconds << "\n";
-    err << "PROFILE example_encoding_seconds=" << profile.example_encoding_seconds << "\n";
-    err << "PROFILE z3_solve_seconds=" << profile.z3_solve_seconds << "\n";
-    err << "PROFILE model_extraction_seconds=" << profile.model_extraction_seconds << "\n";
-    err << "PROFILE post_processing_seconds=" << profile.post_processing_seconds << "\n";
-    err << "PROFILE post_processing_mask_generator_seconds=" << profile.post_processing_mask_generator_seconds << "\n";
-    err << "PROFILE post_processing_replacement_generator_seconds="
-        << profile.post_processing_replacement_generator_seconds << "\n";
-    err << "PROFILE post_processing_resynthesis_generator_seconds="
-        << profile.post_processing_resynthesis_generator_seconds << "\n";
-    err << "PROFILE packed_verification_seconds=" << profile.packed_verification_seconds << "\n";
-    err << "PROFILE symbolic_verifier_seconds=" << profile.symbolic_verifier_seconds << "\n";
-    err << "PROFILE structure_constraints=" << profile.structure_constraints << "\n";
-    err << "PROFILE example_constraints=" << profile.example_constraints << "\n";
-    err << "PROFILE example_batches=" << profile.example_batches << "\n";
-    err << "PROFILE packed_examples=" << profile.packed_examples << "\n";
-    err << "PROFILE solver_checks=" << profile.solver_checks << "\n";
-    err << "PROFILE model_extractions=" << profile.model_extractions << "\n";
-    err << "PROFILE post_processing_runs=" << profile.post_processing_runs << "\n";
-    err << "PROFILE post_processing_input_instructions=" << profile.post_processing_input_instructions << "\n";
-    err << "PROFILE post_processing_output_instructions=" << profile.post_processing_output_instructions << "\n";
-    err << "PROFILE post_processing_mask_candidates_considered="
-        << profile.post_processing_mask_candidates_considered << "\n";
-    err << "PROFILE post_processing_mask_candidates_materialized="
-        << profile.post_processing_mask_candidates_materialized << "\n";
-    err << "PROFILE post_processing_mask_candidates_accepted=" << profile.post_processing_mask_candidates_accepted
-        << "\n";
-    err << "PROFILE post_processing_mask_invalid_candidates=" << profile.post_processing_mask_invalid_candidates
-        << "\n";
-    err << "PROFILE post_processing_mask_timeout_exits=" << profile.post_processing_mask_timeout_exits << "\n";
-    err << "PROFILE post_processing_replacement_candidates_considered="
-        << profile.post_processing_replacement_candidates_considered << "\n";
-    err << "PROFILE post_processing_replacement_candidates_materialized="
-        << profile.post_processing_replacement_candidates_materialized << "\n";
-    err << "PROFILE post_processing_replacement_candidates_accepted="
-        << profile.post_processing_replacement_candidates_accepted << "\n";
-    err << "PROFILE post_processing_replacement_invalid_candidates="
-        << profile.post_processing_replacement_invalid_candidates << "\n";
-    err << "PROFILE post_processing_replacement_timeout_exits="
-        << profile.post_processing_replacement_timeout_exits << "\n";
-    err << "PROFILE post_processing_resynthesis_windows_considered="
-        << profile.post_processing_resynthesis_windows_considered << "\n";
-    err << "PROFILE post_processing_resynthesis_windows_sat=" << profile.post_processing_resynthesis_windows_sat
-        << "\n";
-    err << "PROFILE post_processing_resynthesis_candidates_considered="
-        << profile.post_processing_resynthesis_candidates_considered << "\n";
-    err << "PROFILE post_processing_resynthesis_candidates_materialized="
-        << profile.post_processing_resynthesis_candidates_materialized << "\n";
-    err << "PROFILE post_processing_resynthesis_invalid_candidates="
-        << profile.post_processing_resynthesis_invalid_candidates << "\n";
-    err << "PROFILE post_processing_resynthesis_candidates_accepted="
-        << profile.post_processing_resynthesis_candidates_accepted << "\n";
-    err << "PROFILE post_processing_resynthesis_timeout_exits="
-        << profile.post_processing_resynthesis_timeout_exits << "\n";
-    err << "PROFILE verification_examples=" << profile.verification_examples << "\n";
-    err << "PROFILE symbolic_verifier_checks=" << profile.symbolic_verifier_checks << "\n";
-    err << "PROFILE symbolic_counterexamples=" << profile.symbolic_counterexamples << "\n";
-    err << "PROFILE bv_cache_hits=" << profile.bv_cache_hits << "\n";
-    err << "PROFILE bv_cache_misses=" << profile.bv_cache_misses << "\n";
+    const std::pair<std::string_view, double> time_metrics[] = {
+        {"dataset_generation_seconds", profile.dataset_generation_seconds},
+        {"structure_encoding_seconds", profile.structure_encoding_seconds},
+        {"example_packing_seconds", profile.example_packing_seconds},
+        {"example_encoding_seconds", profile.example_encoding_seconds},
+        {"z3_solve_seconds", profile.z3_solve_seconds},
+        {"model_extraction_seconds", profile.model_extraction_seconds},
+        {"post_processing_seconds", profile.post_processing_seconds},
+        {"post_processing_mask_generator_seconds", profile.post_processing_mask_generator_seconds},
+        {"post_processing_replacement_generator_seconds", profile.post_processing_replacement_generator_seconds},
+        {"post_processing_resynthesis_generator_seconds", profile.post_processing_resynthesis_generator_seconds},
+        {"packed_verification_seconds", profile.packed_verification_seconds},
+        {"symbolic_verifier_seconds", profile.symbolic_verifier_seconds},
+    };
+    for (const auto &[name, value] : time_metrics) {
+        err << "PROFILE " << name << '=' << value << '\n';
+    }
+
+    const std::pair<std::string_view, std::size_t> count_metrics[] = {
+        {"structure_constraints", profile.structure_constraints},
+        {"example_constraints", profile.example_constraints},
+        {"example_batches", profile.example_batches},
+        {"packed_examples", profile.packed_examples},
+        {"solver_checks", profile.solver_checks},
+        {"model_extractions", profile.model_extractions},
+        {"post_processing_runs", profile.post_processing_runs},
+        {"post_processing_input_instructions", profile.post_processing_input_instructions},
+        {"post_processing_output_instructions", profile.post_processing_output_instructions},
+        {"post_processing_mask_candidates_considered", profile.post_processing_mask_candidates_considered},
+        {"post_processing_mask_candidates_materialized", profile.post_processing_mask_candidates_materialized},
+        {"post_processing_mask_candidates_accepted", profile.post_processing_mask_candidates_accepted},
+        {"post_processing_mask_invalid_candidates", profile.post_processing_mask_invalid_candidates},
+        {"post_processing_mask_timeout_exits", profile.post_processing_mask_timeout_exits},
+        {"post_processing_replacement_candidates_considered", profile.post_processing_replacement_candidates_considered},
+        {"post_processing_replacement_candidates_materialized", profile.post_processing_replacement_candidates_materialized},
+        {"post_processing_replacement_candidates_accepted", profile.post_processing_replacement_candidates_accepted},
+        {"post_processing_replacement_invalid_candidates", profile.post_processing_replacement_invalid_candidates},
+        {"post_processing_replacement_timeout_exits", profile.post_processing_replacement_timeout_exits},
+        {"post_processing_resynthesis_windows_considered", profile.post_processing_resynthesis_windows_considered},
+        {"post_processing_resynthesis_windows_sat", profile.post_processing_resynthesis_windows_sat},
+        {"post_processing_resynthesis_candidates_considered", profile.post_processing_resynthesis_candidates_considered},
+        {"post_processing_resynthesis_candidates_materialized", profile.post_processing_resynthesis_candidates_materialized},
+        {"post_processing_resynthesis_invalid_candidates", profile.post_processing_resynthesis_invalid_candidates},
+        {"post_processing_resynthesis_candidates_accepted", profile.post_processing_resynthesis_candidates_accepted},
+        {"post_processing_resynthesis_timeout_exits", profile.post_processing_resynthesis_timeout_exits},
+        {"verification_examples", profile.verification_examples},
+        {"symbolic_verifier_checks", profile.symbolic_verifier_checks},
+        {"symbolic_counterexamples", profile.symbolic_counterexamples},
+        {"bv_cache_hits", profile.bv_cache_hits},
+        {"bv_cache_misses", profile.bv_cache_misses},
+    };
+    for (const auto &[name, value] : count_metrics) {
+        err << "PROFILE " << name << '=' << value << '\n';
+    }
 }
 
 Assumptions load_assumptions(const CliOptions &cli, const Config &cfg, std::istream &in) {
@@ -263,8 +231,7 @@ Assumptions load_assumptions(const CliOptions &cli, const Config &cfg, std::istr
         return {};
     }
 
-    const ProgramSpec spec{
-        .num_inputs = cfg.num_inputs, .num_outputs = cfg.num_outputs, .program_length = cfg.instructions};
+    const ProgramSpec spec = make_program_spec(cfg);
     if (cli.assume_path == "-") {
         return parse_assumptions(in, spec);
     }
@@ -387,15 +354,18 @@ int run_cli(int argc, char **argv, std::istream &in, std::ostream &out, std::ost
         logger.log(2, "Loaded configuration with " + std::to_string(cfg.examples.size()) + " examples, " +
                           std::to_string(cfg.num_inputs) + " inputs, " + std::to_string(cfg.num_outputs) +
                           " outputs, and " + std::to_string(cfg.instructions) + " instructions");
+        const auto exit_with_profile = [&](int code) {
+            if (cli.profile) print_profile(err, profile);
+            return code;
+        };
+
         if (cli.dump_dataset) {
             out << config_to_json(cfg).dump(2) << "\n";
-            if (cli.profile) print_profile(err, profile);
-            return 0;
+            return exit_with_profile(0);
         }
         if (cli.make_blif) {
             export_spec_blif(out, cfg.examples, cfg.num_inputs, cfg.num_outputs);
-            if (cli.profile) print_profile(err, profile);
-            return 0;
+            return exit_with_profile(0);
         }
 
         if (!cli.no_shuffle) {
@@ -409,13 +379,11 @@ int run_cli(int argc, char **argv, std::istream &in, std::ostream &out, std::ost
 
         if (cli.make_smt2) {
             out << make_smt2(cfg, solve_options);
-            if (cli.profile) print_profile(err, profile);
-            return 0;
+            return exit_with_profile(0);
         }
         if (cli.make_dimacs) {
             out << make_dimacs(cfg, solve_options);
-            if (cli.profile) print_profile(err, profile);
-            return 0;
+            return exit_with_profile(0);
         }
 
         logger.log(1, "Built program structure with " + std::to_string(cfg.instructions) + " instructions");
@@ -427,8 +395,7 @@ int run_cli(int argc, char **argv, std::istream &in, std::ostream &out, std::ost
                 emit_program(out, *result.program, cfg.num_inputs);
             }
             logger.log(1, "SAT in " + std::to_string(result.elapsed_seconds) + " seconds");
-            if (cli.profile) print_profile(err, profile);
-            return 0;
+            return exit_with_profile(0);
         }
         if (result.status == SolveStatus::VerificationFailed) {
             if (result.program.has_value()) {
@@ -439,17 +406,14 @@ int run_cli(int argc, char **argv, std::istream &in, std::ostream &out, std::ost
                 }
             }
             err << "Total mismatches: " << result.mismatch_count << "\n";
-            if (cli.profile) print_profile(err, profile);
-            return 1;
+            return exit_with_profile(1);
         }
         if (result.status == SolveStatus::Unsat) {
             logger.log(1, "UNSAT in " + std::to_string(result.elapsed_seconds) + " seconds");
-            if (cli.profile) print_profile(err, profile);
-            return 1;
+            return exit_with_profile(1);
         }
         logger.log(1, "UNKNOWN in " + std::to_string(result.elapsed_seconds) + " seconds");
-        if (cli.profile) print_profile(err, profile);
-        return 1;
+        return exit_with_profile(1);
     } catch (const std::exception &exc) {
         err << exc.what() << "\n";
         return 2;

@@ -57,6 +57,38 @@ TEST_CASE("PackedMask bitwise operations preserve width and trim high bits") {
     const PackedMask xor_mask = left ^ right;
     REQUIRE(xor_mask.set_bit_indices() == std::vector<std::size_t>{0, 1});
     REQUIRE(xor_mask.words()[1] == 0);
+
+    PackedMask inplace = left;
+    inplace &= right;
+    REQUIRE(inplace == both);
+    inplace = left;
+    inplace |= right;
+    REQUIRE(inplace == either);
+    inplace = left;
+    inplace ^= right;
+    REQUIRE(inplace == xor_mask);
+
+    REQUIRE(left.count() == 2);
+    REQUIRE(both.count() == 1);
+    REQUIRE(either.count() == 3);
+
+    const PackedMask inv = ~left;
+    REQUIRE(inv.width() == 65);
+    REQUIRE_FALSE(inv.test(0));
+    REQUIRE(inv.test(1));
+    REQUIRE_FALSE(inv.test(64));
+    REQUIRE(inv.count() == 63);
+
+    const PackedMask sliced = left.slice(0, 64);
+    REQUIRE(sliced.width() == 64);
+    REQUIRE(sliced.count() == 1);
+    REQUIRE(sliced.test(0));
+    REQUIRE_FALSE(sliced.test(1));
+
+    const PackedMask sliced_cross = left.slice(1, 64);
+    REQUIRE(sliced_cross.width() == 64);
+    REQUIRE(sliced_cross.count() == 1);
+    REQUIRE(sliced_cross.test(63));
 }
 
 TEST_CASE("PackedMask rejects bitwise operations with mismatched widths") {

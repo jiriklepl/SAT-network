@@ -57,6 +57,7 @@ int xor_cancellation_replacement(const Program &program, const Instruction &inst
 bool candidate_source_depends_on_forbidden_source(const Program &program, int num_inputs, int candidate_source,
                                                   int forbidden_source) {
     if (candidate_source == forbidden_source) return true;
+    if (candidate_source < forbidden_source) return false;
     if (!is_temp_source(candidate_source, num_inputs, static_cast<int>(program.instrs.size()))) return false;
     const Instruction &instr =
         program.instrs[static_cast<std::size_t>(temp_index_from_source(candidate_source, num_inputs))];
@@ -125,46 +126,11 @@ bool cares_match(const PackedMask &left, const PackedMask &right, const PackedMa
 }
 
 Program materialize_program_dag(const Program &program, int num_inputs) {
-    Program result;
     std::map<int, Instruction> nodes;
     for (std::size_t instr_idx = 0; instr_idx < program.instrs.size(); ++instr_idx) {
         nodes[temp_source(static_cast<int>(instr_idx), num_inputs)] = program.instrs[instr_idx];
     }
-    std::map<int, int> remap;
-    std::set<int> visiting;
-
-    auto visit = [&](this auto &self, int source) -> int {
-        if (source <= num_inputs) return source;
-        if (const auto it = remap.find(source); it != remap.end()) return it->second;
-        const auto node = nodes.find(source);
-        if (node == nodes.end()) throw std::runtime_error("candidate DAG references missing source");
-        if (visiting.contains(source)) throw std::runtime_error("cycle in candidate DAG");
-        visiting.insert(source);
-        const int s1 = self(node->second.s1);
-        const int s2 = self(node->second.s2);
-        visiting.erase(source);
-        const int new_source = temp_source(static_cast<int>(result.instrs.size()), num_inputs);
-        remap[source] = new_source;
-        result.instrs.push_back({node->second.op, s1, s2});
-        return new_source;
-    };
-
-    result.outputs.reserve(program.outputs.size());
-    for (const int output : program.outputs) {
-        result.outputs.push_back(visit(output));
-    }
-    return result;
-}
-
-std::vector<std::set<int>> build_instruction_users(const Program &program, int num_inputs) {
-    std::vector<std::set<int>> users(num_inputs + 1 + program.instrs.size());
-    for (std::size_t instr_idx = 0; instr_idx < program.instrs.size(); ++instr_idx) {
-        const int source = temp_source(static_cast<int>(instr_idx), num_inputs);
-        const Instruction &instr = program.instrs[instr_idx];
-        if (instr.s1 >= 0 && static_cast<std::size_t>(instr.s1) < users.size()) users[instr.s1].insert(source);
-        if (instr.s2 >= 0 && static_cast<std::size_t>(instr.s2) < users.size()) users[instr.s2].insert(source);
-    }
-    return users;
+    return materialize_dag(nodes, program.outputs, num_inputs);
 }
 
 std::set<int> output_sources(const Program &program) {
@@ -178,6 +144,21 @@ std::pair<int, int> ordered_pair(int left, int right) {
 bool replacement_preserves_outputs(const Program &program, int num_inputs, const PackedExamples &packed,
                                    std::span<const PackedMask> values, const PackedMask &all_mask, int modified_source,
                                    const PackedMask &replacement_mask) {
+    std::vector<bool> depends(program.instrs.size(), false);
+    const int mod_idx = temp_index_from_source(modified_source, num_inputs);
+    if (mod_idx >= 0 && static_cast<std::size_t>(mod_idx) < program.instrs.size()) {
+        depends[static_cast<std::size_t>(mod_idx)] = true;
+        for (std::size_t i = static_cast<std::size_t>(mod_idx + 1); i < program.instrs.size(); ++i) {
+            const Instruction &instr = program.instrs[i];
+            const int s1_idx = temp_index_from_source(instr.s1, num_inputs);
+            const int s2_idx = temp_index_from_source(instr.s2, num_inputs);
+            if ((s1_idx >= 0 && depends[static_cast<std::size_t>(s1_idx)]) ||
+                (s2_idx >= 0 && depends[static_cast<std::size_t>(s2_idx)])) {
+                depends[i] = true;
+            }
+        }
+    }
+
     std::vector<std::optional<PackedMask>> memo(values.size());
     std::set<int> visiting;
     memo[static_cast<std::size_t>(modified_source)] = replacement_mask;
@@ -187,14 +168,14 @@ bool replacement_preserves_outputs(const Program &program, int num_inputs, const
             throw std::logic_error("replacement source out of range");
         }
         if (const auto &cached = memo[static_cast<std::size_t>(source)]; cached.has_value()) return *cached;
-        if (!is_temp_source(source, num_inputs, static_cast<int>(program.instrs.size())) ||
-            !candidate_source_depends_on_forbidden_source(program, num_inputs, source, modified_source)) {
+        const int s_idx = temp_index_from_source(source, num_inputs);
+        if (s_idx < 0 || static_cast<std::size_t>(s_idx) >= depends.size() || !depends[static_cast<std::size_t>(s_idx)]) {
             return values[static_cast<std::size_t>(source)];
         }
         if (!visiting.insert(source).second) {
             throw std::logic_error("cycle while checking replacement output preservation");
         }
-        const Instruction &instr = program.instrs[static_cast<std::size_t>(temp_index_from_source(source, num_inputs))];
+        const Instruction &instr = program.instrs[static_cast<std::size_t>(s_idx)];
         PackedMask computed = apply_operator_mask(instr.op, self(instr.s1), self(instr.s2)) & all_mask;
         visiting.erase(source);
         memo[static_cast<std::size_t>(source)] = computed;
@@ -286,7 +267,7 @@ std::vector<Program> generate_mask_simplification_candidates(const Program &base
         }
     }
 
-    const std::vector<std::set<int>> users = build_instruction_users(base, num_inputs);
+    const std::vector<std::set<int>> users = build_users(base, num_inputs);
     const std::set<int> outputs = output_sources(base);
 
     for (std::size_t instr_idx = 0; instr_idx < base.instrs.size() && !mask_done(); ++instr_idx) {

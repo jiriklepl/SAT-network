@@ -55,6 +55,14 @@ bool PackedMask::is_zero() const {
     return std::ranges::all_of(words_, [](std::uint64_t word) { return word == 0; });
 }
 
+std::size_t PackedMask::count() const {
+    std::size_t total = 0;
+    for (const std::uint64_t w : words_) {
+        total += static_cast<std::size_t>(std::popcount(w));
+    }
+    return total;
+}
+
 bool PackedMask::test(std::size_t idx) const {
     if (idx >= width_) {
         throw std::out_of_range("PackedMask bit index out of range");
@@ -93,6 +101,66 @@ std::vector<std::size_t> PackedMask::set_bit_indices() const {
     return indices;
 }
 
+PackedMask PackedMask::slice(std::size_t start, std::size_t count) const {
+    if (start > width_) {
+        throw std::out_of_range("PackedMask slice start out of range");
+    }
+    const std::size_t actual_count = std::min<std::size_t>(count, width_ - start);
+    if (actual_count == 0) return PackedMask(0);
+    if (start % 64 == 0) {
+        const std::size_t first_word = start / 64;
+        const std::size_t num_words = (actual_count + 63) / 64;
+        std::vector<std::uint64_t> words(num_words, 0);
+        for (std::size_t w = 0; w < num_words; ++w) {
+            words[w] = word(first_word + w);
+        }
+        return PackedMask(static_cast<unsigned>(actual_count), std::move(words));
+    }
+    PackedMask dst(static_cast<unsigned>(actual_count));
+    for (std::size_t idx = 0; idx < actual_count; ++idx) {
+        if (test(start + idx)) {
+            dst.set(idx);
+        }
+    }
+    return dst;
+}
+
+PackedMask PackedMask::operator~() const {
+    PackedMask result = *this;
+    for (std::uint64_t &w : result.words_) {
+        w = ~w;
+    }
+    result.trim_unused_bits();
+    return result;
+}
+
+PackedMask &PackedMask::operator&=(const PackedMask &other) {
+    require_same_width(*this, other);
+    for (std::size_t idx = 0; idx < words_.size(); ++idx) {
+        words_[idx] &= other.words_[idx];
+    }
+    trim_unused_bits();
+    return *this;
+}
+
+PackedMask &PackedMask::operator|=(const PackedMask &other) {
+    require_same_width(*this, other);
+    for (std::size_t idx = 0; idx < words_.size(); ++idx) {
+        words_[idx] |= other.words_[idx];
+    }
+    trim_unused_bits();
+    return *this;
+}
+
+PackedMask &PackedMask::operator^=(const PackedMask &other) {
+    require_same_width(*this, other);
+    for (std::size_t idx = 0; idx < words_.size(); ++idx) {
+        words_[idx] ^= other.words_[idx];
+    }
+    trim_unused_bits();
+    return *this;
+}
+
 void PackedMask::trim_unused_bits() {
     if (!words_.empty()) {
         words_.back() &= high_word_mask(width_);
@@ -107,38 +175,22 @@ bool operator!=(const PackedMask &left, const PackedMask &right) {
     return !(left == right);
 }
 
-PackedMask operator&(const PackedMask &left, const PackedMask &right) {
-    require_same_width(left, right);
-    PackedMask result(left.width_);
-    for (std::size_t idx = 0; idx < result.words_.size(); ++idx) {
-        result.words_[idx] = left.words_[idx] & right.words_[idx];
-    }
-    result.trim_unused_bits();
-    return result;
+PackedMask operator&(PackedMask left, const PackedMask &right) {
+    left &= right;
+    return left;
 }
 
-PackedMask operator|(const PackedMask &left, const PackedMask &right) {
-    require_same_width(left, right);
-    PackedMask result(left.width_);
-    for (std::size_t idx = 0; idx < result.words_.size(); ++idx) {
-        result.words_[idx] = left.words_[idx] | right.words_[idx];
-    }
-    result.trim_unused_bits();
-    return result;
+PackedMask operator|(PackedMask left, const PackedMask &right) {
+    left |= right;
+    return left;
 }
 
-PackedMask operator^(const PackedMask &left, const PackedMask &right) {
-    require_same_width(left, right);
-    PackedMask result(left.width_);
-    for (std::size_t idx = 0; idx < result.words_.size(); ++idx) {
-        result.words_[idx] = left.words_[idx] ^ right.words_[idx];
-    }
-    result.trim_unused_bits();
-    return result;
+PackedMask operator^(PackedMask left, const PackedMask &right) {
+    left ^= right;
+    return left;
 }
 
 PackedMask all_ones(unsigned width) {
-    const PackedMask result(width);
     std::vector<std::uint64_t> words(word_count(width), ~std::uint64_t{0});
     return {width, std::move(words)};
 }

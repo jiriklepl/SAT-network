@@ -173,6 +173,27 @@ TEST_CASE("post-process score metrics compute expected structural values") {
     REQUIRE(std::abs(score.parts[17] - 0.811278) < 0.0001);
 }
 
+TEST_CASE("post-process score counts independent instruction pairs accurately") {
+    const Program prog{
+        {
+            Instruction{kOpAnd, 1, 2},
+            Instruction{kOpOr, 1, 2},
+            Instruction{kOpXor, 3, 1},
+            Instruction{kOpAnd, 4, 5},
+        },
+        {6},
+    };
+    const std::vector<Example> examples = {
+        {{false, false}, {false}},
+        {{true, true}, {true}},
+    };
+    const PackedExamples packed = pack_examples(examples, 2, 1);
+    const PostProcessScorePhase phase{{PostProcessScoreMetric::IndependentPairs, false}};
+    ProgramScore score = score_program(prog, 2, packed, phase, 0);
+    REQUIRE(score.parts.size() == 1);
+    REQUIRE(score.parts[0] == 2.0);
+}
+
 TEST_CASE("post-process score descending metrics reverse ordering") {
     const std::vector<Example> examples = identity_examples();
     const PackedExamples packed = pack_examples(examples, 1, 1);
