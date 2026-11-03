@@ -7,33 +7,45 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(SAT_SYNTH_ENABLE_SANITIZERS "Build project targets with AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
-option(SAT_SYNTH_ENABLE_PYTHON_TESTS "Run legacy Python parity integration tests via CTest" OFF)
 
 include(FetchContent)
 
 FetchContent_Declare(
   nlohmann_json
   GIT_REPOSITORY https://github.com/nlohmann/json.git
-  GIT_TAG v3.12.0
+  GIT_TAG        v3.12.0
+  GIT_PROGRESS   TRUE
 )
 
 FetchContent_Declare(
   cxxopts
   GIT_REPOSITORY https://github.com/jarro2783/cxxopts.git
-  GIT_TAG v3.3.1
+  GIT_TAG        v3.3.1
+  GIT_PROGRESS   TRUE
 )
 
 FetchContent_Declare(
   Catch2
   GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-  GIT_TAG v3.16.1
+  GIT_TAG        v3.16.1
+  GIT_PROGRESS   TRUE
 )
 
-FetchContent_MakeAvailable(nlohmann_json cxxopts Catch2)
+FetchContent_Declare(
+    Boost
+    GIT_REPOSITORY https://github.com/boostorg/boost.git
+    GIT_TAG        boost-1.92.0
+    GIT_PROGRESS   TRUE
+)
+
+# This option ensures Boost only builds components if explicitly requested,
+# while safely making header-only modules like dynamic_bitset immediately available.
+set(BOOST_ENABLE_CMAKE ON CACHE BOOL "" FORCE)
+
+FetchContent_MakeAvailable(nlohmann_json cxxopts Catch2 Boost)
 
 find_path(Z3_INCLUDE_DIR z3++.h)
 find_library(Z3_LIBRARY z3 REQUIRED)
-find_path(BOOST_INCLUDE_DIR boost/dynamic_bitset.hpp REQUIRED)
 
 if(NOT Z3_INCLUDE_DIR OR NOT Z3_LIBRARY)
   message(FATAL_ERROR "Could not find Z3 headers/library")
@@ -65,11 +77,12 @@ add_library(sat_synth_core
   cpp/solver.cpp
   cpp/symbolic_verifier.cpp
 )
-target_include_directories(sat_synth_core PUBLIC cpp ${Z3_INCLUDE_DIR} ${BOOST_INCLUDE_DIR})
+target_include_directories(sat_synth_core PUBLIC cpp ${Z3_INCLUDE_DIR})
 target_link_libraries(sat_synth_core PUBLIC ${Z3_LIBRARY} cxxopts::cxxopts nlohmann_json::nlohmann_json)
 if(SAT_SYNTH_ENABLE_SANITIZERS)
   target_link_libraries(sat_synth_core PUBLIC sat_synth_sanitizers)
 endif()
+target_link_libraries(sat_synth_core PUBLIC Boost::dynamic_bitset)
 
 add_executable(sat_synth_cpp cpp/sat_synth_cpp.cpp)
 target_link_libraries(sat_synth_cpp PRIVATE sat_synth_core)
